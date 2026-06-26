@@ -50,6 +50,7 @@ import {
 
 type Surface = 'chat' | 'inspector' | 'impact' | 'settings';
 type InspectorTab = 'primary' | 'intent' | 'graph' | 'docs' | 'tokens' | 'json' | 'api';
+type ImpactSource = 'prompt' | 'graph' | 'none';
 
 interface StoredDialog {
   id: string;
@@ -76,7 +77,7 @@ class MainSurface {
   private currentImpact: ImpactResponse | null = null;
   private currentImpactSymbol: string | null = null;
   private currentImpactFilePath: string | null = null;
-  private currentImpactSource: 'prompt' | 'graph' | null = null;
+  private currentImpactSource: ImpactSource = 'none';
   private currentImpactDepth = 3;
   private impactError: string | null = null;
   private impactLoading = false;
@@ -445,11 +446,11 @@ class MainSurface {
       `${renderImpactWorkspace(
         this.currentImpact,
         symbol,
-        this.currentImpactSource === 'prompt' ? 'prompt context' : 'live graph',
+        this.impactContextSubtitle(),
         { depth: this.currentImpactDepth },
       )}
         <div class="surface-footer">
-          <span>${this.currentImpactSource === 'prompt' ? 'From selected ask' : 'Graph built just now'}</span>
+          <span>${this.impactFooterSubtitle()}</span>
           <button class="icon-action" data-action="showImpact" title="Refresh impact">Refresh</button>
         </div>`,
     );
@@ -725,7 +726,7 @@ class MainSurface {
       const selectedSymbol = this.impactTarget().symbol;
       const needsGraphImpact = (
         !this.currentImpact
-        || this.currentImpactSource !== 'graph'
+        || !this.isGraphImpactSource()
         || Boolean(selectedSymbol && selectedSymbol !== this.currentImpactSymbol)
       );
       if (needsGraphImpact && !this.impactLoading) {
@@ -776,10 +777,36 @@ class MainSurface {
     this.currentPromptContext = null;
     this.currentContextSummary = null;
     this.currentImpact = null;
-    this.currentImpactSource = null;
+    this.currentImpactSource = 'none';
     this.currentImpactDepth = 3;
     this.currentImpactSymbol = impactSymbol;
     this.currentImpactFilePath = impactFilePath;
+  }
+
+  private isPromptImpactSource(): boolean {
+    switch (this.currentImpactSource) {
+      case 'prompt':
+        return true;
+      default:
+        return false;
+    }
+  }
+
+  private isGraphImpactSource(): boolean {
+    switch (this.currentImpactSource) {
+      case 'graph':
+        return true;
+      default:
+        return false;
+    }
+  }
+
+  private impactContextSubtitle(): string {
+    return this.isPromptImpactSource() ? 'prompt context' : 'live graph';
+  }
+
+  private impactFooterSubtitle(): string {
+    return this.isPromptImpactSource() ? 'From selected ask' : 'Graph built just now';
   }
 
   private impactTarget(): { symbol?: string; filePath?: string } {
@@ -788,7 +815,7 @@ class MainSurface {
     // present in the inspector state; preferring it here silently retargeted
     // the second request, making a slider move appear to "fix" an empty
     // impact result with numbers belonging to a different symbol.
-    if (this.currentImpactSource === 'graph' && this.currentImpactSymbol) {
+    if (this.isGraphImpactSource() && this.currentImpactSymbol) {
       return {
         symbol: this.currentImpactSymbol,
         filePath: this.currentImpactFilePath || undefined,
@@ -826,7 +853,7 @@ class MainSurface {
     const slider = event.currentTarget as HTMLInputElement | null;
     if (!slider) return;
     const depth = clampImpactDepth(Number(slider.value));
-    if (depth === this.currentImpactDepth && this.currentImpactSource === 'graph') return;
+    if (depth === this.currentImpactDepth && this.isGraphImpactSource()) return;
     this.currentImpactDepth = depth;
     this.requestImpactForActiveSymbol();
   }

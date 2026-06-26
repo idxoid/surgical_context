@@ -152,7 +152,7 @@ def qualified_name_for(node, file_path: str) -> str:
     return ".".join([module, *reversed(parts)]) if parts else module
 
 
-def signature_from_node(node, source_code: str, language: str = "python") -> tuple[str | None, str]:
+def signature_from_node(node, language: str = "python") -> tuple[str | None, str]:
     """Extract a raw signature and status from a tree-sitter symbol node."""
     name_node = node.child_by_field_name("name")
     if name_node is None:

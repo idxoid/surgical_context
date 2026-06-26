@@ -890,7 +890,6 @@ class TypeScriptAdapter(TreeSitterAdapter):
             if owner_name and method_name:
                 raw_signature, _ = signature_from_node(
                     node,
-                    source_code,
                     self.language_name,
                 )
                 owner_by_span[(method_name, node.start_point[0] + 1, node.end_point[0] + 1)] = (
@@ -3645,7 +3644,7 @@ class TypeScriptAdapter(TreeSitterAdapter):
                     qualified_name = (
                         f"{module_name_from_path(file_path)}.{owner_name}.{method_name}"
                     )
-        raw_signature, _ = signature_from_node(node, source_code, self.language_name)
+        raw_signature, _ = signature_from_node(node, self.language_name)
         return compute_uid(qualified_name, raw_signature, self.language_name)
 
     @staticmethod

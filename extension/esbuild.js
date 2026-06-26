@@ -111,7 +111,7 @@ function rewriteMainSurfaceClassFields(mediaDir) {
   const keptLines = [];
 
   for (const line of ctorBody.split('\n')) {
-    const match = line.match(/^    this\.(\w+) = (.+);$/);
+    const match = line.match(/^ {4}this\.(\w+) = (.+);$/);
     if (match && isStaticClassFieldValue(match[2])) {
       fieldLines.push(`  ${match[1]} = ${match[2]};`);
     } else {

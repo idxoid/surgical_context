@@ -1549,7 +1549,7 @@ const MainSurface = class {
   currentImpact = null;
   currentImpactSymbol = null;
   currentImpactFilePath = null;
-  currentImpactSource = null;
+  currentImpactSource = "none";
   currentImpactDepth = 3;
   impactError = null;
   impactLoading = false;
@@ -1867,11 +1867,11 @@ const MainSurface = class {
       `${renderImpactWorkspace(
         this.currentImpact,
         symbol,
-        this.currentImpactSource === "prompt" ? "prompt context" : "live graph",
+        this.impactContextSubtitle(),
         { depth: this.currentImpactDepth }
       )}
         <div class="surface-footer">
-          <span>${this.currentImpactSource === "prompt" ? "From selected ask" : "Graph built just now"}</span>
+          <span>${this.impactFooterSubtitle()}</span>
           <button class="icon-action" data-action="showImpact" title="Refresh impact">Refresh</button>
         </div>`
     );
@@ -2117,7 +2117,7 @@ const MainSurface = class {
     if (surface === "impact") {
       this.render();
       const selectedSymbol = this.impactTarget().symbol;
-      const needsGraphImpact = !this.currentImpact || this.currentImpactSource !== "graph" || Boolean(selectedSymbol && selectedSymbol !== this.currentImpactSymbol);
+      const needsGraphImpact = !this.currentImpact || !this.isGraphImpactSource() || Boolean(selectedSymbol && selectedSymbol !== this.currentImpactSymbol);
       if (needsGraphImpact && !this.impactLoading) {
         this.requestImpactForActiveSymbol();
       }
@@ -2156,13 +2156,35 @@ const MainSurface = class {
     this.currentPromptContext = null;
     this.currentContextSummary = null;
     this.currentImpact = null;
-    this.currentImpactSource = null;
+    this.currentImpactSource = "none";
     this.currentImpactDepth = 3;
     this.currentImpactSymbol = impactSymbol;
     this.currentImpactFilePath = impactFilePath;
   }
+  isPromptImpactSource() {
+    switch (this.currentImpactSource) {
+      case "prompt":
+        return true;
+      default:
+        return false;
+    }
+  }
+  isGraphImpactSource() {
+    switch (this.currentImpactSource) {
+      case "graph":
+        return true;
+      default:
+        return false;
+    }
+  }
+  impactContextSubtitle() {
+    return this.isPromptImpactSource() ? "prompt context" : "live graph";
+  }
+  impactFooterSubtitle() {
+    return this.isPromptImpactSource() ? "From selected ask" : "Graph built just now";
+  }
   impactTarget() {
-    if (this.currentImpactSource === "graph" && this.currentImpactSymbol) {
+    if (this.isGraphImpactSource() && this.currentImpactSymbol) {
       return {
         symbol: this.currentImpactSymbol,
         filePath: this.currentImpactFilePath || void 0
@@ -2198,7 +2220,7 @@ const MainSurface = class {
     const slider = event.currentTarget;
     if (!slider) return;
     const depth = clampImpactDepth(Number(slider.value));
-    if (depth === this.currentImpactDepth && this.currentImpactSource === "graph") return;
+    if (depth === this.currentImpactDepth && this.isGraphImpactSource()) return;
     this.currentImpactDepth = depth;
     this.requestImpactForActiveSymbol();
   }

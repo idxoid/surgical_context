@@ -1076,7 +1076,7 @@ class JavaScriptAdapter(TreeSitterAdapter):
 
     def _uid_for_node(self, node, source_code: str, file_path: str) -> str:
         qualified_name = qualified_name_for(node, file_path)
-        raw_signature, _ = signature_from_node(node, source_code, self.language_name)
+        raw_signature, _ = signature_from_node(node, self.language_name)
         return compute_uid(qualified_name, raw_signature, self.language_name)
 
     def _enclosing_symbol_owner(self, node):

@@ -113,7 +113,7 @@ class TreeSitterAdapter(LanguageAdapter):
         name = _node_text(name_node)
         content = _node_text(node)
         qualified_name = qualified_name_for(node, file_path)
-        raw_signature, signature_status = signature_from_node(node, source_code, self.language_name)
+        raw_signature, signature_status = signature_from_node(node, self.language_name)
         signature = normalize_signature(raw_signature or "", self.language_name)
         return SymbolMetadata(
             uid=compute_uid(qualified_name, raw_signature, self.language_name),
@@ -289,7 +289,7 @@ class TreeSitterAdapter(LanguageAdapter):
 
     def _symbol_uid_from_node(self, node, source_code: str, file_path: str) -> str:
         qualified_name = qualified_name_for(node, file_path)
-        raw_signature, _ = signature_from_node(node, source_code, self.language_name)
+        raw_signature, _ = signature_from_node(node, self.language_name)
         return compute_uid(qualified_name, raw_signature, self.language_name)
 
     def extract_all(

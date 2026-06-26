@@ -198,7 +198,7 @@ class TypeScriptAxisExtractor:
         self._emit_inheritance_facts(node, source, file_path, emit)
 
     def _axis_node_callable(self, node, *, source, file_path, emit, **_) -> None:
-        self._emit_callable_def_facts(node, source, file_path, emit)
+        self._emit_callable_def_facts(node, file_path, emit)
         self._emit_parameter_facts(node, source, file_path, emit)
         self._emit_return_annotation(node, source, file_path, emit)
 
@@ -416,7 +416,7 @@ class TypeScriptAxisExtractor:
             payload={"callable_kind": "class", "origin": "definition", **payload},
         )
 
-    def _emit_callable_def_facts(self, node, source: str, file_path: str, emit) -> None:
+    def _emit_callable_def_facts(self, node, file_path: str, emit) -> None:
         name_node = node.child_by_field_name("name")
         name = self.adapter._node_text(name_node) if name_node else ""
         is_async = any(child.type == "async" for child in node.children)
