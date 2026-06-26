@@ -39,6 +39,7 @@ function rewriteImmutableVarExports(mediaDir) {
     'DashboardPanel',
     'IMPACT_KIND_EXPLAINERS',
     'DEFAULT_CALLS_EDGE_LABEL',
+    'MISSING_SYMBOL_PATTERN',
   ];
   for (const fileName of fs.readdirSync(mediaDir)) {
     if (!fileName.endsWith('.js')) {

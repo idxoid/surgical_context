@@ -79,7 +79,6 @@ def _module_from_import_line(stripped: str) -> str:
 
 def _import_roots_from_source(
     source_code: str,
-    file_path: str,
     boundary: frozenset[str],
     project_external_roots: frozenset[str] = frozenset(),
 ) -> list[str]:
@@ -169,7 +168,6 @@ def collect_external_import_links(
 ) -> list[ExternalImportLink]:
     roots = _import_roots_from_source(
         source_code,
-        file_path,
         boundary,
         project_external_roots,
     )
@@ -205,9 +203,8 @@ def _glue_logical_import_lines(source_code: str) -> list[str]:
     pending_continuation = False
     for raw in source_code.splitlines():
         stripped = raw.strip()
-        if not stripped or stripped.startswith("#"):
-            if not buf:
-                continue
+        if (not stripped or stripped.startswith("#")) and not buf:
+            continue
         buf.append(_strip_trailing_comment(stripped))
         paren_depth += stripped.count("(") - stripped.count(")")
         pending_continuation = stripped.endswith("\\")

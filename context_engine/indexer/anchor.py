@@ -12,13 +12,27 @@ IDENTIFIER_LINK_SKIP_THRESHOLD = 2
 DOC_LINK_BATCH_SIZE = 128
 ANCHOR_TYPES = {"definition", "example", "reference", "warning", "deprecated"}
 
-_IDENTIFIER_RE = re.compile(
-    r"\b([A-Z][a-zA-Z0-9]*[A-Z][a-zA-Z0-9]*|[A-Z][A-Z0-9_]*_[A-Z0-9_]+|[a-z][a-z0-9]*_[a-z0-9_]+)\b"
+_CAMEL_CASE_IDENTIFIER = re.compile(r"\b([A-Z][a-zA-Z0-9]*[A-Z][a-zA-Z0-9]*)\b")
+_SCREAMING_SNAKE_IDENTIFIER = re.compile(r"\b([A-Z][A-Z0-9_]*_[A-Z0-9_]+)\b")
+_SNAKE_CASE_IDENTIFIER = re.compile(r"\b([a-z][a-z0-9]*_[a-z0-9_]+)\b")
+_IDENTIFIER_PATTERNS = (
+    _CAMEL_CASE_IDENTIFIER,
+    _SCREAMING_SNAKE_IDENTIFIER,
+    _SNAKE_CASE_IDENTIFIER,
 )
 
 # Matches markdown links and bare .md filenames that reference project docs
-_DOC_REF_RE = re.compile(
-    r"\]\(((?:docs/)?[\w_]+\.md)\)|(?<!\w)((?:docs/)?spec_[\w_]+\.md|architectura\.md|concept\.md|idea_[\w_]+\.md)"
+_DOC_LINK_TARGET_RE = re.compile(r"\]\(((?:docs/)?\w+\.md)\)")
+_DOC_BARE_SPEC_REF_RE = re.compile(r"(?<!\w)((?:docs/)?spec_\w+\.md)")
+_DOC_BARE_ARCHITECTURA_REF_RE = re.compile(r"(?<!\w)(architectura\.md)")
+_DOC_BARE_CONCEPT_REF_RE = re.compile(r"(?<!\w)(concept\.md)")
+_DOC_BARE_IDEA_REF_RE = re.compile(r"(?<!\w)(idea_\w+\.md)")
+_DOC_REF_PATTERNS = (
+    _DOC_LINK_TARGET_RE,
+    _DOC_BARE_SPEC_REF_RE,
+    _DOC_BARE_ARCHITECTURA_REF_RE,
+    _DOC_BARE_CONCEPT_REF_RE,
+    _DOC_BARE_IDEA_REF_RE,
 )
 
 _DOC_TYPE_MAP = {
@@ -250,12 +264,11 @@ def _normalize_cover_links(
 
 def _extract_doc_references(chunk_text: str) -> list[str]:
     """Extract doc filenames referenced in a chunk (markdown links or bare filenames)."""
-    refs = []
-    for match in _DOC_REF_RE.finditer(chunk_text):
-        ref = match.group(1) or match.group(2)
-        if ref:
-            refs.append(ref.split("/")[-1])  # basename only; matched against File.path ENDS WITH
-    return list(set(refs))
+    refs: set[str] = set()
+    for pattern in _DOC_REF_PATTERNS:
+        for match in pattern.finditer(chunk_text):
+            refs.add(match.group(1).split("/")[-1])
+    return list(refs)
 
 
 def _write_anchor(tx, chunk_id: str, file_path: str, workspace_id: str):
@@ -425,7 +438,10 @@ def _link_related_docs_batch(tx, rows: list[dict], workspace_id: str):
 
 
 def _extract_identifiers(text: str) -> list[str]:
-    return list(set(_IDENTIFIER_RE.findall(text)))
+    found: set[str] = set()
+    for pattern in _IDENTIFIER_PATTERNS:
+        found.update(pattern.findall(text))
+    return list(found)
 
 
 def _normalize_pending(value) -> list[str]:

@@ -639,27 +639,26 @@ class DisabledHistoryProvider:
         return None
 
     def save_inspector_snapshot(self, message_id: str, snapshot: dict[str, Any]) -> None:
-        _ = (message_id, snapshot)
-        return None
+        _ = message_id
+        _ = len(snapshot)
 
     def save_impact_snapshot(self, message_id: str, snapshot: dict[str, Any]) -> None:
-        _ = (message_id, snapshot)
-        return None
+        _ = snapshot
 
     def get_ask_snapshot(self, message_id: str) -> dict[str, Any] | None:
         _ = message_id
         return None
 
     def get_inspector_snapshot(self, message_id: str) -> dict[str, Any] | None:
-        _ = message_id
+        _ = bool(message_id)
         return None
 
     def get_impact_snapshot(self, message_id: str) -> dict[str, Any] | None:
-        _ = message_id
+        _ = len(message_id)
         return None
 
     def get_message_bundle(self, message_id: str) -> dict[str, Any] | None:
-        _ = message_id
+        _ = message_id or ""
         return None
 
     def get_conversation_bundle(
@@ -676,7 +675,8 @@ class DisabledHistoryProvider:
         conversation_id: str,
         request_id: str,
     ) -> dict[str, Any] | None:
-        _ = (conversation_id, request_id)
+        _ = request_id
+        _ = conversation_id
         return None
 
     def prune_retention(self) -> int:

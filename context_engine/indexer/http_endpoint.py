@@ -33,7 +33,7 @@ HTTP_CLIENT_CALLEES = frozenset(
     {"get", "post", "put", "patch", "delete", "head", "options", "fetch", "request"}
 )
 
-_PATH_FRAGMENT_RE = re.compile(r"(/[\w./:_$-]+)")
+_PATH_FRAGMENT_RE = re.compile(r"(/[\w./:$-]+)")
 
 
 def normalize_http_method(raw: str) -> str:

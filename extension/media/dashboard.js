@@ -370,7 +370,7 @@ function summarizeDetails(details) {
   if (entries.length === 0) return "N/A";
   return entries.map(([key, value]) => `${key}: ${String(value)}`).join(" \u2022 ");
 }
-var MISSING_SYMBOL_PATTERN = /Symbol '([^']+)' not found in graph/i;
+const MISSING_SYMBOL_PATTERN = /Symbol '([^']+)' not found in graph/i;
 function summarizeError(error) {
   const missingSymbol = MISSING_SYMBOL_PATTERN.exec(error);
   if (missingSymbol) {

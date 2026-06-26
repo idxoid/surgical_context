@@ -756,18 +756,15 @@ function arrayField(sym: Record<string, unknown>, key: string): string[] {
   return value.map(String).filter(Boolean);
 }
 
-const TEST_DIRECTORY_SEGMENT = /(^|[/.])(tests?|specs?|__tests__)([/.]|$)/;
-const JS_TS_TEST_SUFFIX = /(\.|_)(test|spec)\.[jt]sx?$/;
-const PYTHON_TEST_PREFIX = /test_.*\.py$/;
-const PYTHON_TEST_SUFFIX = /_test\.py$/;
-
 function isTestFile(filePath: string): boolean {
   const path = filePath.toLowerCase();
+  const testDirectorySegment = /(^|[/.])(tests?|specs?|__tests__)([/.]|$)/;
+  const jsTsTestSuffix = /[._](test|spec)\.[jt]sx?$/;
   return (
-    TEST_DIRECTORY_SEGMENT.test(path)
-    || JS_TS_TEST_SUFFIX.test(path)
-    || PYTHON_TEST_PREFIX.test(path)
-    || PYTHON_TEST_SUFFIX.test(path)
+    testDirectorySegment.test(path)
+    || jsTsTestSuffix.test(path)
+    || (path.endsWith('.py') && path.includes('test_'))
+    || path.endsWith('_test.py')
   );
 }
 

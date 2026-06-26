@@ -156,7 +156,6 @@ export function renderPromptJsonTab(context: PromptContextPayload): string {
 
 export function renderTokenBreakdownTab(context: PromptContextPayload): string {
   const metadata = context.metadata || {};
-  const tiersUsed = metadata.tiers_used || [];
 
   const tokensPrimary = metadata.tokens_primary || 0;
   const tokensGraph = metadata.tokens_graph || 0;

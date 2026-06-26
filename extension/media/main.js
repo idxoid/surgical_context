@@ -805,13 +805,11 @@ function arrayField(sym, key) {
   if (!Array.isArray(value)) return [];
   return value.map(String).filter(Boolean);
 }
-var TEST_DIRECTORY_SEGMENT = /(^|[/.])(tests?|specs?|__tests__)([/.]|$)/;
-var JS_TS_TEST_SUFFIX = /(\.|_)(test|spec)\.[jt]sx?$/;
-var PYTHON_TEST_PREFIX = /test_.*\.py$/;
-var PYTHON_TEST_SUFFIX = /_test\.py$/;
 function isTestFile(filePath) {
   const path = filePath.toLowerCase();
-  return TEST_DIRECTORY_SEGMENT.test(path) || JS_TS_TEST_SUFFIX.test(path) || PYTHON_TEST_PREFIX.test(path) || PYTHON_TEST_SUFFIX.test(path);
+  const testDirectorySegment = /(^|[/.])(tests?|specs?|__tests__)([/.]|$)/;
+  const jsTsTestSuffix = /[._](test|spec)\.[jt]sx?$/;
+  return testDirectorySegment.test(path) || jsTsTestSuffix.test(path) || path.endsWith(".py") && path.includes("test_") || path.endsWith("_test.py");
 }
 function isDocFile(filePath) {
   return /\.(md|mdx|rst|txt)$/i.test(filePath);
@@ -1067,7 +1065,6 @@ function renderPromptJsonTab(context) {
 }
 function renderTokenBreakdownTab(context) {
   const metadata = context.metadata || {};
-  const tiersUsed = metadata.tiers_used || [];
   const tokensPrimary = metadata.tokens_primary || 0;
   const tokensGraph = metadata.tokens_graph || 0;
   const tokensDocs = metadata.tokens_docs || 0;
