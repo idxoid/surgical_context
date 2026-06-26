@@ -2,9 +2,14 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Header, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Request
 
-from context_engine.api.routes.deps import require_main
+from context_engine.api.routes.deps import (
+    AuthHeader,
+    UserIdHeader,
+    WorkspaceHeader,
+    require_main,
+)
 from context_engine.api.schemas import (
     HistoryAskRecordRequest,
     HistoryAskRecordResponse,
@@ -121,10 +126,10 @@ def _save_optional_surface_snapshots(
 )
 def record_history_ask(
     req: HistoryAskRecordRequest,
-    x_user_id: str = Header(None),
-    authorization: str = Header(None),
-    x_workspace: str = Header(None),
-    request: Request = None,
+    x_user_id: UserIdHeader = None,
+    authorization: AuthHeader = None,
+    x_workspace: WorkspaceHeader = None,
+    request: Request | None = None,
 ):
     """Persist a sanitized ask/request snapshot for local dialog history."""
     main = require_main(request)
@@ -209,10 +214,10 @@ def record_history_ask(
 @router.get("/history/conversations", response_model=HistoryConversationsResponse)
 def history_conversations(
     limit: int = 30,
-    x_user_id: str = Header(None),
-    authorization: str = Header(None),
-    x_workspace: str = Header(None),
-    request: Request = None,
+    x_user_id: UserIdHeader = None,
+    authorization: AuthHeader = None,
+    x_workspace: WorkspaceHeader = None,
+    request: Request | None = None,
 ):
     """List local history conversations for the current workspace and user."""
     main = require_main(request)
@@ -238,10 +243,10 @@ def history_conversations(
 )
 def history_conversation(
     conversation_id: str,
-    x_user_id: str = Header(None),
-    authorization: str = Header(None),
-    x_workspace: str = Header(None),
-    request: Request = None,
+    x_user_id: UserIdHeader = None,
+    authorization: AuthHeader = None,
+    x_workspace: WorkspaceHeader = None,
+    request: Request | None = None,
 ):
     """Return a sanitized conversation bundle with messages and snapshots."""
     main = require_main(request)
@@ -266,10 +271,10 @@ def history_conversation(
 def history_request_bundle(
     conversation_id: str,
     request_id: str,
-    x_user_id: str = Header(None),
-    authorization: str = Header(None),
-    x_workspace: str = Header(None),
-    request: Request = None,
+    x_user_id: UserIdHeader = None,
+    authorization: AuthHeader = None,
+    x_workspace: WorkspaceHeader = None,
+    request: Request | None = None,
 ):
     """Return the snapshots for a selected request in a conversation."""
     main = require_main(request)

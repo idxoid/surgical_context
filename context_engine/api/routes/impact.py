@@ -4,9 +4,14 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter, Header, HTTPException, Query, Request
+from fastapi import APIRouter, HTTPException, Query, Request
 
-from context_engine.api.routes.deps import require_main
+from context_engine.api.routes.deps import (
+    AuthHeader,
+    UserIdHeader,
+    WorkspaceHeader,
+    require_main,
+)
 from context_engine.api.schemas import IMPACT_DEPTH_MAX, IMPACT_DEPTH_MIN, ImpactResponse
 
 router = APIRouter(tags=["impact"])
@@ -173,10 +178,10 @@ def impact(
     symbol: str,
     max_depth: int = Query(default=3, ge=IMPACT_DEPTH_MIN, le=IMPACT_DEPTH_MAX),
     file_path: str | None = Query(default=None),
-    x_user_id: str = Header(None),
-    authorization: str = Header(None),
-    x_workspace: str = Header(None),
-    request: Request = None,
+    x_user_id: UserIdHeader = None,
+    authorization: AuthHeader = None,
+    x_workspace: WorkspaceHeader = None,
+    request: Request | None = None,
 ):
     """Return downstream dependents affected by a change to the given symbol.
 

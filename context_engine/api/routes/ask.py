@@ -5,10 +5,16 @@ from __future__ import annotations
 import logging
 from collections.abc import Generator
 
-from fastapi import APIRouter, Header, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
 
-from context_engine.api.routes.deps import require_main
+from context_engine.api.routes.deps import (
+    AuthHeader,
+    TraceIdHeader,
+    UserIdHeader,
+    WorkspaceHeader,
+    require_main,
+)
 from context_engine.api.schemas import (
     AskAxisRequest,
     AskAxisResponse,
@@ -26,11 +32,11 @@ router = APIRouter(tags=["ask"])
 @router.post("/ask", response_model=AskResponse)
 def ask(
     req: AskRequest,
-    x_user_id: str = Header(None),
-    authorization: str = Header(None),
-    x_workspace: str = Header(None),
-    x_trace_id: str = Header(None),
-    request: Request = None,
+    x_user_id: UserIdHeader = None,
+    authorization: AuthHeader = None,
+    x_workspace: WorkspaceHeader = None,
+    x_trace_id: TraceIdHeader = None,
+    request: Request | None = None,
 ):
     """Ask about a symbol (with multi-user audit logging)."""
     main = require_main(request)
@@ -65,11 +71,11 @@ def ask(
 @router.post("/ask/axis", response_model=AskAxisResponse)
 def ask_axis(
     req: AskAxisRequest,
-    x_user_id: str = Header(None),
-    authorization: str = Header(None),
-    x_workspace: str = Header(None),
-    x_trace_id: str = Header(None),
-    request: Request = None,
+    x_user_id: UserIdHeader = None,
+    authorization: AuthHeader = None,
+    x_workspace: WorkspaceHeader = None,
+    x_trace_id: TraceIdHeader = None,
+    request: Request | None = None,
 ):
     """Axis-pipeline answer: intent → roles → ranked candidates → context."""
     main = require_main(request)
@@ -103,11 +109,11 @@ def ask_axis(
 @router.post("/intent", response_model=IntentResponse)
 def intent(
     req: IntentRequest,
-    x_user_id: str = Header(None),
-    authorization: str = Header(None),
-    x_workspace: str = Header(None),
-    x_trace_id: str = Header(None),
-    request: Request = None,
+    x_user_id: UserIdHeader = None,
+    authorization: AuthHeader = None,
+    x_workspace: WorkspaceHeader = None,
+    x_trace_id: TraceIdHeader = None,
+    request: Request | None = None,
 ):
     """Classify-only intent preview: question → ranked role matches.
 
@@ -138,11 +144,11 @@ def intent(
 @router.post("/ask/stream")
 def ask_stream(
     req: AskRequest,
-    x_user_id: str = Header(None),
-    authorization: str = Header(None),
-    x_workspace: str = Header(None),
-    x_trace_id: str = Header(None),
-    request: Request = None,
+    x_user_id: UserIdHeader = None,
+    authorization: AuthHeader = None,
+    x_workspace: WorkspaceHeader = None,
+    x_trace_id: TraceIdHeader = None,
+    request: Request | None = None,
 ):
     """Streaming version of /ask endpoint (SSE)."""
     main = require_main(request)

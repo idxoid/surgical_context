@@ -789,22 +789,25 @@ def _trim_symbol_for_mode(
     full_render_max_depth: int,
 ) -> ContextSymbol:
     if render_mode == "impact_surface":
-        return replace(
-            sym,
-            code=_code_impact_surface(
-                sym.code,
-                qualified_name=sym.qualified_name,
-                name=sym.name,
+        return cast(
+            ContextSymbol,
+            replace(
+                sym,
+                code=_code_impact_surface(
+                    sym.code,
+                    qualified_name=sym.qualified_name,
+                    name=sym.name,
+                ),
             ),
         )
     if render_mode == "signature_only":
-        return replace(sym, code=_code_signature(sym.code))
+        return cast(ContextSymbol, replace(sym, code=_code_signature(sym.code)))
     if render_mode == "hybrid_compact":
         if sym.distance_from_seed <= full_render_max_depth:
-            return replace(sym, code=_code_compact(sym.code))
-        return replace(sym, code=_code_signature(sym.code))
+            return cast(ContextSymbol, replace(sym, code=_code_compact(sym.code)))
+        return cast(ContextSymbol, replace(sym, code=_code_signature(sym.code)))
     if render_mode == "hybrid" and sym.distance_from_seed > full_render_max_depth:
-        return replace(sym, code=_code_signature(sym.code))
+        return cast(ContextSymbol, replace(sym, code=_code_signature(sym.code)))
     return sym
 
 

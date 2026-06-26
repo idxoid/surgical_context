@@ -2,9 +2,14 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Header, Request
+from fastapi import APIRouter, Request
 
-from context_engine.api.routes.deps import require_main
+from context_engine.api.routes.deps import (
+    AuthHeader,
+    UserIdHeader,
+    WorkspaceHeader,
+    require_main,
+)
 from context_engine.api.schemas import ClearOverlayResponse, OverlayRequest, OverlayResponse
 
 router = APIRouter(tags=["overlay"])
@@ -13,10 +18,10 @@ router = APIRouter(tags=["overlay"])
 @router.post("/overlay", response_model=OverlayResponse)
 def update_overlay(
     req: OverlayRequest,
-    x_user_id: str = Header(None),
-    authorization: str = Header(None),
-    x_workspace: str = Header(None),
-    request: Request = None,
+    x_user_id: UserIdHeader = None,
+    authorization: AuthHeader = None,
+    x_workspace: WorkspaceHeader = None,
+    request: Request | None = None,
 ):
     main = require_main(request)
     user_id = main._resolve_request_user(x_user_id, authorization)
@@ -37,10 +42,10 @@ def update_overlay(
 @router.delete("/overlay", response_model=ClearOverlayResponse)
 def clear_overlay(
     file_path: str,
-    x_user_id: str = Header(None),
-    authorization: str = Header(None),
-    x_workspace: str = Header(None),
-    request: Request = None,
+    x_user_id: UserIdHeader = None,
+    authorization: AuthHeader = None,
+    x_workspace: WorkspaceHeader = None,
+    request: Request | None = None,
 ):
     main = require_main(request)
     user_id = main._resolve_request_user(x_user_id, authorization)

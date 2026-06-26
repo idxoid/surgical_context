@@ -5,9 +5,15 @@ from __future__ import annotations
 import logging
 from typing import Any, cast
 
-from fastapi import APIRouter, Header, Request
+from fastapi import APIRouter, Request
 
-from context_engine.api.routes.deps import require_main
+from context_engine.api.routes.deps import (
+    AuthHeader,
+    TraceIdHeader,
+    UserIdHeader,
+    WorkspaceHeader,
+    require_main,
+)
 from context_engine.api.schemas import (
     SearchRequest,
     SearchResponse,
@@ -131,10 +137,10 @@ def _axis_graph_neighbors(
 @router.post("/search", response_model=SearchResponse)
 def search(
     req: SearchRequest,
-    x_user_id: str = Header(None),
-    authorization: str = Header(None),
-    x_workspace: str = Header(None),
-    request: Request = None,
+    x_user_id: UserIdHeader = None,
+    authorization: AuthHeader = None,
+    x_workspace: WorkspaceHeader = None,
+    request: Request | None = None,
 ):
     main = require_main(request)
     main._resolve_request_user(x_user_id, authorization)
@@ -147,11 +153,11 @@ def search(
 @router.post("/search/unified", response_model=UnifiedSearchResponse)
 def unified_search(
     req: UnifiedSearchRequest,
-    x_user_id: str = Header(None),
-    authorization: str = Header(None),
-    x_workspace: str = Header(None),
-    x_trace_id: str = Header(None),
-    request: Request = None,
+    x_user_id: UserIdHeader = None,
+    authorization: AuthHeader = None,
+    x_workspace: WorkspaceHeader = None,
+    x_trace_id: TraceIdHeader = None,
+    request: Request | None = None,
 ):
     """Blend doc vectors, symbol vectors, and optional graph neighbors into one ranked list."""
     main = require_main(request)

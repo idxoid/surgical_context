@@ -140,22 +140,22 @@ class NullGraphProbe:
     ) -> int:
         return 0
 
-    def library_marker_kinds(self, symbol_uid: str) -> set[str]:
+    def library_marker_kinds(self, _symbol_uid: str) -> set[str]:
         return set()
 
-    def caller_package_dispersion(self, symbol_uid: str) -> float:
+    def caller_package_dispersion(self, _symbol_uid: str) -> float:
         return 0.0
 
-    def is_cfg_driver(self, symbol_uid: str) -> bool:
+    def is_cfg_driver(self, _symbol_uid: str) -> bool:
         return False
 
-    def outgoing_handles_count(self, symbol_uid: str) -> int:
+    def outgoing_handles_count(self, _symbol_uid: str) -> int:
         return 0
 
-    def outgoing_injects_count(self, symbol_uid: str) -> int:
+    def outgoing_injects_count(self, _symbol_uid: str) -> int:
         return 0
 
-    def is_event_signal(self, symbol_uid: str) -> bool:
+    def is_event_signal(self, _symbol_uid: str) -> bool:
         return False
 
     def peer_container_kinds_for(self, _qualified_name_prefix: str) -> set[str]:
@@ -164,16 +164,16 @@ class NullGraphProbe:
     def is_error_model_type_name(self, _key_name: str, _symbol_uid: str) -> bool:
         return False
 
-    def inherits_error_dispatch(self, symbol_uid: str) -> bool:
+    def inherits_error_dispatch(self, _symbol_uid: str) -> bool:
         return False
 
-    def has_proxy_object_topology(self, symbol_uid: str) -> bool:
+    def has_proxy_object_topology(self, _symbol_uid: str) -> bool:
         return False
 
-    def inherits_proxy_object(self, symbol_uid: str) -> bool:
+    def inherits_proxy_object(self, _symbol_uid: str) -> bool:
         return False
 
-    def metadata_bridge_keys(self, symbol_uid: str) -> tuple[str, ...]:
+    def metadata_bridge_keys(self, _symbol_uid: str) -> tuple[str, ...]:
         return ()
 
 

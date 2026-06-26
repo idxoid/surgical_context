@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Header, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Request
 
-from context_engine.api.routes.deps import require_main
+from context_engine.api.routes.deps import AuthHeader, UserIdHeader, WorkspaceHeader, require_main
 from context_engine.api.schemas import FeedbackRequest, FeedbackResponse
 from context_engine.feedback import FeedbackEvent
 
@@ -24,10 +24,10 @@ router = APIRouter(tags=["feedback"])
 )
 def record_feedback(
     req: FeedbackRequest,
-    x_user_id: str = Header(None),
-    authorization: str = Header(None),
-    x_workspace: str = Header(None),
-    request: Request = None,
+    x_user_id: UserIdHeader = None,
+    authorization: AuthHeader = None,
+    x_workspace: WorkspaceHeader = None,
+    request: Request | None = None,
 ):
     """Record retrieval feedback against an issued feedback token."""
     main = require_main(request)

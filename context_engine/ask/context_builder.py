@@ -63,7 +63,7 @@ class AskContextBuilder:
                         and symbol in line
                     ):
                         return lineno
-        except (OSError, FileNotFoundError):
+        except OSError:
             pass
         return None
 
@@ -135,7 +135,7 @@ class AskContextBuilder:
         try:
             with open(file_path, encoding="utf-8") as file:
                 code = file.read()
-        except (OSError, FileNotFoundError):
+        except OSError:
             return "", False
         return self.trim_text_to_budget(code, token_budget, anchor_line), False
 

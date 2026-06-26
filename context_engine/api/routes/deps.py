@@ -9,11 +9,16 @@ process stay isolated. ``_default_deps`` is only a fallback for direct
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, cast
+from typing import Annotated, Any, cast
 
-from fastapi import Request
+from fastapi import Header, Request
 
 from context_engine.api.state import SidecarState
+
+UserIdHeader = Annotated[str | None, Header()]
+AuthHeader = Annotated[str | None, Header()]
+WorkspaceHeader = Annotated[str | None, Header()]
+TraceIdHeader = Annotated[str | None, Header()]
 
 
 @dataclass(frozen=True)
