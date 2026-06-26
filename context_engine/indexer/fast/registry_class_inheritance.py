@@ -33,6 +33,7 @@ is still axis-only.
 from __future__ import annotations
 
 import json
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, cast
 
@@ -392,6 +393,60 @@ def _ancestors_by_uid(
     return ancestors_by_uid
 
 
+@dataclass(frozen=True)
+class _ClassInheritancePassContext:
+    rows: list[dict[str, Any]]
+    lance_kinds: dict[str, dict[str, Any]]
+    parsed_bases_by_uid: dict[str, list[str]]
+    name_by_uid: dict[str, str]
+    alias_targets: dict[str, list[str]]
+    candidate_uids_by_local_qn: dict[str, str]
+
+
+def _prepare_class_inheritance_pass(
+    db: Neo4jClient,
+    lance,
+    workspace_id: str,
+    *,
+    project_path: str | None = None,
+) -> _ClassInheritancePassContext | None:
+    package = _workspace_package(db, workspace_id)
+    rows = _query_class_inheritance_context(db, workspace_id)
+    if not rows:
+        return None
+
+    lance_kinds = _read_lance_kinds(lance, workspace_id)
+    if not project_path:
+        project_path = current_project_root()
+
+    parsed_bases_by_uid = {
+        r["class_uid"]: list(r.get("parsed_base_names") or []) for r in rows
+    }
+    name_by_uid = _class_short_names(rows)
+    depends_on_names_by_class = _depends_on_names_by_class(rows, name_by_uid)
+    alias_targets, needed_local_qns = _alias_local_qns_by_class(
+        rows,
+        parsed_bases_by_uid,
+        depends_on_names_by_class,
+        package,
+        project_path,
+        workspace_id,
+    )
+    candidate_uids_by_local_qn = _query_classes_by_local_qn(
+        db,
+        workspace_id,
+        needed_local_qns,
+    )
+    return _ClassInheritancePassContext(
+        rows=rows,
+        lance_kinds=lance_kinds,
+        parsed_bases_by_uid=parsed_bases_by_uid,
+        name_by_uid=name_by_uid,
+        alias_targets=alias_targets,
+        candidate_uids_by_local_qn=candidate_uids_by_local_qn,
+    )
+
+
 def _build_error_model_lance_updates(
     error_model_uids: set[str],
     lance_kinds: dict[str, dict[str, Any]],
@@ -484,36 +539,19 @@ def propagate_error_model_via_inheritance(
     Both back ``error_surface``. Returns the number of class rows
     updated.
     """
-    package = _workspace_package(db, workspace_id)
-    rows = _query_class_inheritance_context(db, workspace_id)
-    if not rows:
+    ctx = _prepare_class_inheritance_pass(
+        db, lance, workspace_id, project_path=project_path
+    )
+    if ctx is None:
         return 0
-    lance_kinds = _read_lance_kinds(lance, workspace_id)
 
-    if not project_path:
-        project_path = current_project_root()
-
-    parsed_bases_by_uid: dict[str, list[str]] = {
-        r["class_uid"]: list(r.get("parsed_base_names") or []) for r in rows
-    }
-    name_by_uid = _class_short_names(rows)
-    depends_on_names_by_class = _depends_on_names_by_class(rows, name_by_uid)
-    alias_targets, needed_local_qns = _alias_local_qns_by_class(
-        rows,
-        parsed_bases_by_uid,
-        depends_on_names_by_class,
-        package,
-        project_path,
-        workspace_id,
+    ancestors_by_uid = _ancestors_by_uid(
+        ctx.rows, ctx.alias_targets, ctx.candidate_uids_by_local_qn
     )
-    candidate_uids_by_local_qn = _query_classes_by_local_qn(
-        db,
-        workspace_id,
-        needed_local_qns,
+    error_model_uids = resolve_error_model_uids(ctx.parsed_bases_by_uid, ancestors_by_uid)
+    update_map = _build_error_model_lance_updates(
+        error_model_uids, ctx.lance_kinds, ctx.name_by_uid
     )
-    ancestors_by_uid = _ancestors_by_uid(rows, alias_targets, candidate_uids_by_local_qn)
-    error_model_uids = resolve_error_model_uids(parsed_bases_by_uid, ancestors_by_uid)
-    update_map = _build_error_model_lance_updates(error_model_uids, lance_kinds, name_by_uid)
     return _persist_lance_container_kind_updates(lance, workspace_id, update_map)
 
 
@@ -590,37 +628,16 @@ def propagate_registry_class_via_inheritance(
     project_path: str | None = None,
 ) -> int:
     """Run the propagation pass. Returns the number of class rows updated."""
-    package = _workspace_package(db, workspace_id)
-    rows = _query_class_inheritance_context(db, workspace_id)
-    if not rows:
+    ctx = _prepare_class_inheritance_pass(
+        db, lance, workspace_id, project_path=project_path
+    )
+    if ctx is None:
         return 0
 
-    lance_kinds = _read_lance_kinds(lance, workspace_id)
-    if not project_path:
-        project_path = current_project_root()
-
-    parsed_bases_by_uid: dict[str, list[str]] = {
-        r["class_uid"]: list(r.get("parsed_base_names") or []) for r in rows
-    }
-    name_by_uid = _class_short_names(rows)
-    depends_on_names_by_class = _depends_on_names_by_class(rows, name_by_uid)
-    alias_targets, needed_local_qns = _alias_local_qns_by_class(
-        rows,
-        parsed_bases_by_uid,
-        depends_on_names_by_class,
-        package,
-        project_path,
-        workspace_id,
-    )
-    candidate_uids_by_local_qn = _query_classes_by_local_qn(
-        db,
-        workspace_id,
-        needed_local_qns,
-    )
     update_map = _build_registry_class_lance_updates(
-        rows,
-        lance_kinds,
-        alias_targets,
-        candidate_uids_by_local_qn,
+        ctx.rows,
+        ctx.lance_kinds,
+        ctx.alias_targets,
+        ctx.candidate_uids_by_local_qn,
     )
     return _persist_lance_container_kind_updates(lance, workspace_id, update_map)

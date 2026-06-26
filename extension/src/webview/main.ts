@@ -1,7 +1,40 @@
 import { bindDataActions } from './shared/domActions';
 import { mountLayoutHtml, replaceElementHtml, toggleAriaExpandedSection } from './shared/domRender';
-import { bootWebview, listenForHostMessages, vscode } from './shared/webviewRuntime';
-
+import {
+  applySettingsDefaultsToDom,
+  bootWebview,
+  clampImpactDepth,
+  createAssistantChatMessage,
+  createUserChatMessage,
+  dispatchMainHostMessage,
+  escapeHtml,
+  handleMainSurfaceAction,
+  hydrateFromPromptContext,
+  InspectorTab,
+  listenForHostMessages,
+  MainSurfaceActionHost,
+  MainSurfaceHostDelegate,
+  readSettingsFormFromDom,
+  renderAdvancedInfoAccordion,
+  renderComposerDock,
+  renderContextSummaryAccordion,
+  renderEnvironmentAccordion,
+  renderImpactSurfaceShell,
+  renderImpactWorkspace,
+  renderInspectorSurfaceView,
+  renderMainSurfaceTabBar,
+  renderMessageCard,
+  renderSettingsForm,
+  renderStatusChips,
+  renderSurfaceShell,
+  resizeComposerToFit,
+  settingsFormDataFromSettings,
+  showFeedback,
+  showFieldStatus,
+  Surface,
+  validateSettingsForm,
+  vscode,
+} from './shared/webviewCore';
 import {
   ChatMessage,
   ChatSurfaceState,
@@ -13,44 +46,6 @@ import {
   SettingsData,
   WebviewToHostMessage,
 } from './shared/protocol';
-import {
-  createAssistantChatMessage,
-  createUserChatMessage,
-  escapeHtml,
-  renderAdvancedInfoAccordion,
-  renderComposerDock,
-  renderContextSummaryAccordion,
-  renderEnvironmentAccordion,
-  renderMessageCard,
-  renderStatusChips,
-  resizeComposerToFit,
-} from './shared/layout';
-import {
-  clampImpactDepth,
-  renderImpactWorkspace,
-} from './shared/impactLayout';
-import { hydrateFromPromptContext } from './shared/impactTransforms';
-import {
-  renderImpactSurfaceShell,
-  renderSurfaceShell,
-  renderMainSurfaceTabBar,
-  Surface,
-} from './shared/surfaceChrome';
-import {
-  InspectorTab,
-  renderInspectorSurfaceView,
-} from './shared/inspectorLayout';
-import { dispatchMainHostMessage, MainSurfaceHostDelegate } from './shared/mainSurfaceHost';
-import { handleMainSurfaceAction, MainSurfaceActionHost } from './shared/mainSurfaceActions';
-import {
-  applySettingsDefaultsToDom,
-  readSettingsFormFromDom,
-  renderSettingsForm,
-  settingsFormDataFromSettings,
-  showFeedback,
-  showFieldStatus,
-  validateSettingsForm,
-} from './shared/settingsLayout';
 
 type ImpactSource = 'prompt' | 'graph' | 'none';
 
@@ -114,14 +109,6 @@ class MainSurface {
 
   private setContextSummary(summary: ContextSummaryDto): void {
     this.currentContextSummary = summary;
-  }
-
-  private getSurface(): Surface {
-    return this.surface;
-  }
-
-  private getInspectorTab(): InspectorTab {
-    return this.inspectorTab;
   }
 
   private postOpenDashboard(): void {
@@ -519,7 +506,7 @@ class MainSurface {
       const selectedSymbol = this.impactTarget().symbol;
       const needsGraphImpact = (
         !this.currentImpact
-        || !this.isGraphImpactSource()
+        || this.currentImpactSource !== 'graph'
         || Boolean(selectedSymbol && selectedSymbol !== this.currentImpactSymbol)
       );
       if (needsGraphImpact && !this.impactLoading) {
@@ -576,30 +563,22 @@ class MainSurface {
     this.currentImpactFilePath = impactFilePath;
   }
 
-  private isPromptImpactSource(): boolean {
-    switch (this.currentImpactSource) {
-      case 'prompt':
-        return true;
-      default:
-        return false;
-    }
-  }
-
-  private isGraphImpactSource(): boolean {
-    switch (this.currentImpactSource) {
-      case 'graph':
-        return true;
-      default:
-        return false;
-    }
+  private impactSymbolTarget(
+    symbol: string | null | undefined,
+    filePath: string | null | undefined,
+  ): { symbol?: string; filePath?: string } {
+    return {
+      symbol: symbol || undefined,
+      filePath: filePath || undefined,
+    };
   }
 
   private impactContextSubtitle(): string {
-    return this.isPromptImpactSource() ? 'prompt context' : 'live graph';
+    return this.currentImpactSource === 'prompt' ? 'prompt context' : 'live graph';
   }
 
   private impactFooterSubtitle(): string {
-    return this.isPromptImpactSource() ? 'From selected ask' : 'Graph built just now';
+    return this.currentImpactSource === 'prompt' ? 'From selected ask' : 'Graph built just now';
   }
 
   private impactTarget(): { symbol?: string; filePath?: string } {
@@ -608,28 +587,22 @@ class MainSurface {
     // present in the inspector state; preferring it here silently retargeted
     // the second request, making a slider move appear to "fix" an empty
     // impact result with numbers belonging to a different symbol.
-    if (this.isGraphImpactSource() && this.currentImpactSymbol) {
-      return {
-        symbol: this.currentImpactSymbol,
-        filePath: this.currentImpactFilePath || undefined,
-      };
+    if (this.currentImpactSource === 'graph' && this.currentImpactSymbol) {
+      return this.impactSymbolTarget(this.currentImpactSymbol, this.currentImpactFilePath);
     }
     if (this.currentPromptContext) {
-      return {
-        symbol: this.currentPromptContext.primary_source.symbol,
-        filePath: this.currentPromptContext.primary_source.file_path,
-      };
+      return this.impactSymbolTarget(
+        this.currentPromptContext.primary_source.symbol,
+        this.currentPromptContext.primary_source.file_path,
+      );
     }
     if (this.selectedPromptRequestId && this.currentImpactSymbol) {
-      return {
-        symbol: this.currentImpactSymbol,
-        filePath: this.currentImpactFilePath || undefined,
-      };
+      return this.impactSymbolTarget(this.currentImpactSymbol, this.currentImpactFilePath);
     }
-    return {
-      symbol: this.state?.workspace.selectedSymbol || undefined,
-      filePath: this.state?.workspace.activeFile || undefined,
-    };
+    return this.impactSymbolTarget(
+      this.state?.workspace.selectedSymbol,
+      this.state?.workspace.activeFile,
+    );
   }
 
   private previewImpactDepth(event: Event): void {
@@ -646,7 +619,7 @@ class MainSurface {
     const slider = event.currentTarget as HTMLInputElement | null;
     if (!slider) return;
     const depth = clampImpactDepth(Number(slider.value));
-    if (depth === this.currentImpactDepth && this.isGraphImpactSource()) return;
+    if (depth === this.currentImpactDepth && this.currentImpactSource === 'graph') return;
     this.currentImpactDepth = depth;
     this.requestImpactForActiveSymbol();
   }
@@ -750,6 +723,14 @@ class MainSurface {
     this.syncView(true);
   }
 
+  private finalizeAssistantExchange(options?: { refreshAccordions?: boolean }): void {
+    this.persistState();
+    if (options?.refreshAccordions) {
+      this.refreshAccordions();
+    }
+    this.updateComposerStreamingState(false);
+  }
+
   private onStreamChunk(requestId: string, chunk: string): void {
     if (this.currentStreamingRequestId !== requestId) return;
     const message = this.messages.get(requestId);
@@ -775,9 +756,7 @@ class MainSurface {
       message.status = 'done';
       this.updateConversationView();
     }
-    this.persistState();
-    this.refreshAccordions();
-    this.updateComposerStreamingState(false);
+    this.finalizeAssistantExchange({ refreshAccordions: true });
   }
 
   private onRequestFailed(requestId: string, error: string): void {
@@ -786,12 +765,12 @@ class MainSurface {
     if (message) {
       message.status = 'error';
       message.error = error;
+      this.updateConversationView();
     } else {
       this.messages.set(requestId, createAssistantChatMessage(requestId, undefined, 'error', error));
+      this.updateConversationView();
     }
-    this.persistState();
-    this.updateConversationView();
-    this.updateComposerStreamingState(false);
+    this.finalizeAssistantExchange();
   }
 
   private onRequestStopped(requestId: string): void {
@@ -801,8 +780,7 @@ class MainSurface {
       this.updateConversationView();
     }
     this.currentStreamingRequestId = null;
-    this.persistState();
-    this.updateComposerStreamingState(false);
+    this.finalizeAssistantExchange();
   }
 
   private stopStreaming(): void {

@@ -7,7 +7,7 @@ import {
   DashboardPanelState,
 } from './shared/dashboardState';
 import { mountLayoutHtml } from './shared/domRender';
-import { bootWebview, listenForHostMessages, vscode } from './shared/webviewRuntime';
+import { bootWebview, listenForHostMessages, vscode } from './shared/webviewCore';
 
 class DashboardPanel {
   private state: DashboardPanelState = createInitialDashboardState();

@@ -1,7 +1,32 @@
 import type { HostToWebviewMessage } from './protocol';
 import { showFeedback, showFieldStatus } from './settingsLayout';
 import { SURFACE_FROM_HOST_MESSAGE, Surface } from './surfaceChrome';
-import type { InspectorTab } from './inspectorLayout';
+
+export type MainSurfaceHostMessage = Extract<
+  HostToWebviewMessage,
+  {
+    type:
+      | 'surface.init'
+      | 'chat.requestStarted'
+      | 'chat.streamChunk'
+      | 'chat.requestCompleted'
+      | 'chat.requestFailed'
+      | 'chat.requestStopped'
+      | 'chat.contextSummary'
+      | 'workspace.updated'
+      | 'backend.updated'
+      | 'impact.loading'
+      | 'impact.loaded'
+      | 'impact.loadFailed'
+      | 'inspector.loaded'
+      | 'inspector.intentLoaded'
+      | 'settings.loaded'
+      | 'settings.saved'
+      | 'settings.saveFailed'
+      | 'settings.testUrlComplete'
+      | 'toast.show';
+  }
+>;
 
 export interface MainSurfaceHostDelegate {
   showSurface(surface: Surface, beforeRender?: () => void): void;
@@ -23,10 +48,50 @@ export interface MainSurfaceHostDelegate {
   onSettingsLoaded(message: Extract<HostToWebviewMessage, { type: 'settings.loaded' }>): void;
   requestSettings(): void;
   showToast(message: string, level: 'info' | 'success' | 'warning' | 'error'): void;
-  getSurface(): Surface;
-  getInspectorTab(): InspectorTab;
   refreshAccordions(): void;
 }
+
+type HostHandler = (
+  delegate: MainSurfaceHostDelegate,
+  message: Extract<HostToWebviewMessage, { type: MainSurfaceHostMessage['type'] }>,
+) => void;
+
+function hostHandler<M extends MainSurfaceHostMessage['type']>(
+  handler: (
+    delegate: MainSurfaceHostDelegate,
+    message: Extract<HostToWebviewMessage, { type: M }>,
+  ) => void,
+): HostHandler {
+  return handler as HostHandler;
+}
+
+const MAIN_SURFACE_HOST_HANDLERS: Record<MainSurfaceHostMessage['type'], HostHandler> = {
+  'surface.init': hostHandler((d, m) => d.onSurfaceInit(m)),
+  'chat.requestStarted': hostHandler((d, m) => {
+    d.setSurface('chat');
+    d.onRequestStarted(m.requestId, m.symbol);
+  }),
+  'chat.streamChunk': hostHandler((d, m) => d.onStreamChunk(m.requestId, m.chunk)),
+  'chat.requestCompleted': hostHandler((d, m) => d.onRequestCompleted(m.requestId, m.answer, m.context)),
+  'chat.requestFailed': hostHandler((d, m) => d.onRequestFailed(m.requestId, m.error)),
+  'chat.requestStopped': hostHandler((d, m) => d.onRequestStopped(m.requestId)),
+  'chat.contextSummary': hostHandler((d, m) => {
+    d.setContextSummary(m.summary);
+    d.refreshAccordions();
+  }),
+  'workspace.updated': hostHandler((d, m) => d.onWorkspaceUpdated(m)),
+  'backend.updated': hostHandler((d, m) => d.onBackendUpdated(m)),
+  'impact.loading': hostHandler((d) => d.onImpactLoading()),
+  'impact.loaded': hostHandler((d, m) => d.onImpactLoaded(m)),
+  'impact.loadFailed': hostHandler((d, m) => d.onImpactLoadFailed(m)),
+  'inspector.loaded': hostHandler((d, m) => d.onInspectorLoaded(m)),
+  'inspector.intentLoaded': hostHandler((d, m) => d.onInspectorIntentLoaded(m)),
+  'settings.loaded': hostHandler((d, m) => d.onSettingsLoaded(m)),
+  'settings.saved': hostHandler((_d, m) => showFeedback(m.message, 'success')),
+  'settings.saveFailed': hostHandler((_d, m) => showFeedback(m.error, 'error')),
+  'settings.testUrlComplete': hostHandler((_d, m) => showFieldStatus('backendUrl', m.success, m.message)),
+  'toast.show': hostHandler((d, m) => d.showToast(m.message, m.level)),
+};
 
 export function dispatchMainHostMessage(
   delegate: MainSurfaceHostDelegate,
@@ -41,65 +106,8 @@ export function dispatchMainHostMessage(
     return;
   }
 
-  switch (message.type) {
-    case 'surface.init':
-      delegate.onSurfaceInit(message);
-      break;
-    case 'chat.requestStarted':
-      delegate.setSurface('chat');
-      delegate.onRequestStarted(message.requestId, message.symbol);
-      break;
-    case 'chat.streamChunk':
-      delegate.onStreamChunk(message.requestId, message.chunk);
-      break;
-    case 'chat.requestCompleted':
-      delegate.onRequestCompleted(message.requestId, message.answer, message.context);
-      break;
-    case 'chat.requestFailed':
-      delegate.onRequestFailed(message.requestId, message.error);
-      break;
-    case 'chat.requestStopped':
-      delegate.onRequestStopped(message.requestId);
-      break;
-    case 'chat.contextSummary':
-      delegate.setContextSummary(message.summary);
-      delegate.refreshAccordions();
-      break;
-    case 'workspace.updated':
-      delegate.onWorkspaceUpdated(message);
-      break;
-    case 'backend.updated':
-      delegate.onBackendUpdated(message);
-      break;
-    case 'impact.loading':
-      delegate.onImpactLoading();
-      break;
-    case 'impact.loaded':
-      delegate.onImpactLoaded(message);
-      break;
-    case 'impact.loadFailed':
-      delegate.onImpactLoadFailed(message);
-      break;
-    case 'inspector.loaded':
-      delegate.onInspectorLoaded(message);
-      break;
-    case 'inspector.intentLoaded':
-      delegate.onInspectorIntentLoaded(message);
-      break;
-    case 'settings.loaded':
-      delegate.onSettingsLoaded(message);
-      break;
-    case 'settings.saved':
-      showFeedback(message.message, 'success');
-      break;
-    case 'settings.saveFailed':
-      showFeedback(message.error, 'error');
-      break;
-    case 'settings.testUrlComplete':
-      showFieldStatus('backendUrl', message.success, message.message);
-      break;
-    case 'toast.show':
-      delegate.showToast(message.message, message.level);
-      break;
+  const handler = MAIN_SURFACE_HOST_HANDLERS[message.type as MainSurfaceHostMessage['type']];
+  if (handler) {
+    handler(delegate, message as Extract<HostToWebviewMessage, { type: MainSurfaceHostMessage['type'] }>);
   }
 }

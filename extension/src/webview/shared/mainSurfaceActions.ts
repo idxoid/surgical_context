@@ -3,6 +3,12 @@ import { SURFACE_FROM_DOM_ACTION, Surface } from './surfaceChrome';
 
 const COPY_ACTIONS = new Set(['copy', 'copy-json', 'copy-api-json', 'feedback']);
 
+const IMPACT_CHANGE_CHECK_PROMPT = (symbol: string | null) =>
+  `What should I check before changing ${symbol || 'this symbol'}?`;
+
+const IMPACT_REFACTOR_PLAN_PROMPT = (symbol: string | null) =>
+  `Create a refactor plan for ${symbol || 'this symbol'}.`;
+
 export interface MainSurfaceActionHost {
   switchSurface(surface: Surface | null): void;
   switchInspectorTab(tab: InspectorTab | null): void;
@@ -32,6 +38,40 @@ export interface MainSurfaceActionHost {
   getActiveImpactSymbol(): string | null;
 }
 
+type DomActionHandler = (host: MainSurfaceActionHost, target: HTMLElement) => void;
+
+function domAction(handler: DomActionHandler): DomActionHandler {
+  return handler;
+}
+
+const MAIN_SURFACE_DOM_ACTION_HANDLERS: Record<string, DomActionHandler> = {
+  switchSurface: domAction((h, t) => h.switchSurface(t.dataset.surface as Surface)),
+  switchInspectorTab: domAction((h, t) => h.switchInspectorTab(t.dataset.inspectorTab as InspectorTab)),
+  selectPrompt: domAction((h, t) => h.selectPrompt(t.dataset.requestId ?? null)),
+  toggleHistory: domAction((h) => h.toggleHistory()),
+  newDialog: domAction((h) => h.startNewDialog()),
+  restoreDialog: domAction((h, t) => h.restoreDialog(t.dataset.dialogId ?? null)),
+  openDashboard: domAction((h) => h.postOpenDashboard()),
+  ask: domAction((h) => h.focusComposer()),
+  'ask-followup': domAction((h) => h.prefillImpactAsk(IMPACT_CHANGE_CHECK_PROMPT(h.getActiveImpactSymbol()))),
+  'open-related-files': domAction((h) => h.openRelatedImpactFiles()),
+  openFile: domAction((h, t) => h.openFileFromImpact(t)),
+  showMoreImpact: domAction((h, t) => h.showMoreImpactRows(t)),
+  explainImpact: domAction((h, t) => h.toggleImpactExplanation(t)),
+  'create-refactor-plan': domAction((h) => h.prefillImpactAsk(IMPACT_REFACTOR_PLAN_PROMPT(h.getActiveImpactSymbol()))),
+  save: domAction((h) => h.saveSettings()),
+  reset: domAction((h) => h.resetSettings()),
+  testUrl: domAction((h) => h.testSettingsUrl()),
+  openKeybindings: domAction((h) => h.postOpenKeybindings()),
+  search: domAction((h) => h.showSearchComingSoon()),
+  noop: domAction((h, t) => h.toggleImpactGroup(t)),
+  feedback: domAction((h, t) => h.submitFeedback(t)),
+  copy: domAction((h, t) => h.copyMessage(t)),
+  'copy-json': domAction((h, t) => h.copyInspectorJson(t)),
+  'copy-api-json': domAction((h, t) => h.copyInspectorJson(t)),
+  stopStreaming: domAction((h) => h.stopStreaming()),
+};
+
 export function handleMainSurfaceAction(host: MainSurfaceActionHost, event: Event): void {
   const target = event.currentTarget as HTMLElement;
   const action = target.dataset.action;
@@ -48,83 +88,8 @@ export function handleMainSurfaceAction(host: MainSurfaceActionHost, event: Even
     return;
   }
 
-  switch (action) {
-    case 'switchSurface':
-      host.switchSurface(target.dataset.surface as Surface);
-      break;
-    case 'switchInspectorTab':
-      host.switchInspectorTab(target.dataset.inspectorTab as InspectorTab);
-      break;
-    case 'selectPrompt':
-      host.selectPrompt(target.dataset.requestId ?? null);
-      break;
-    case 'toggleHistory':
-      host.toggleHistory();
-      break;
-    case 'newDialog':
-      host.startNewDialog();
-      break;
-    case 'restoreDialog':
-      host.restoreDialog(target.dataset.dialogId ?? null);
-      break;
-    case 'openDashboard':
-      host.postOpenDashboard();
-      break;
-    case 'ask':
-      host.focusComposer();
-      break;
-    case 'ask-followup':
-      host.prefillImpactAsk(
-        `What should I check before changing ${host.getActiveImpactSymbol() || 'this symbol'}?`,
-      );
-      break;
-    case 'open-related-files':
-      host.openRelatedImpactFiles();
-      break;
-    case 'openFile':
-      host.openFileFromImpact(target);
-      break;
-    case 'showMoreImpact':
-      host.showMoreImpactRows(target);
-      break;
-    case 'explainImpact':
-      host.toggleImpactExplanation(target);
-      break;
-    case 'create-refactor-plan':
-      host.prefillImpactAsk(
-        `Create a refactor plan for ${host.getActiveImpactSymbol() || 'this symbol'}.`,
-      );
-      break;
-    case 'save':
-      host.saveSettings();
-      break;
-    case 'reset':
-      host.resetSettings();
-      break;
-    case 'testUrl':
-      host.testSettingsUrl();
-      break;
-    case 'openKeybindings':
-      host.postOpenKeybindings();
-      break;
-    case 'search':
-      host.showSearchComingSoon();
-      break;
-    case 'noop':
-      host.toggleImpactGroup(target);
-      break;
-    case 'feedback':
-      host.submitFeedback(target);
-      break;
-    case 'copy':
-      host.copyMessage(target);
-      break;
-    case 'copy-json':
-    case 'copy-api-json':
-      host.copyInspectorJson(target);
-      break;
-    case 'stopStreaming':
-      host.stopStreaming();
-      break;
+  const handler = MAIN_SURFACE_DOM_ACTION_HANDLERS[action];
+  if (handler) {
+    handler(host, target);
   }
 }

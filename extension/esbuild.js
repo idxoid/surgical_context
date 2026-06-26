@@ -19,7 +19,8 @@ const hostOptions = {
 };
 
 // Standalone webview bundles still referenced by legacy panels. Settings/chat/
-// inspector/impact surfaces live in main.ts to avoid duplicating shared layout code.
+// inspector/impact surfaces live in main.ts; shared layout modules are pulled
+// into the esbuild chunk via webviewCore/webviewShared (also imported by dashboard).
 const webviewEntryPoints = {
   main: path.join('src/webview', 'main.ts'),
   dashboard: path.join('src/webview', 'dashboard.ts'),
