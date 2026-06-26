@@ -614,7 +614,7 @@ export class SurgicalContextViewProvider implements vscode.WebviewViewProvider {
     if (isFileNameSymbol(symbol, filePath)) {
       const message = 'No code symbol selected. Position the cursor inside a method or function.';
       this.postMessage({ type: 'impact.loadFailed', error: message });
-      void vscode.window.showWarningMessage(`Impact analysis: ${message}`);
+      await vscode.window.showWarningMessage(`Impact analysis: ${message}`);
       return;
     }
     try {
@@ -626,7 +626,7 @@ export class SurgicalContextViewProvider implements vscode.WebviewViewProvider {
         impact,
       });
       if ((impact.affected_count ?? 0) === 0 && (impact.affected_symbols?.length ?? 0) === 0) {
-        void vscode.window.showInformationMessage(
+        await vscode.window.showInformationMessage(
           `No downstream dependents found for ${symbol}. Try increasing depth or reindexing the workspace.`
         );
       }
@@ -636,7 +636,7 @@ export class SurgicalContextViewProvider implements vscode.WebviewViewProvider {
         type: 'impact.loadFailed',
         error: message,
       });
-      void vscode.window.showErrorMessage(`Impact analysis failed: ${message}`);
+      await vscode.window.showErrorMessage(`Impact analysis failed: ${message}`);
     }
   }
 }

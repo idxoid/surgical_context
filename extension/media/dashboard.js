@@ -513,7 +513,7 @@ function bindDashboardActions(root, postMessage) {
 }
 
 // src/webview/dashboard.ts
-var DashboardPanel = class {
+const DashboardPanel = class {
   constructor() {
     this.state = createInitialDashboardState();
     this.initializeMessageListener();

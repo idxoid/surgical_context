@@ -1454,7 +1454,7 @@ function showFeedback(message, level) {
 }
 
 // src/webview/main.ts
-var MainSurface = class {
+const MainSurface = class {
   constructor() {
     this.surface = "chat";
     this.state = null;
@@ -1928,20 +1928,20 @@ var MainSurface = class {
   }
   handleAction(event) {
     const target = event.currentTarget;
-    const action = target.getAttribute("data-action");
+    const action = target.dataset.action;
     if (action === "copy" || action === "copy-json" || action === "copy-api-json" || action === "feedback") {
       event.preventDefault();
       event.stopPropagation();
     }
     switch (action) {
       case "switchSurface":
-        this.switchSurface(target.getAttribute("data-surface"));
+        this.switchSurface(target.dataset.surface);
         break;
       case "switchInspectorTab":
-        this.switchInspectorTab(target.getAttribute("data-inspector-tab"));
+        this.switchInspectorTab(target.dataset.inspectorTab);
         break;
       case "selectPrompt":
-        this.selectPrompt(target.getAttribute("data-request-id"));
+        this.selectPrompt(target.dataset.requestId ?? null);
         break;
       case "toggleHistory":
         this.toggleHistory();
@@ -1950,7 +1950,7 @@ var MainSurface = class {
         this.startNewDialog();
         break;
       case "restoreDialog":
-        this.restoreDialog(target.getAttribute("data-dialog-id"));
+        this.restoreDialog(target.dataset.dialogId ?? null);
         break;
       case "openDashboard":
         this.postMessage({ type: "action.openDashboard" });
@@ -2311,7 +2311,7 @@ var MainSurface = class {
         const keyboardEvent = event;
         if (keyboardEvent.key === "Enter" || keyboardEvent.key === " ") {
           keyboardEvent.preventDefault();
-          this.selectPrompt(element.getAttribute("data-request-id"));
+          this.selectPrompt(element.dataset.requestId ?? null);
         }
       });
     });
@@ -2481,7 +2481,7 @@ var MainSurface = class {
   }
   toggleAccordion(header) {
     const group = header.closest("[data-accordion]");
-    const id = group?.getAttribute("data-accordion");
+    const id = group?.dataset.accordion;
     const content = group?.querySelector(".accordion-content");
     if (!group || !content || !id) return;
     const expanded = header.getAttribute("aria-expanded") === "true";
@@ -2519,9 +2519,9 @@ var MainSurface = class {
     explanation.toggleAttribute("hidden", expanded);
   }
   openFileFromImpact(target) {
-    const filePath = target.getAttribute("data-file-path");
+    const filePath = target.dataset.filePath;
     if (!filePath) return;
-    const line = Number.parseInt(target.getAttribute("data-line") || "1", 10);
+    const line = Number.parseInt(target.dataset.line || "1", 10);
     this.postMessage({
       type: "link.openFile",
       filePath,
@@ -2529,9 +2529,9 @@ var MainSurface = class {
     });
   }
   submitFeedback(target) {
-    const rating = target.getAttribute("data-rating");
+    const rating = target.dataset.rating;
     const card = target.closest(".message-card");
-    const messageId = card?.getAttribute("data-message-id");
+    const messageId = card?.dataset.messageId;
     const feedbackToken = messageId ? this.messages.get(messageId)?.context?.metadata?.assembly?.feedback_token : void 0;
     if (rating && messageId && feedbackToken) {
       this.postMessage({ type: "feedback.submit", messageId, rating, feedbackToken });

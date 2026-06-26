@@ -35,6 +35,8 @@ function rewriteImmutableVarExports(mediaDir) {
     'VSCODE_WEBVIEW_ORIGIN_PREFIX',
     'DEFAULT_SETTINGS',
     'SETTINGS_FORM_FIELD_KEYS',
+    'MainSurface',
+    'DashboardPanel',
   ];
   for (const fileName of fs.readdirSync(mediaDir)) {
     if (!fileName.endsWith('.js')) {

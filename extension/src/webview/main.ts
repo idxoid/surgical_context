@@ -603,7 +603,7 @@ class MainSurface {
 
   private handleAction(event: Event): void {
     const target = event.currentTarget as HTMLElement;
-    const action = target.getAttribute('data-action');
+    const action = target.dataset.action;
 
     if (
       action === 'copy' ||
@@ -617,13 +617,13 @@ class MainSurface {
 
     switch (action) {
       case 'switchSurface':
-        this.switchSurface(target.getAttribute('data-surface') as Surface);
+        this.switchSurface(target.dataset.surface as Surface);
         break;
       case 'switchInspectorTab':
-        this.switchInspectorTab(target.getAttribute('data-inspector-tab') as InspectorTab);
+        this.switchInspectorTab(target.dataset.inspectorTab as InspectorTab);
         break;
       case 'selectPrompt':
-        this.selectPrompt(target.getAttribute('data-request-id'));
+        this.selectPrompt(target.dataset.requestId ?? null);
         break;
       case 'toggleHistory':
         this.toggleHistory();
@@ -632,7 +632,7 @@ class MainSurface {
         this.startNewDialog();
         break;
       case 'restoreDialog':
-        this.restoreDialog(target.getAttribute('data-dialog-id'));
+        this.restoreDialog(target.dataset.dialogId ?? null);
         break;
       case 'openDashboard':
         this.postMessage({ type: 'action.openDashboard' });
@@ -1051,7 +1051,7 @@ class MainSurface {
         const keyboardEvent = event as KeyboardEvent;
         if (keyboardEvent.key === 'Enter' || keyboardEvent.key === ' ') {
           keyboardEvent.preventDefault();
-          this.selectPrompt((element as HTMLElement).getAttribute('data-request-id'));
+          this.selectPrompt((element as HTMLElement).dataset.requestId ?? null);
         }
       });
     });
@@ -1265,7 +1265,7 @@ class MainSurface {
 
   private toggleAccordion(header: HTMLElement): void {
     const group = header.closest('[data-accordion]');
-    const id = group?.getAttribute('data-accordion');
+    const id = (group as HTMLElement | null)?.dataset.accordion;
     const content = group?.querySelector('.accordion-content');
     if (!group || !content || !id) return;
 
@@ -1312,10 +1312,10 @@ class MainSurface {
   }
 
   private openFileFromImpact(target: HTMLElement): void {
-    const filePath = target.getAttribute('data-file-path');
+    const filePath = target.dataset.filePath;
     if (!filePath) return;
 
-    const line = Number.parseInt(target.getAttribute('data-line') || '1', 10);
+    const line = Number.parseInt(target.dataset.line || '1', 10);
     this.postMessage({
       type: 'link.openFile',
       filePath,
@@ -1324,9 +1324,9 @@ class MainSurface {
   }
 
   private submitFeedback(target: HTMLElement): void {
-    const rating = target.getAttribute('data-rating') as 'up' | 'down' | null;
-    const card = target.closest('.message-card');
-    const messageId = card?.getAttribute('data-message-id');
+    const rating = target.dataset.rating as 'up' | 'down' | undefined;
+    const card = target.closest('.message-card') as HTMLElement | null;
+    const messageId = card?.dataset.messageId;
     const feedbackToken = messageId
       ? this.messages.get(messageId)?.context?.metadata?.assembly?.feedback_token
       : undefined;

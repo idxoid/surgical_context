@@ -72,6 +72,52 @@ export interface SSECallbacks {
   onError?: (error: string) => void;
 }
 
+function dispatchSseTraceEvent(data: unknown, callbacks: SSECallbacks): void {
+  if (typeof data === 'object' && data !== null && 'trace_id' in data) {
+    callbacks.onTrace?.((data as { trace_id: string }).trace_id);
+  }
+}
+
+function dispatchSseChunkEvent(data: unknown, callbacks: SSECallbacks): void {
+  if (typeof data === 'object' && data !== null && 'content' in data) {
+    callbacks.onChunk?.((data as { content: string }).content);
+  }
+}
+
+function dispatchSseContextEvent(data: unknown, callbacks: SSECallbacks): void {
+  if (typeof data === 'object' && data !== null && 'context' in data) {
+    callbacks.onContext?.((data as { context: unknown }).context);
+  }
+}
+
+function dispatchSseDoneEvent(data: unknown, callbacks: SSECallbacks): void {
+  if (typeof data === 'object' && data !== null && 'trace_id' in data) {
+    callbacks.onDone?.((data as { trace_id: string }).trace_id);
+  }
+}
+
+function dispatchSseErrorEvent(data: unknown, callbacks: SSECallbacks): void {
+  if (typeof data === 'object' && data !== null && 'error' in data) {
+    callbacks.onError?.((data as { error: string }).error);
+  }
+}
+
+const SSE_EVENT_HANDLERS: Record<string, (data: unknown, callbacks: SSECallbacks) => void> = {
+  trace: dispatchSseTraceEvent,
+  chunk: dispatchSseChunkEvent,
+  context: dispatchSseContextEvent,
+  done: dispatchSseDoneEvent,
+  error: dispatchSseErrorEvent,
+};
+
+function dispatchNamedSseEvent(
+  eventName: string,
+  data: unknown,
+  callbacks: SSECallbacks
+): void {
+  SSE_EVENT_HANDLERS[eventName]?.(data, callbacks);
+}
+
 export async function parseSSEStream(
   response: Response,
   callbacks: SSECallbacks
@@ -100,33 +146,7 @@ export async function parseSSEStream(
       // Leave malformed event data as plain text for the error path.
     }
 
-    switch (eventName) {
-      case 'trace':
-        if (typeof data === 'object' && data !== null && 'trace_id' in data) {
-          callbacks.onTrace?.((data as any).trace_id);
-        }
-        break;
-      case 'chunk':
-        if (typeof data === 'object' && data !== null && 'content' in data) {
-          callbacks.onChunk?.((data as any).content);
-        }
-        break;
-      case 'context':
-        if (typeof data === 'object' && data !== null && 'context' in data) {
-          callbacks.onContext?.((data as any).context);
-        }
-        break;
-      case 'done':
-        if (typeof data === 'object' && data !== null && 'trace_id' in data) {
-          callbacks.onDone?.((data as any).trace_id);
-        }
-        break;
-      case 'error':
-        if (typeof data === 'object' && data !== null && 'error' in data) {
-          callbacks.onError?.((data as any).error);
-        }
-        break;
-    }
+    dispatchNamedSseEvent(eventName, data, callbacks);
 
     eventName = '';
     dataLines = [];
