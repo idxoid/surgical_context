@@ -82,3 +82,4 @@ graphify-obsidian-repo/*
 
 # MCP client config — env-specific absolute paths; see mcp_server/claude_mcp.example.json
 .mcp.json
+uv.lock
