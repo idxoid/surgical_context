@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING
 
 from context_engine.axis.schema import AxisExtraction, AxisFact, AxisName
 from context_engine.parser.uid import (
@@ -557,46 +557,17 @@ class TypeScriptAxisExtractor:
             "assignment_binding",
             payload={"target": self._expr_text(left, source), "source_kind": "assign"},
         )
-        if left is not None and left.type == "member_expression":
-            target = self._dotted_name(left)
-            payload = {"attribute": self._member_property(left), "target": target}
-            emit(owner, left, "dfg", "attr_write", payload=payload)
-            if self._is_this_member(left):
-                emit(owner, left, "struct", "instance_attribute_hint", payload=payload)
-        elif left is not None and left.type == "subscript_expression":
-            container = self._dotted_name(left.child_by_field_name("object"))
-            key = left.child_by_field_name("index")
-            key_payload = self._key_payload(key, source)
-            subscript_payload = cast(
-                dict[str, object],
-                {
-                    "target": self._expr_text(left, source),
-                    "container": container,
-                    **key_payload,
-                },
-            )
-            emit(owner, left, "dfg", "subscript_write", payload=subscript_payload)
-            emit(owner, left, "dfg", "container_write_value", payload=subscript_payload)
-            emit(
-                owner,
-                left,
-                "dfg",
-                "keyed_write",
-                payload={
-                    **subscript_payload,
-                    **self._keyed_write_payload(key, right, source, container),
-                },
-            )
-            if key_payload.get("key_literal"):
-                emit(
-                    owner,
-                    key,
-                    "struct",
-                    "literal_key",
-                    payload={**key_payload, "context": "subscript_write"},
-                )
-        elif (
-            left is not None
+        emitted_write = self._emit_write_target_facts(
+            owner,
+            left,
+            right,
+            source,
+            emit,
+            emit_literal_key=True,
+        )
+        if (
+            not emitted_write
+            and left is not None
             and right is not None
             and left.type == "identifier"
             and right.type == "identifier"
@@ -719,38 +690,91 @@ class TypeScriptAxisExtractor:
             "augmented_mutation",
             payload={"operator": self.adapter._node_text(operator) if operator else ""},
         )
-        if left is not None and left.type == "member_expression":
-            target = self._dotted_name(left)
-            payload = {"attribute": self._member_property(left), "target": target}
-            emit(owner, left, "dfg", "attr_write", payload=payload)
-            if self._is_this_member(left):
-                emit(owner, left, "struct", "instance_attribute_hint", payload=payload)
-        elif left is not None and left.type == "subscript_expression":
-            container = self._dotted_name(left.child_by_field_name("object"))
-            key = left.child_by_field_name("index")
-            key_payload = self._key_payload(key, source)
-            subscript_payload = cast(
-                dict[str, object],
-                {
-                    "target": self._expr_text(left, source),
-                    "container": container,
-                    **key_payload,
-                },
-            )
-            emit(owner, left, "dfg", "subscript_write", payload=subscript_payload)
-            emit(owner, left, "dfg", "container_write_value", payload=subscript_payload)
-            emit(
-                owner,
-                left,
-                "dfg",
-                "keyed_write",
-                payload={
-                    **subscript_payload,
-                    **self._keyed_write_payload(key, right, source, container),
-                },
-            )
+        self._emit_write_target_facts(
+            owner,
+            left,
+            right,
+            source,
+            emit,
+            emit_literal_key=False,
+        )
         if right is not None:
             self._emit_value_shape(owner, right, emit)
+
+    def _emit_write_target_facts(
+        self,
+        owner,
+        target,
+        value,
+        source: str,
+        emit,
+        *,
+        emit_literal_key: bool,
+    ) -> bool:
+        if target is None:
+            return False
+        if target.type == "member_expression":
+            self._emit_member_write_facts(owner, target, emit)
+            return True
+        if target.type == "subscript_expression":
+            self._emit_subscript_write_facts(
+                owner,
+                target,
+                value,
+                source,
+                emit,
+                emit_literal_key=emit_literal_key,
+            )
+            return True
+        return False
+
+    def _emit_member_write_facts(self, owner, target, emit) -> None:
+        payload = {
+            "attribute": self._member_property(target),
+            "target": self._dotted_name(target),
+        }
+        emit(owner, target, "dfg", "attr_write", payload=payload)
+        if self._is_this_member(target):
+            emit(owner, target, "struct", "instance_attribute_hint", payload=payload)
+
+    def _emit_subscript_write_facts(
+        self,
+        owner,
+        target,
+        value,
+        source: str,
+        emit,
+        *,
+        emit_literal_key: bool,
+    ) -> None:
+        container = self._dotted_name(target.child_by_field_name("object"))
+        key = target.child_by_field_name("index")
+        key_payload = self._key_payload(key, source)
+        subscript_payload: dict[str, object] = {
+            "target": self._expr_text(target, source),
+            "container": container,
+            **key_payload,
+        }
+        emit(owner, target, "dfg", "subscript_write", payload=subscript_payload)
+        emit(owner, target, "dfg", "container_write_value", payload=subscript_payload)
+        emit(
+            owner,
+            target,
+            "dfg",
+            "keyed_write",
+            payload={
+                **subscript_payload,
+                **self._keyed_write_payload(key, value, source, container),
+            },
+        )
+        if emit_literal_key and key_payload.get("key_literal"):
+            emit(
+                owner,
+                key,
+                "struct",
+                "literal_key",
+                payload={**key_payload, "context": "subscript_write"},
+            )
 
     def _emit_yield_facts(self, node, _source: str, _file_path: str, emit) -> None:
         owner = self._owner_for_fact(node)
