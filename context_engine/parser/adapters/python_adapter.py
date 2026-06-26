@@ -383,6 +383,33 @@ class PythonAdapter(TreeSitterAdapter):
                 if it is not None:
                     PythonAdapter._apply_iteration_shape_markers(symbol, it)
 
+    def _finalize_python_symbol_metadata(
+        self,
+        symbols: list,
+        source_code: str,
+        file_path: str,
+        *,
+        tree,
+    ) -> None:
+        if tree is None:
+            tree = self._parse(source_code)
+        module_var_symbols = self._module_constructor_variables(
+            source_code, file_path, tree, base_symbols=symbols
+        )
+        symbols.extend(module_var_symbols)
+        shapes = self._function_return_shapes(tree)
+        iteration = self._function_iteration_shapes(tree)
+        self._apply_python_symbol_shape_markers(symbols, shapes, iteration)
+        from context_engine.parser.docstring_extract import attach_docstrings
+
+        attach_docstrings(
+            symbols,
+            source_code,
+            file_path,
+            tree=tree,
+            language="python",
+        )
+
     def extract_symbols(self, source_code: str, file_path: str, *, tree=None):
         """Patch SymbolMetadata with return-shape AST markers after the base
         extraction. Each function symbol gains booleans describing the shape
@@ -410,23 +437,11 @@ class PythonAdapter(TreeSitterAdapter):
         """
         symbols = super().extract_symbols(source_code, file_path, tree=tree)
         symbols.insert(0, self._module_symbol(source_code, file_path))
-        if tree is None:
-            tree = self._parse(source_code)
-        module_var_symbols = self._module_constructor_variables(
-            source_code, file_path, tree, base_symbols=symbols
-        )
-        symbols.extend(module_var_symbols)
-        shapes = self._function_return_shapes(tree)
-        iteration = self._function_iteration_shapes(tree)
-        self._apply_python_symbol_shape_markers(symbols, shapes, iteration)
-        from context_engine.parser.docstring_extract import attach_docstrings
-
-        attach_docstrings(
+        self._finalize_python_symbol_metadata(
             symbols,
             source_code,
             file_path,
             tree=tree,
-            language="python",
         )
         return symbols
 
@@ -982,6 +997,43 @@ class PythonAdapter(TreeSitterAdapter):
                 }
             )
 
+    def _self_method_proxy_calls_in_class(
+        self,
+        cls,
+        *,
+        source_code: str,
+        file_path: str,
+        import_bindings: dict[str, str],
+    ) -> list[dict]:
+        body = cls.child_by_field_name("body")
+        if body is None:
+            return []
+        methods = self._class_method_map(body)
+        returns_global = self._proxy_return_methods(methods, import_bindings)
+        if not returns_global:
+            return []
+
+        out: list[dict] = []
+        seen_sites: set[tuple[str, int]] = set()
+        for fn in methods.values():
+            fn_body = cast(Any, fn).child_by_field_name("body")
+            if fn_body is None:
+                continue
+            caller_uid = self._uid_for_node(fn, source_code, file_path)
+            local_src = self._local_proxy_sources(fn_body, returns_global)
+            if not local_src:
+                continue
+            self._proxy_member_calls_from_method(
+                fn,
+                local_src=local_src,
+                returns_global=returns_global,
+                caller_uid=caller_uid,
+                file_path=file_path,
+                seen_sites=seen_sites,
+                out=out,
+            )
+        return out
+
     def extract_self_method_proxy_calls(
         self, source_code: str, file_path: str, *, tree=None
     ) -> list[dict]:
@@ -1014,31 +1066,14 @@ class PythonAdapter(TreeSitterAdapter):
         for cls in self._iter_nodes(tree.root_node):
             if cls.type != "class_definition":
                 continue
-            body = cls.child_by_field_name("body")
-            if body is None:
-                continue
-            methods = self._class_method_map(body)
-            returns_global = self._proxy_return_methods(methods, import_bindings)
-            if not returns_global:
-                continue
-            seen_sites: set[tuple[str, int]] = set()
-            for fn in methods.values():
-                fn_body = cast(Any, fn).child_by_field_name("body")
-                if fn_body is None:
-                    continue
-                caller_uid = self._uid_for_node(fn, source_code, file_path)
-                local_src = self._local_proxy_sources(fn_body, returns_global)
-                if not local_src:
-                    continue
-                self._proxy_member_calls_from_method(
-                    fn,
-                    local_src=local_src,
-                    returns_global=returns_global,
-                    caller_uid=caller_uid,
+            out.extend(
+                self._self_method_proxy_calls_in_class(
+                    cls,
+                    source_code=source_code,
                     file_path=file_path,
-                    seen_sites=seen_sites,
-                    out=out,
+                    import_bindings=import_bindings,
                 )
+            )
         return out
 
     def _iter_body_nodes(self, body):
@@ -1190,6 +1225,39 @@ class PythonAdapter(TreeSitterAdapter):
             "file_path": file_path,
         }
 
+    def _decorator_records_for_definition(
+        self,
+        node,
+        *,
+        source_code: str,
+        file_path: str,
+        import_bindings: dict[str, str],
+        module: str,
+    ) -> list[dict]:
+        defn = node.child_by_field_name("definition")
+        if defn is None or defn.type not in ("function_definition", "class_definition"):
+            return []
+        name_node = defn.child_by_field_name("name")
+        if name_node is None:
+            return []
+        decorated_uid = self._uid_for_node(defn, source_code, file_path)
+        decorated_name = _node_text(name_node)
+        records: list[dict] = []
+        for deco in node.children:
+            if deco.type != "decorator":
+                continue
+            record = self._decorator_record(
+                deco,
+                decorated_uid=decorated_uid,
+                decorated_name=decorated_name,
+                import_bindings=import_bindings,
+                module=module,
+                file_path=file_path,
+            )
+            if record is not None:
+                records.append(record)
+        return records
+
     def extract_decorators(self, source_code: str, file_path: str, *, tree=None) -> list[dict]:
         """Decoration relations: ``@deco\\ndef f`` → ``f`` is DECORATED_BY ``deco``.
 
@@ -1207,27 +1275,15 @@ class PythonAdapter(TreeSitterAdapter):
         for node in self._iter_nodes(tree.root_node):
             if node.type != "decorated_definition":
                 continue
-            defn = node.child_by_field_name("definition")
-            if defn is None or defn.type not in ("function_definition", "class_definition"):
-                continue
-            name_node = defn.child_by_field_name("name")
-            if name_node is None:
-                continue
-            decorated_uid = self._uid_for_node(defn, source_code, file_path)
-            decorated_name = _node_text(name_node)
-            for deco in node.children:
-                if deco.type != "decorator":
-                    continue
-                record = self._decorator_record(
-                    deco,
-                    decorated_uid=decorated_uid,
-                    decorated_name=decorated_name,
+            out.extend(
+                self._decorator_records_for_definition(
+                    node,
+                    source_code=source_code,
+                    file_path=file_path,
                     import_bindings=import_bindings,
                     module=module,
-                    file_path=file_path,
                 )
-                if record is not None:
-                    out.append(record)
+            )
         return out
 
     def _emit_http_endpoint_from_decorator(
@@ -1346,12 +1402,23 @@ class PythonAdapter(TreeSitterAdapter):
             return [method] if method else []
         return []
 
-    def _http_route_from_decorator(self, deco_node) -> tuple[str, list[str]]:
-        call_node = None
+    @staticmethod
+    def _decorator_call_node(deco_node):
         for child in deco_node.children:
             if child.type == "call":
-                call_node = child
-                break
+                return child
+        return None
+
+    def _http_route_positional_path(self, child, positional: int) -> tuple[str, int] | None:
+        if child.type != "string" or positional != 0:
+            return None
+        raw = self._string_literal_text(child)
+        if not raw.startswith("/"):
+            return ("", 0)
+        return raw, positional + 1
+
+    def _http_route_from_decorator(self, deco_node) -> tuple[str, list[str]]:
+        call_node = self._decorator_call_node(deco_node)
         if call_node is None:
             return "", []
         route_path = ""
@@ -1361,12 +1428,11 @@ class PythonAdapter(TreeSitterAdapter):
             return route_path, methods
         positional = 0
         for child in arg_list.named_children:
-            if child.type == "string" and positional == 0:
-                raw = self._string_literal_text(child)
-                if not raw.startswith("/"):
+            path_update = self._http_route_positional_path(child, positional)
+            if path_update is not None:
+                route_path, positional = path_update
+                if not route_path and positional == 0:
                     return "", []
-                route_path = raw
-                positional += 1
                 continue
             if child.type == "keyword_argument":
                 key_node = child.child_by_field_name("name")
@@ -1696,6 +1762,217 @@ class PythonAdapter(TreeSitterAdapter):
             return defn
         return None
 
+    @staticmethod
+    def _attr_access_receiver_type(
+        obj_node,
+        *,
+        enclosing_class: str,
+        cls_table: dict[str, str],
+        local_types: dict[str, str],
+    ) -> str:
+        if obj_node.type == "identifier":
+            name = _node_text(obj_node)
+            if name == "self" and enclosing_class:
+                return enclosing_class
+            return local_types.get(name, "")
+        if obj_node.type == "attribute":
+            inner = obj_node.child_by_field_name("object")
+            inner_attr = obj_node.child_by_field_name("attribute")
+            if (
+                inner is not None
+                and inner.type == "identifier"
+                and _node_text(inner) == "self"
+                and inner_attr is not None
+                and inner_attr.type == "identifier"
+            ):
+                return cls_table.get(_node_text(inner_attr), "")
+        return ""
+
+    @staticmethod
+    def _attr_access_skip_read(node, parent) -> bool:
+        if parent is not None and parent.type == "call":
+            fn_node = parent.child_by_field_name("function")
+            if fn_node is not None and fn_node.id == node.id:
+                return True
+        if parent is not None and parent.type == "assignment":
+            lhs = parent.child_by_field_name("left")
+            if lhs is not None and lhs.start_byte == node.start_byte:
+                return True
+        return False
+
+    def _attr_access_reads_in_body(
+        self,
+        body,
+        *,
+        accessor_uid: str,
+        accessor_name: str,
+        enclosing_class: str,
+        cls_table: dict[str, str],
+        local_types: dict[str, str],
+        emit,
+    ) -> None:
+        for node in self._iter_nodes(body):
+            if node.type == "function_definition":
+                continue
+            if node.type != "attribute":
+                continue
+            obj = node.child_by_field_name("object")
+            attr = node.child_by_field_name("attribute")
+            if obj is None or attr is None or attr.type != "identifier":
+                continue
+            if self._attr_access_skip_read(node, node.parent):
+                continue
+            attr_name = _node_text(attr)
+            receiver_qn = self._attr_access_receiver_type(
+                obj,
+                enclosing_class=enclosing_class,
+                cls_table=cls_table,
+                local_types=local_types,
+            )
+            attr_qn = f"{receiver_qn}.{attr_name}" if receiver_qn else ""
+            emit(accessor_uid, accessor_name, attr_name, attr_qn, "read")
+
+    def _attr_access_write_attribute_lhs(
+        self,
+        left,
+        *,
+        accessor_uid: str,
+        accessor_name: str,
+        enclosing_class: str,
+        cls_table: dict[str, str],
+        local_types: dict[str, str],
+        emit,
+    ) -> None:
+        obj = left.child_by_field_name("object")
+        attr = left.child_by_field_name("attribute")
+        if obj is None or attr is None or attr.type != "identifier":
+            return
+        attr_name = _node_text(attr)
+        receiver_qn = self._attr_access_receiver_type(
+            obj,
+            enclosing_class=enclosing_class,
+            cls_table=cls_table,
+            local_types=local_types,
+        )
+        attr_qn = f"{receiver_qn}.{attr_name}" if receiver_qn else ""
+        emit(accessor_uid, accessor_name, attr_name, attr_qn, "write")
+
+    def _attr_access_write_subscript_lhs(
+        self,
+        left,
+        *,
+        accessor_uid: str,
+        accessor_name: str,
+        enclosing_class: str,
+        cls_table: dict[str, str],
+        local_types: dict[str, str],
+        emit,
+    ) -> None:
+        base = left.child_by_field_name("value")
+        if base is None:
+            return
+        if base.type == "attribute":
+            obj = base.child_by_field_name("object")
+            attr = base.child_by_field_name("attribute")
+            if obj is None or attr is None or attr.type != "identifier":
+                return
+            attr_name = _node_text(attr)
+            receiver_qn = self._attr_access_receiver_type(
+                obj,
+                enclosing_class=enclosing_class,
+                cls_table=cls_table,
+                local_types=local_types,
+            )
+            attr_qn = f"{receiver_qn}.{attr_name}" if receiver_qn else ""
+            emit(accessor_uid, accessor_name, attr_name, attr_qn, "write_subscript")
+            return
+        if base.type == "identifier":
+            rname = _node_text(base)
+            local_type = local_types.get(rname, "")
+            if local_type:
+                emit(accessor_uid, accessor_name, rname, local_type, "write_subscript_local")
+
+    def _attr_access_writes_in_body(
+        self,
+        body,
+        *,
+        accessor_uid: str,
+        accessor_name: str,
+        enclosing_class: str,
+        cls_table: dict[str, str],
+        local_types: dict[str, str],
+        emit,
+    ) -> None:
+        for node in self._iter_nodes(body):
+            if node.type == "function_definition":
+                continue
+            if node.type != "assignment":
+                continue
+            left = node.child_by_field_name("left")
+            if left is None:
+                continue
+            if left.type == "attribute":
+                self._attr_access_write_attribute_lhs(
+                    left,
+                    accessor_uid=accessor_uid,
+                    accessor_name=accessor_name,
+                    enclosing_class=enclosing_class,
+                    cls_table=cls_table,
+                    local_types=local_types,
+                    emit=emit,
+                )
+            elif left.type == "subscript":
+                self._attr_access_write_subscript_lhs(
+                    left,
+                    accessor_uid=accessor_uid,
+                    accessor_name=accessor_name,
+                    enclosing_class=enclosing_class,
+                    cls_table=cls_table,
+                    local_types=local_types,
+                    emit=emit,
+                )
+
+    def _attr_accesses_for_function(
+        self,
+        fn,
+        *,
+        source_code: str,
+        file_path: str,
+        import_bindings: dict[str, str],
+        module: str,
+        method_returns,
+        function_returns,
+        attr_type_table: dict[str, dict[str, str]],
+        emit,
+    ) -> None:
+        name_node = fn.child_by_field_name("name")
+        body = fn.child_by_field_name("body")
+        if name_node is None or body is None:
+            return
+        accessor_uid = self._uid_for_node(fn, source_code, file_path)
+        accessor_name = _node_text(name_node)
+        enclosing_class = self._enclosing_class_name(fn)
+        cls_table = attr_type_table.get(enclosing_class, {})
+        local_types = self._local_value_types(
+            fn,
+            cls_table=cls_table,
+            enclosing_class=enclosing_class,
+            import_bindings=import_bindings,
+            module=module,
+            method_returns=method_returns,
+            function_returns=function_returns,
+        )
+        ctx = {
+            "accessor_uid": accessor_uid,
+            "accessor_name": accessor_name,
+            "enclosing_class": enclosing_class,
+            "cls_table": cls_table,
+            "local_types": local_types,
+            "emit": emit,
+        }
+        self._attr_access_reads_in_body(body, **ctx)
+        self._attr_access_writes_in_body(body, **ctx)
+
     def extract_attr_accesses(self, source_code: str, file_path: str, *, tree=None) -> list[dict]:
         """READS_ATTR / WRITES_ATTR edges from a function to attribute Symbols.
 
@@ -1753,149 +2030,68 @@ class PythonAdapter(TreeSitterAdapter):
                 }
             )
 
-        # Walk every function definition; for each, scan its body for
-        # attribute reads and writes. We skip nested function bodies via
-        # the same boundary the return-shape scan uses, so a helper closure
-        # inside a method doesn't credit its outer scope.
         for fn in self._iter_nodes(tree.root_node):
             if fn.type != "function_definition":
                 continue
-            name_node = fn.child_by_field_name("name")
-            body = fn.child_by_field_name("body")
-            if name_node is None or body is None:
-                continue
-            accessor_uid = self._uid_for_node(fn, source_code, file_path)
-            accessor_name = _node_text(name_node)
-            enclosing_class = self._enclosing_class_name(fn)
-            cls_table = attr_type_table.get(enclosing_class, {})
-            local_types = self._local_value_types(
+            self._attr_accesses_for_function(
                 fn,
-                cls_table=cls_table,
-                enclosing_class=enclosing_class,
+                source_code=source_code,
+                file_path=file_path,
                 import_bindings=import_bindings,
                 module=module,
                 method_returns=method_returns,
                 function_returns=function_returns,
+                attr_type_table=attr_type_table,
+                emit=emit,
             )
-
-            def resolve_receiver(
-                obj_node, *, ec=enclosing_class, ct=cls_table, lt=local_types
-            ) -> str:
-                """Best-guess qualified type for the receiver expression.
-
-                Loop-bound locals (``ec`` / ``ct`` / ``lt``) are captured via
-                default-argument binding so each function's closure sees its
-                own snapshot rather than the loop's last iteration value.
-                """
-                if obj_node.type == "identifier":
-                    name = _node_text(obj_node)
-                    if name == "self" and ec:
-                        return cast(str, ec)
-                    return cast(str, lt.get(name, ""))
-                if obj_node.type == "attribute":
-                    inner = obj_node.child_by_field_name("object")
-                    inner_attr = obj_node.child_by_field_name("attribute")
-                    if (
-                        inner is not None
-                        and inner.type == "identifier"
-                        and _node_text(inner) == "self"
-                        and inner_attr is not None
-                        and inner_attr.type == "identifier"
-                    ):
-                        return cast(str, ct.get(_node_text(inner_attr), ""))
-                return ""
-
-            # 1. Attribute reads — every ``obj.attr`` we can resolve a
-            #    receiver type for.
-            for node in self._iter_nodes(body):
-                if node.type == "function_definition":
-                    continue  # nested callable — its accesses belong to it
-                if node.type != "attribute":
-                    continue
-                obj = node.child_by_field_name("object")
-                attr = node.child_by_field_name("attribute")
-                if obj is None or attr is None or attr.type != "identifier":
-                    continue
-                # Skip the callee position of a call: ``obj.method(...)`` — the
-                # ``obj.method`` attribute is the call's ``function``, a method
-                # *invocation*, not a data-shape attribute read. The call
-                # resolver owns it (as a CALLS_* edge); emitting a parallel
-                # READS_ATTR here only duplicates the site and, when the method
-                # name is workspace-ambiguous, name-binds it to the wrong
-                # Symbol. The receiver ``obj.attr`` of an outer access (e.g.
-                # ``self.config`` in ``self.config.get()``) still emits, since
-                # only the directly-called attribute is the ``function`` node.
-                parent = node.parent
-                if parent is not None and parent.type == "call":
-                    fn_node = parent.child_by_field_name("function")
-                    if fn_node is not None and fn_node.id == node.id:
-                        continue
-                # Skip ``self.x`` on the *write* side; the assignment loop
-                # below handles writes. A read embedded in an assignment
-                # right-hand side still shows up here as a separate node.
-                if parent is not None and parent.type == "assignment":
-                    lhs = parent.child_by_field_name("left")
-                    if lhs is not None and lhs.start_byte == node.start_byte:
-                        continue
-                attr_name = _node_text(attr)
-                receiver_qn = resolve_receiver(obj)
-                if receiver_qn:
-                    attr_qn = f"{receiver_qn}.{attr_name}"
-                else:
-                    attr_qn = ""
-                emit(accessor_uid, accessor_name, attr_name, attr_qn, "read")
-
-            # 2. Writes — ``self.attr = ...``, ``local.attr = ...``,
-            #    ``self.attr[k] = v`` (subscript) and ``local[k] = v``
-            #    (subscript on a local of known type — building a mapping).
-            for node in self._iter_nodes(body):
-                if node.type == "function_definition":
-                    continue
-                if node.type != "assignment":
-                    continue
-                left = node.child_by_field_name("left")
-                if left is None:
-                    continue
-                if left.type == "attribute":
-                    obj = left.child_by_field_name("object")
-                    attr = left.child_by_field_name("attribute")
-                    if obj is None or attr is None or attr.type != "identifier":
-                        continue
-                    attr_name = _node_text(attr)
-                    receiver_qn = resolve_receiver(obj)
-                    attr_qn = f"{receiver_qn}.{attr_name}" if receiver_qn else ""
-                    emit(accessor_uid, accessor_name, attr_name, attr_qn, "write")
-                elif left.type == "subscript":
-                    base = left.child_by_field_name("value")
-                    if base is None:
-                        continue
-                    if base.type == "attribute":
-                        # ``self.attr[k] = v`` — write into mapping owned by
-                        # ``self.attr``. The binding signal: function builds a
-                        # mapping by writing into a class attribute.
-                        obj = base.child_by_field_name("object")
-                        attr = base.child_by_field_name("attribute")
-                        if obj is None or attr is None or attr.type != "identifier":
-                            continue
-                        attr_name = _node_text(attr)
-                        receiver_qn = resolve_receiver(obj)
-                        attr_qn = f"{receiver_qn}.{attr_name}" if receiver_qn else ""
-                        emit(accessor_uid, accessor_name, attr_name, attr_qn, "write_subscript")
-                    elif base.type == "identifier":
-                        # ``local[k] = v`` — only emit when ``local`` has a
-                        # statically known mapping type (otherwise it could be
-                        # anything). For now this leans on existing local-typing.
-                        rname = _node_text(base)
-                        local_type = local_types.get(rname, "")
-                        if local_type:
-                            emit(
-                                accessor_uid,
-                                accessor_name,
-                                rname,
-                                local_type,
-                                "write_subscript_local",
-                            )
         return out
+
+    def _type_ref_records_for_function(
+        self,
+        node,
+        *,
+        source_code: str,
+        file_path: str,
+        import_bindings: dict[str, str],
+        module: str,
+        emit,
+    ) -> None:
+        params = node.child_by_field_name("parameters")
+        if params is not None:
+            for p in params.named_children:
+                if p.type in ("typed_parameter", "typed_default_parameter"):
+                    emit(node, p.child_by_field_name("type"), "param")
+        emit(node, node.child_by_field_name("return_type"), "return")
+
+    def _type_ref_records_for_call(
+        self,
+        node,
+        *,
+        emit,
+    ) -> None:
+        fn = node.child_by_field_name("function")
+        if fn is None or fn.type != "identifier" or _node_text(fn) not in ("isinstance", "issubclass"):
+            return
+        args = node.child_by_field_name("arguments")
+        referrer = self._enclosing_def_node(node)
+        if args is None or referrer is None:
+            return
+        type_args = [c for c in args.named_children]
+        if len(type_args) >= 2:
+            emit(referrer, type_args[1], "isinstance")
+
+    def _type_ref_records_for_assignment(
+        self,
+        node,
+        *,
+        emit,
+    ) -> None:
+        typ = node.child_by_field_name("type")
+        if typ is None:
+            return
+        referrer = self._enclosing_def_node(node)
+        if referrer is not None:
+            emit(referrer, typ, "annotation")
 
     def extract_type_references(self, source_code: str, file_path: str, *, tree=None) -> list[dict]:
         """USES_TYPE references: a symbol names a project class in an AST-visible
@@ -1940,36 +2136,94 @@ class PythonAdapter(TreeSitterAdapter):
 
         for node in self._iter_nodes(tree.root_node):
             if node.type == "function_definition":
-                params = node.child_by_field_name("parameters")
-                if params is not None:
-                    for p in params.named_children:
-                        if p.type in ("typed_parameter", "typed_default_parameter"):
-                            emit(node, p.child_by_field_name("type"), "param")
-                emit(node, node.child_by_field_name("return_type"), "return")
+                self._type_ref_records_for_function(
+                    node,
+                    source_code=source_code,
+                    file_path=file_path,
+                    import_bindings=import_bindings,
+                    module=module,
+                    emit=emit,
+                )
             elif node.type == "call":
-                fn = node.child_by_field_name("function")
-                if (
-                    fn is not None
-                    and fn.type == "identifier"
-                    and _node_text(fn)
-                    in (
-                        "isinstance",
-                        "issubclass",
-                    )
-                ):
-                    args = node.child_by_field_name("arguments")
-                    referrer = self._enclosing_def_node(node)
-                    if args is not None and referrer is not None:
-                        type_args = [c for c in args.named_children]
-                        if len(type_args) >= 2:
-                            emit(referrer, type_args[1], "isinstance")
+                self._type_ref_records_for_call(node, emit=emit)
             elif node.type == "assignment":
-                typ = node.child_by_field_name("type")
-                if typ is not None:
-                    referrer = self._enclosing_def_node(node)
-                    if referrer is not None:
-                        emit(referrer, typ, "annotation")
+                self._type_ref_records_for_assignment(node, emit=emit)
         return out
+
+    def _append_type_ref_attribute(
+        self,
+        n,
+        *,
+        import_bindings: dict[str, str],
+        module: str,
+        out: list[tuple[str, str]],
+        seen_local: set[str],
+    ) -> None:
+        obj = n.child_by_field_name("object")
+        attr = n.child_by_field_name("attribute")
+        if attr is None or attr.type != "identifier":
+            return
+        final = _node_text(attr)
+        if obj is not None and obj.type == "identifier":
+            head = _node_text(obj)
+            base = import_bindings.get(head, head)
+            qn = f"{base}.{final}"
+        else:
+            qn = self._resolve_type_name(final, import_bindings, module)
+        if qn not in seen_local:
+            seen_local.add(qn)
+            out.append((final, qn))
+
+    def _append_type_ref_identifier(
+        self,
+        n,
+        *,
+        import_bindings: dict[str, str],
+        module: str,
+        out: list[tuple[str, str]],
+        seen_local: set[str],
+    ) -> None:
+        name = _node_text(n)
+        qn = self._resolve_type_name(name, import_bindings, module)
+        if qn not in seen_local:
+            seen_local.add(qn)
+            out.append((name, qn))
+
+    def _walk_type_ref_node(
+        self,
+        n,
+        *,
+        import_bindings: dict[str, str],
+        module: str,
+        out: list[tuple[str, str]],
+        seen_local: set[str],
+    ) -> None:
+        if n.type == "attribute":
+            self._append_type_ref_attribute(
+                n,
+                import_bindings=import_bindings,
+                module=module,
+                out=out,
+                seen_local=seen_local,
+            )
+            return
+        if n.type == "identifier":
+            self._append_type_ref_identifier(
+                n,
+                import_bindings=import_bindings,
+                module=module,
+                out=out,
+                seen_local=seen_local,
+            )
+            return
+        for ch in n.children:
+            self._walk_type_ref_node(
+                ch,
+                import_bindings=import_bindings,
+                module=module,
+                out=out,
+                seen_local=seen_local,
+            )
 
     def _type_ref_targets(
         self, type_node, import_bindings: dict[str, str], module: str
@@ -1983,35 +2237,54 @@ class PythonAdapter(TreeSitterAdapter):
         """
         out: list[tuple[str, str]] = []
         seen_local: set[str] = set()
-
-        def walk(n) -> None:
-            if n.type == "attribute":
-                obj = n.child_by_field_name("object")
-                attr = n.child_by_field_name("attribute")
-                if attr is not None and attr.type == "identifier":
-                    final = _node_text(attr)
-                    if obj is not None and obj.type == "identifier":
-                        head = _node_text(obj)
-                        base = import_bindings.get(head, head)
-                        qn = f"{base}.{final}"
-                    else:
-                        qn = self._resolve_type_name(final, import_bindings, module)
-                    if qn not in seen_local:
-                        seen_local.add(qn)
-                        out.append((final, qn))
-                return  # do not descend into the attribute's identifier children
-            if n.type == "identifier":
-                name = _node_text(n)
-                qn = self._resolve_type_name(name, import_bindings, module)
-                if qn not in seen_local:
-                    seen_local.add(qn)
-                    out.append((name, qn))
-                return
-            for ch in n.children:
-                walk(ch)
-
-        walk(type_node)
+        self._walk_type_ref_node(
+            type_node,
+            import_bindings=import_bindings,
+            module=module,
+            out=out,
+            seen_local=seen_local,
+        )
         return out
+
+    def _injection_records_for_function(
+        self,
+        node,
+        *,
+        source_code: str,
+        file_path: str,
+        import_bindings: dict[str, str],
+        module: str,
+        seen: set[tuple[str, str]],
+    ) -> list[dict]:
+        params = node.child_by_field_name("parameters")
+        if params is None:
+            return []
+        owner_uid = self._uid_for_node(node, source_code, file_path)
+        owner_name_node = node.child_by_field_name("name")
+        owner_name = _node_text(owner_name_node) if owner_name_node is not None else ""
+        records: list[dict] = []
+        for p in params.named_children:
+            if p.type not in ("default_parameter", "typed_default_parameter"):
+                continue
+            for call in self._iter_nodes(p):
+                if call.type != "call":
+                    continue
+                for prov in self._positional_identifier_arguments(call, source_code):
+                    prov_qn = self._resolve_type_name(prov, import_bindings, module)
+                    key = (owner_uid, prov_qn)
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    records.append(
+                        {
+                            "owner_uid": owner_uid,
+                            "owner_name": owner_name,
+                            "provider_name": prov,
+                            "provider_qualified_name": prov_qn,
+                            "file_path": file_path,
+                        }
+                    )
+        return records
 
     def extract_injections(self, source_code: str, file_path: str, *, tree=None) -> list[dict]:
         """Dependency-injection bindings: ``def f(x = Marker(provider))`` → ``f`` INJECTS
@@ -2033,34 +2306,314 @@ class PythonAdapter(TreeSitterAdapter):
         for node in self._iter_nodes(tree.root_node):
             if node.type != "function_definition":
                 continue
-            params = node.child_by_field_name("parameters")
-            if params is None:
-                continue
-            owner_uid = self._uid_for_node(node, source_code, file_path)
-            owner_name_node = node.child_by_field_name("name")
-            owner_name = _node_text(owner_name_node) if owner_name_node is not None else ""
-            for p in params.named_children:
-                if p.type not in ("default_parameter", "typed_default_parameter"):
-                    continue
-                for call in self._iter_nodes(p):
-                    if call.type != "call":
-                        continue
-                    for prov in self._positional_identifier_arguments(call, source_code):
-                        prov_qn = self._resolve_type_name(prov, import_bindings, module)
-                        key = (owner_uid, prov_qn)
-                        if key in seen:
-                            continue
-                        seen.add(key)
-                        out.append(
-                            {
-                                "owner_uid": owner_uid,
-                                "owner_name": owner_name,
-                                "provider_name": prov,
-                                "provider_qualified_name": prov_qn,
-                                "file_path": file_path,
-                            }
-                        )
+            out.extend(
+                self._injection_records_for_function(
+                    node,
+                    source_code=source_code,
+                    file_path=file_path,
+                    import_bindings=import_bindings,
+                    module=module,
+                    seen=seen,
+                )
+            )
         return out
+
+        return out
+
+    @staticmethod
+    def _unwrap_parenthesized_expr(node):
+        while node is not None and node.type == "parenthesized_expression":
+            inner = node.named_children[0] if node.named_children else None
+            if inner is None:
+                break
+            node = inner
+        return node
+
+    def _add_class_typed_local(
+        self,
+        mapping: dict[str, list[tuple[str, str]]],
+        name_node,
+        type_node,
+        *,
+        import_bindings: dict[str, str],
+        module: str,
+    ) -> None:
+        if name_node is None or type_node is None or name_node.type != "identifier":
+            return
+        classes = self._class_object_targets(type_node, import_bindings, module)
+        if classes:
+            mapping.setdefault(_node_text(name_node), []).extend(classes)
+
+    def _class_typed_locals_map(
+        self,
+        func_node,
+        *,
+        import_bindings: dict[str, str],
+        module: str,
+        typed_local_cache: dict[int, dict[str, list[tuple[str, str]]]],
+    ) -> dict[str, list[tuple[str, str]]]:
+        if func_node is None:
+            return {}
+        cached = typed_local_cache.get(func_node.id)
+        if cached is not None:
+            return cached
+        mapping: dict[str, list[tuple[str, str]]] = {}
+        params = func_node.child_by_field_name("parameters")
+        if params is not None:
+            for p in params.named_children:
+                if p.type == "typed_parameter":
+                    ident = next((c for c in p.named_children if c.type == "identifier"), None)
+                    self._add_class_typed_local(
+                        mapping,
+                        ident,
+                        p.child_by_field_name("type"),
+                        import_bindings=import_bindings,
+                        module=module,
+                    )
+                elif p.type == "typed_default_parameter":
+                    self._add_class_typed_local(
+                        mapping,
+                        p.child_by_field_name("name"),
+                        p.child_by_field_name("type"),
+                        import_bindings=import_bindings,
+                        module=module,
+                    )
+        for n in self._iter_nodes(func_node):
+            if n.type == "assignment" and n.child_by_field_name("type") is not None:
+                self._add_class_typed_local(
+                    mapping,
+                    n.child_by_field_name("left"),
+                    n.child_by_field_name("type"),
+                    import_bindings=import_bindings,
+                    module=module,
+                )
+        typed_local_cache[func_node.id] = mapping
+        return mapping
+
+    def _resolve_class_value_expr(
+        self,
+        node,
+        mapping: dict[str, list[tuple[str, str]]],
+        *,
+        local_classes: dict,
+        import_bindings: dict[str, str],
+    ) -> list[tuple[str, str]]:
+        node = self._unwrap_parenthesized_expr(node)
+        if node is None:
+            return []
+        if node.type == "identifier":
+            nm = _node_text(node)
+            if nm in mapping:
+                return list(mapping[nm])
+            if nm in local_classes:
+                return [(nm, local_classes[nm].qualified_name)]
+            if nm in import_bindings:
+                return [(nm, import_bindings[nm])]
+            return []
+        if node.type == "boolean_operator":
+            return self._resolve_class_value_expr(
+                node.child_by_field_name("left"),
+                mapping,
+                local_classes=local_classes,
+                import_bindings=import_bindings,
+            ) + self._resolve_class_value_expr(
+                node.child_by_field_name("right"),
+                mapping,
+                local_classes=local_classes,
+                import_bindings=import_bindings,
+            )
+        if node.type == "conditional_expression":
+            kids = node.named_children
+            if len(kids) >= 3:
+                return self._resolve_class_value_expr(
+                    kids[0],
+                    mapping,
+                    local_classes=local_classes,
+                    import_bindings=import_bindings,
+                ) + self._resolve_class_value_expr(
+                    kids[2],
+                    mapping,
+                    local_classes=local_classes,
+                    import_bindings=import_bindings,
+                )
+        return []
+
+    @staticmethod
+    def _merge_class_value_local(
+        mapping: dict[str, list[tuple[str, str]]],
+        name: str,
+        classes: list[tuple[str, str]],
+    ) -> bool:
+        if not classes:
+            return False
+        bucket = mapping.setdefault(name, [])
+        changed = False
+        for item in classes:
+            if item not in bucket:
+                bucket.append(item)
+                changed = True
+        return changed
+
+    def _class_value_locals_map(
+        self,
+        func_node,
+        *,
+        import_bindings: dict[str, str],
+        module: str,
+        local_classes: dict,
+        typed_local_cache: dict[int, dict[str, list[tuple[str, str]]]],
+        value_local_cache: dict[int, dict[str, list[tuple[str, str]]]],
+    ) -> dict[str, list[tuple[str, str]]]:
+        if func_node is None:
+            return {}
+        cached = value_local_cache.get(func_node.id)
+        if cached is not None:
+            return cached
+        mapping = {
+            k: list(v)
+            for k, v in self._class_typed_locals_map(
+                func_node,
+                import_bindings=import_bindings,
+                module=module,
+                typed_local_cache=typed_local_cache,
+            ).items()
+        }
+        assignments: list[tuple[str, object]] = []
+        for n in self._iter_nodes(func_node):
+            if n.type != "assignment":
+                continue
+            lhs = n.child_by_field_name("left")
+            rhs = n.child_by_field_name("right")
+            if lhs is None or rhs is None or lhs.type != "identifier":
+                continue
+            assignments.append((_node_text(lhs), rhs))
+
+        for _ in range(len(assignments) + 1):
+            changed = False
+            for name, rhs in assignments:
+                classes = self._resolve_class_value_expr(
+                    rhs,
+                    mapping,
+                    local_classes=local_classes,
+                    import_bindings=import_bindings,
+                )
+                if self._merge_class_value_local(mapping, name, classes):
+                    changed = True
+            if not changed:
+                break
+
+        value_local_cache[func_node.id] = mapping
+        return mapping
+
+    def _emit_instantiation_record(
+        self,
+        out: list[dict],
+        seen: set[tuple[str, str, str]],
+        *,
+        call_node,
+        caller_node,
+        type_name: str,
+        type_qn: str,
+        is_external: bool,
+        source_code: str,
+        file_path: str,
+        module: str,
+        module_uid: str,
+    ) -> None:
+        if not type_qn:
+            return
+        if caller_node is None:
+            var_uid = self._module_assignment_variable_uid(call_node, module)
+            caller_uid = var_uid if var_uid is not None else module_uid
+        else:
+            caller_uid = self._uid_for_node(caller_node, source_code, file_path)
+        key = (caller_uid, type_qn, "external" if is_external else "internal")
+        if key in seen:
+            return
+        seen.add(key)
+        out.append(
+            {
+                "caller_uid": caller_uid,
+                "type_name": type_name,
+                "type_qualified_name": type_qn,
+                "is_external": is_external,
+                "file_path": file_path,
+            }
+        )
+
+    def _instantiation_from_call_node(
+        self,
+        node,
+        *,
+        source_code: str,
+        file_path: str,
+        module: str,
+        import_bindings: dict[str, str],
+        local_class_names: set[str],
+        local_classes: dict,
+        module_uid: str,
+        typed_local_cache: dict[int, dict[str, list[tuple[str, str]]]],
+        value_local_cache: dict[int, dict[str, list[tuple[str, str]]]],
+        out: list[dict],
+        seen: set[tuple[str, str, str]],
+    ) -> None:
+        fn = node.child_by_field_name("function")
+        if fn is None:
+            return
+        caller = self._enclosing_def_node(node)
+        locals_map = (
+            self._class_value_locals_map(
+                caller,
+                import_bindings=import_bindings,
+                module=module,
+                local_classes=local_classes,
+                typed_local_cache=typed_local_cache,
+                value_local_cache=value_local_cache,
+            )
+            if caller is not None
+            else {}
+        )
+        emit_kwargs = {
+            "source_code": source_code,
+            "file_path": file_path,
+            "module": module,
+            "module_uid": module_uid,
+        }
+        if fn.type == "identifier":
+            name = _node_text(fn)
+            if name in locals_map:
+                for cname, cqn in locals_map[name]:
+                    is_external = not cqn.startswith(f"{module}.")
+                    self._emit_instantiation_record(
+                        out,
+                        seen,
+                        call_node=node,
+                        caller_node=caller,
+                        type_name=cname,
+                        type_qn=cqn,
+                        is_external=is_external,
+                        **emit_kwargs,
+                    )
+                return
+        resolved = self._resolve_construction_callee(
+            fn,
+            import_bindings=import_bindings,
+            local_classes=local_class_names,
+            module=module,
+        )
+        if resolved is None:
+            return
+        type_name, type_qn, is_external = resolved
+        self._emit_instantiation_record(
+            out,
+            seen,
+            call_node=node,
+            caller_node=caller,
+            type_name=type_name,
+            type_qn=type_qn,
+            is_external=is_external,
+            **emit_kwargs,
+        )
 
     def extract_instantiations(self, source_code: str, file_path: str, *, tree=None) -> list[dict]:
         """INSTANTIATES edges: caller symbol -> the project class it constructs.
@@ -2096,197 +2649,23 @@ class PythonAdapter(TreeSitterAdapter):
         value_local_cache: dict[int, dict[str, list[tuple[str, str]]]] = {}
         _, _, module_uid = self._module_symbol_identity(file_path)
 
-        def emit(
-            call_node,
-            caller_node,
-            type_name: str,
-            type_qn: str,
-            is_external: bool,
-        ) -> None:
-            if not type_qn:
-                return
-            # Module-level ``name = SomeCls(...)`` → the Variable Symbol IS the
-            # caller: the new object lives under that identifier and is the DFG
-            # anchor downstream code (decorators, references) talks to.
-            if caller_node is None:
-                var_uid = self._module_assignment_variable_uid(call_node, module)
-                caller_uid = var_uid if var_uid is not None else module_uid
-            else:
-                caller_uid = self._uid_for_node(caller_node, source_code, file_path)
-            key = (caller_uid, type_qn, "external" if is_external else "internal")
-            if key in seen:
-                return
-            seen.add(key)
-            out.append(
-                {
-                    "caller_uid": caller_uid,
-                    "type_name": type_name,
-                    "type_qualified_name": type_qn,
-                    "is_external": is_external,
-                    "file_path": file_path,
-                }
-            )
-
-        def class_typed_locals(func_node) -> dict[str, list[tuple[str, str]]]:
-            """name -> [(class_name, class_qn)] for locals annotated ``type[X]``."""
-            if func_node is None:
-                return {}
-            cached = typed_local_cache.get(func_node.id)
-            if cached is not None:
-                return cached
-            mapping: dict[str, list[tuple[str, str]]] = {}
-
-            def add(name_node, type_node) -> None:
-                if name_node is None or type_node is None:
-                    return
-                if name_node.type != "identifier":
-                    return
-                classes = self._class_object_targets(type_node, import_bindings, module)
-                if classes:
-                    mapping.setdefault(_node_text(name_node), []).extend(classes)
-
-            params = func_node.child_by_field_name("parameters")
-            if params is not None:
-                for p in params.named_children:
-                    if p.type == "typed_parameter":
-                        ident = next((c for c in p.named_children if c.type == "identifier"), None)
-                        add(ident, p.child_by_field_name("type"))
-                    elif p.type == "typed_default_parameter":
-                        add(p.child_by_field_name("name"), p.child_by_field_name("type"))
-            for n in self._iter_nodes(func_node):
-                if n.type == "assignment" and n.child_by_field_name("type") is not None:
-                    add(n.child_by_field_name("left"), n.child_by_field_name("type"))
-            typed_local_cache[func_node.id] = mapping
-            return mapping
-
-        def _unwrap(node):
-            while node is not None and node.type == "parenthesized_expression":
-                inner = node.named_children[0] if node.named_children else None
-                if inner is None:
-                    break
-                node = inner
-            return node
-
-        def resolve_class_value(node, mapping) -> list[tuple[str, str]]:
-            """Class objects an expression may evaluate to (copy / or-and / ternary).
-
-            Only value-carrying forms propagate a class object: a name already known
-            to hold a class, a local class / imported name, or a disjunction/ternary
-            of such. A call result, subscript, or attribute access is an instance or
-            structurally unknown — it carries no class identity (precision over recall).
-            """
-            node = _unwrap(node)
-            if node is None:
-                return []
-            if node.type == "identifier":
-                nm = _node_text(node)
-                if nm in mapping:
-                    return list(mapping[nm])
-                if nm in local_classes:
-                    return [(nm, local_classes[nm].qualified_name)]
-                if nm in import_bindings:
-                    return [(nm, import_bindings[nm])]
-                return []
-            if node.type == "boolean_operator":
-                return resolve_class_value(
-                    node.child_by_field_name("left"), mapping
-                ) + resolve_class_value(node.child_by_field_name("right"), mapping)
-            if node.type == "conditional_expression":
-                kids = node.named_children
-                if len(kids) >= 3:
-                    return resolve_class_value(kids[0], mapping) + resolve_class_value(
-                        kids[2], mapping
-                    )
-            return []
-
-        def class_value_locals(func_node) -> dict[str, list[tuple[str, str]]]:
-            """``class_typed_locals`` plus intra-procedural class-object propagation (P5).
-
-            Seeds from ``type[X]``-annotated names, then propagates the class a local
-            holds through plain ``x = <expr>`` assignments whose RHS copies / disjoins
-            / selects already-known class values. Flow-insensitive union over a bounded
-            fixpoint; ``self.<attr>`` stays unresolved (no instance-attribute typing),
-            so only resolvable operands contribute.
-            """
-            if func_node is None:
-                return {}
-            cached = value_local_cache.get(func_node.id)
-            if cached is not None:
-                return cached
-            mapping = {k: list(v) for k, v in class_typed_locals(func_node).items()}
-
-            assignments: list[tuple[str, object]] = []
-            for n in self._iter_nodes(func_node):
-                if n.type != "assignment":
-                    continue
-                lhs = n.child_by_field_name("left")
-                rhs = n.child_by_field_name("right")
-                if lhs is None or rhs is None or lhs.type != "identifier":
-                    continue
-                assignments.append((_node_text(lhs), rhs))
-
-            def merge(name: str, classes: list[tuple[str, str]]) -> bool:
-                if not classes:
-                    return False
-                bucket = mapping.setdefault(name, [])
-                changed = False
-                for item in classes:
-                    if item not in bucket:
-                        bucket.append(item)
-                        changed = True
-                return changed
-
-            for _ in range(len(assignments) + 1):
-                changed = False
-                for name, rhs in assignments:
-                    if merge(name, resolve_class_value(rhs, mapping)):
-                        changed = True
-                if not changed:
-                    break
-
-            value_local_cache[func_node.id] = mapping
-            return mapping
-
         for node in self._iter_nodes(tree.root_node):
             if node.type != "call":
                 continue
-            fn = node.child_by_field_name("function")
-            if fn is None:
-                continue
-            caller = self._enclosing_def_node(node)
-            # Module-level construction: caller is ``None`` here; ``emit``
-            # routes the row to the module Symbol or, when the call is the
-            # RHS of a module-level assignment, to the Variable anchor.
-            locals_map = class_value_locals(caller) if caller is not None else {}
-
-            # Branch A: ``v(...)`` where ``v`` holds a class via type[X]
-            # propagation (locals_map). Names that show up here are
-            # internal-or-external based on whether the propagated qn is
-            # module-local.
-            if fn.type == "identifier":
-                name = _node_text(fn)
-                if name in locals_map:
-                    for cname, cqn in locals_map[name]:
-                        is_external = not cqn.startswith(f"{module}.")
-                        emit(node, caller, cname, cqn, is_external)
-                    continue
-
-            # Branch B: bare-name or dotted attribute construction. The
-            # resolver decides external vs internal against the imports
-            # table; unresolvable names drop silently right here, never
-            # reaching the linker. This is the only layer that has both the
-            # imports table and the local class set, so it is also the only
-            # honest place to make that call.
-            resolved = self._resolve_construction_callee(
-                fn,
-                import_bindings=import_bindings,
-                local_classes=local_class_names,
+            self._instantiation_from_call_node(
+                node,
+                source_code=source_code,
+                file_path=file_path,
                 module=module,
+                import_bindings=import_bindings,
+                local_class_names=local_class_names,
+                local_classes=local_classes,
+                module_uid=module_uid,
+                typed_local_cache=typed_local_cache,
+                value_local_cache=value_local_cache,
+                out=out,
+                seen=seen,
             )
-            if resolved is None:
-                continue
-            type_name, type_qn, is_external = resolved
-            emit(node, caller, type_name, type_qn, is_external)
         return out
 
     def _module_assignment_variable_uid(self, call_node, module: str) -> str | None:
@@ -2317,6 +2696,38 @@ class PythonAdapter(TreeSitterAdapter):
         signature = f"{var_name}()->_"
         return compute_uid(qualified_name, signature, self.language_name)
 
+    def _class_object_targets_from_subscript(
+        self,
+        n,
+        *,
+        import_bindings: dict[str, str],
+        module: str,
+    ) -> list[tuple[str, str]]:
+        value = n.child_by_field_name("value")
+        if value is None or value.type != "identifier" or _node_text(value) not in ("type", "Type"):
+            return []
+        out: list[tuple[str, str]] = []
+        for sub in n.named_children:
+            if sub.id == value.id:
+                continue
+            out.extend(self._type_ref_targets(sub, import_bindings, module))
+        return out
+
+    def _class_object_targets_from_generic_type(
+        self,
+        n,
+        *,
+        import_bindings: dict[str, str],
+        module: str,
+    ) -> list[tuple[str, str]]:
+        head = n.named_children[0] if n.named_children else None
+        if head is None or head.type != "identifier" or _node_text(head) not in ("type", "Type"):
+            return []
+        out: list[tuple[str, str]] = []
+        for sub in n.named_children[1:]:
+            out.extend(self._type_ref_targets(sub, import_bindings, module))
+        return out
+
     def _class_object_targets(
         self, type_node, import_bindings: dict[str, str], module: str
     ) -> list[tuple[str, str]]:
@@ -2329,34 +2740,22 @@ class PythonAdapter(TreeSitterAdapter):
         out: list[tuple[str, str]] = []
         for n in self._iter_nodes(type_node):
             if n.type == "subscript":
-                value = n.child_by_field_name("value")
-                if (
-                    value is None
-                    or value.type != "identifier"
-                    or _node_text(value) not in ("type", "Type")
-                ):
-                    continue
-                for sub in n.named_children:
-                    if sub.id == value.id:
-                        continue
-                    out.extend(self._type_ref_targets(sub, import_bindings, module))
+                out.extend(
+                    self._class_object_targets_from_subscript(
+                        n,
+                        import_bindings=import_bindings,
+                        module=module,
+                    )
+                )
                 continue
-
-            # Current tree-sitter-python represents annotations as
-            # ``type -> generic_type -> type_parameter`` rather than the
-            # expression ``subscript`` shape. Treat only ``type[X]`` / ``Type[X]``
-            # as a class-object annotation; ordinary ``X`` annotations remain
-            # instance types and do not imply construction.
             if n.type == "generic_type":
-                head = n.named_children[0] if n.named_children else None
-                if (
-                    head is None
-                    or head.type != "identifier"
-                    or _node_text(head) not in ("type", "Type")
-                ):
-                    continue
-                for sub in n.named_children[1:]:
-                    out.extend(self._type_ref_targets(sub, import_bindings, module))
+                out.extend(
+                    self._class_object_targets_from_generic_type(
+                        n,
+                        import_bindings=import_bindings,
+                        module=module,
+                    )
+                )
         return out
 
     @staticmethod
@@ -2438,6 +2837,18 @@ class PythonAdapter(TreeSitterAdapter):
         return ""
 
     @staticmethod
+    def _inheritance_base_path_wrapped(base_node) -> str | None:
+        if base_node.type == "subscript":
+            value = base_node.child_by_field_name("value")
+            if value is None:
+                value = base_node.named_children[0] if base_node.named_children else None
+            return PythonAdapter._inheritance_base_path(value)
+        if base_node.type == "call":
+            fn = base_node.child_by_field_name("function")
+            return PythonAdapter._inheritance_base_path(fn)
+        return None
+
+    @staticmethod
     def _inheritance_base_path(base_node) -> str:
         """Dotted superclass expression: ``Base``, ``mod.Base``, ``a.b.Base``.
 
@@ -2457,14 +2868,9 @@ class PythonAdapter(TreeSitterAdapter):
             if obj_path and attr_text:
                 return f"{obj_path}.{attr_text}"
             return attr_text or obj_path
-        if base_node.type == "subscript":
-            value = base_node.child_by_field_name("value")
-            if value is None:
-                value = base_node.named_children[0] if base_node.named_children else None
-            return PythonAdapter._inheritance_base_path(value)
-        if base_node.type == "call":
-            fn = base_node.child_by_field_name("function")
-            return PythonAdapter._inheritance_base_path(fn)
+        wrapped = PythonAdapter._inheritance_base_path_wrapped(base_node)
+        if wrapped is not None:
+            return wrapped
         return ""
 
     def _positional_identifier_arguments(
@@ -2617,22 +3023,97 @@ class PythonAdapter(TreeSitterAdapter):
             call["arguments"] = pos_args
         calls.append(call)
 
-    def extract_calls_from_source(
-        self, source_code: str, file_path: str, *, tree=None
-    ) -> list[dict]:
-        """Extract function calls and attach resolver metadata when statically resolvable."""
-        if tree is None:
-            tree = self._parse(source_code)
+    def _py_enclosing_call_parent(self, node):
+        parent = node.parent
+        while parent and parent.type not in self.parent_types:
+            parent = parent.parent
+        return parent
 
-        # Flatten captures from matches into (node, tag) tuples
-        captures = []
+    def _py_call_from_capture(
+        self,
+        node,
+        *,
+        source_code: str,
+        file_path: str,
+        import_bindings: dict[str, str],
+        by_name: dict[str, list],
+        attr_type_table,
+        alias_cache: dict[int, dict[str, str]],
+        method_returns,
+        function_returns,
+        module: str,
+    ) -> tuple[str, str, str, float, str, str | None, str | None] | None:
+        func_node = node.child_by_field_name("function")
+        if func_node is None:
+            return None
+
+        parent = self._py_enclosing_call_parent(node)
+        if parent is None:
+            return None
+
+        caller_uid = self._uid_for_node(parent, source_code, file_path)
+        if func_node.type == "identifier":
+            call_name = _node_text(func_node)
+            rel_type, tier, confidence, callee_uid, callee_qualified_name = (
+                self._py_call_from_identifier(
+                    func_node,
+                    call_name=call_name,
+                    import_bindings=import_bindings,
+                    by_name=by_name,
+                )
+            )
+        elif func_node.type == "attribute":
+            resolved = self._py_call_from_attribute(
+                func_node,
+                parent,
+                import_bindings=import_bindings,
+                by_name=by_name,
+                attr_type_table=attr_type_table,
+                alias_cache=alias_cache,
+                method_returns=method_returns,
+                function_returns=function_returns,
+                module=module,
+            )
+            if resolved is None:
+                return None
+            rel_type, tier, confidence, call_name, callee_uid, callee_qualified_name = resolved
+        else:
+            return None
+
+        return (
+            caller_uid,
+            call_name,
+            rel_type,
+            tier,
+            confidence,
+            callee_uid,
+            callee_qualified_name,
+        )
+
+    def _py_call_query_captures(self, tree) -> list[tuple[object, str]]:
+        captures: list[tuple[object, str]] = []
         for _match_id, captures_dict in iter_ts_query_matches(
             self.language, self.call_query, tree.root_node
         ):
             for tag, nodes in captures_dict.items():
                 for node in nodes:
                     captures.append((node, tag))
+        return captures
 
+    def _py_call_resolution_context(
+        self,
+        source_code: str,
+        file_path: str,
+        *,
+        tree,
+    ) -> tuple[
+        dict[str, list],
+        dict[str, str],
+        str,
+        dict,
+        dict,
+        dict[str, dict[str, str]],
+    ]:
         symbols = self.extract_symbols(source_code, file_path, tree=tree)
         by_name: dict[str, list] = {}
         for symbol in symbols:
@@ -2649,52 +3130,43 @@ class PythonAdapter(TreeSitterAdapter):
             method_returns=method_returns,
             function_returns=function_returns,
         )
-        alias_cache: dict[int, dict[str, str]] = {}
+        return by_name, import_bindings, module, method_returns, function_returns, attr_type_table
 
-        calls = []
+    def _append_resolved_py_calls(
+        self,
+        calls: list[dict],
+        captures: list[tuple[object, str]],
+        *,
+        source_code: str,
+        file_path: str,
+        by_name: dict[str, list],
+        import_bindings: dict[str, str],
+        module: str,
+        method_returns,
+        function_returns,
+        attr_type_table,
+        alias_cache: dict[int, dict[str, str]],
+    ) -> None:
         for node, tag in captures:
             if tag != "call":
                 continue
-
-            func_node = node.child_by_field_name("function")
-            if not func_node:
+            resolved = self._py_call_from_capture(
+                node,
+                source_code=source_code,
+                file_path=file_path,
+                import_bindings=import_bindings,
+                by_name=by_name,
+                attr_type_table=attr_type_table,
+                alias_cache=alias_cache,
+                method_returns=method_returns,
+                function_returns=function_returns,
+                module=module,
+            )
+            if resolved is None:
                 continue
-
-            parent = node.parent
-            while parent and parent.type not in self.parent_types:
-                parent = parent.parent
-            if not parent:
-                continue
-
-            caller_uid = self._uid_for_node(parent, source_code, file_path)
-            if func_node.type == "identifier":
-                call_name = _node_text(func_node)
-                rel_type, tier, confidence, callee_uid, callee_qualified_name = (
-                    self._py_call_from_identifier(
-                        func_node,
-                        call_name=call_name,
-                        import_bindings=import_bindings,
-                        by_name=by_name,
-                    )
-                )
-            elif func_node.type == "attribute":
-                resolved = self._py_call_from_attribute(
-                    func_node,
-                    parent,
-                    import_bindings=import_bindings,
-                    by_name=by_name,
-                    attr_type_table=attr_type_table,
-                    alias_cache=alias_cache,
-                    method_returns=method_returns,
-                    function_returns=function_returns,
-                    module=module,
-                )
-                if resolved is None:
-                    continue
-                rel_type, tier, confidence, call_name, callee_uid, callee_qualified_name = resolved
-            else:
-                continue
-
+            caller_uid, call_name, rel_type, tier, confidence, callee_uid, callee_qualified_name = (
+                resolved
+            )
             self._append_py_call_record(
                 calls,
                 node=node,
@@ -2707,6 +3179,39 @@ class PythonAdapter(TreeSitterAdapter):
                 callee_qualified_name=callee_qualified_name,
                 source_code=source_code,
             )
+
+    def extract_calls_from_source(
+        self, source_code: str, file_path: str, *, tree=None
+    ) -> list[dict]:
+        """Extract function calls and attach resolver metadata when statically resolvable."""
+        if tree is None:
+            tree = self._parse(source_code)
+
+        captures = self._py_call_query_captures(tree)
+        (
+            by_name,
+            import_bindings,
+            module,
+            method_returns,
+            function_returns,
+            attr_type_table,
+        ) = self._py_call_resolution_context(source_code, file_path, tree=tree)
+        alias_cache: dict[int, dict[str, str]] = {}
+
+        calls: list[dict] = []
+        self._append_resolved_py_calls(
+            calls,
+            captures,
+            source_code=source_code,
+            file_path=file_path,
+            by_name=by_name,
+            import_bindings=import_bindings,
+            module=module,
+            method_returns=method_returns,
+            function_returns=function_returns,
+            attr_type_table=attr_type_table,
+            alias_cache=alias_cache,
+        )
 
         return calls
 
@@ -2813,6 +3318,44 @@ class PythonAdapter(TreeSitterAdapter):
                 out[_node_text(ident)] = targets[0][1]
         return out
 
+    def _call_result_type_from_identifier(
+        self,
+        callee,
+        *,
+        import_bindings: dict[str, str],
+        module: str,
+        function_returns: dict[str, str],
+        allow_bare_constructor: bool,
+    ) -> str:
+        name = _node_text(callee)
+        inferred = function_returns.get(name)
+        if inferred:
+            return inferred
+        if allow_bare_constructor or name[:1].isupper():
+            return self._resolve_type_name(name, import_bindings, module)
+        return ""
+
+    def _call_result_type_from_attribute(
+        self,
+        callee,
+        *,
+        enclosing_class: str,
+        import_bindings: dict[str, str],
+        method_returns: dict[tuple[str, str], str],
+    ) -> str:
+        obj = callee.child_by_field_name("object")
+        attr = callee.child_by_field_name("attribute")
+        if obj is None or attr is None:
+            return ""
+        if obj.type == "identifier" and _node_text(obj) == "self" and enclosing_class:
+            inferred = method_returns.get((enclosing_class, _node_text(attr)))
+            if inferred:
+                return inferred
+        if obj.type == "identifier" and _node_text(attr)[:1].isupper():
+            base = import_bindings.get(_node_text(obj), _node_text(obj))
+            return f"{base}.{_node_text(attr)}"
+        return ""
+
     def _call_result_type(
         self,
         callee,
@@ -2830,26 +3373,108 @@ class PythonAdapter(TreeSitterAdapter):
         if callee is None:
             return ""
         if callee.type == "identifier":
-            name = _node_text(callee)
-            inferred = function_returns.get(name)
-            if inferred:
-                return inferred
-            if allow_bare_constructor or name[:1].isupper():
-                return self._resolve_type_name(name, import_bindings, module)
-            return ""
+            return self._call_result_type_from_identifier(
+                callee,
+                import_bindings=import_bindings,
+                module=module,
+                function_returns=function_returns,
+                allow_bare_constructor=allow_bare_constructor,
+            )
         if callee.type == "attribute":
-            obj = callee.child_by_field_name("object")
-            attr = callee.child_by_field_name("attribute")
-            if obj is None or attr is None:
-                return ""
-            if obj.type == "identifier" and _node_text(obj) == "self" and enclosing_class:
-                inferred = method_returns.get((enclosing_class, _node_text(attr)))
-                if inferred:
-                    return inferred
-            if obj.type == "identifier" and _node_text(attr)[:1].isupper():
-                base = import_bindings.get(_node_text(obj), _node_text(obj))
-                return f"{base}.{_node_text(attr)}"
+            return self._call_result_type_from_attribute(
+                callee,
+                enclosing_class=enclosing_class,
+                import_bindings=import_bindings,
+                method_returns=method_returns,
+            )
         return ""
+
+    def _collect_local_value_assignments(
+        self,
+        func_node,
+        mapping: dict[str, str],
+        *,
+        import_bindings: dict[str, str],
+        module: str,
+    ) -> list[tuple[str, object]]:
+        assignments: list[tuple[str, object]] = []
+        for assign in self._iter_nodes(func_node):
+            if assign.type != "assignment":
+                continue
+            left = assign.child_by_field_name("left")
+            if left is None or left.type != "identifier":
+                continue
+            typ = assign.child_by_field_name("type")
+            if typ is not None:
+                targets = self._type_ref_targets(typ, import_bindings, module)
+                if targets:
+                    mapping.setdefault(_node_text(left), targets[0][1])
+            assignments.append((_node_text(left), assign))
+        return assignments
+
+    def _resolve_local_value_expr_type(
+        self,
+        expr,
+        mapping: dict[str, str],
+        *,
+        cls_table: dict[str, str],
+        enclosing_class: str,
+        import_bindings: dict[str, str],
+        module: str,
+        method_returns: dict[tuple[str, str], str] | None,
+        function_returns: dict[str, str] | None,
+    ) -> str:
+        if expr is None:
+            return ""
+        if expr.type == "identifier":
+            return mapping.get(_node_text(expr), "")
+        if expr.type == "attribute":
+            obj = expr.child_by_field_name("object")
+            attr = expr.child_by_field_name("attribute")
+            if obj is not None and _node_text(obj) == "self" and attr is not None:
+                return cls_table.get(_node_text(attr), "")
+            return ""
+        if expr.type == "call":
+            return self._call_result_type(
+                expr.child_by_field_name("function"),
+                enclosing_class=enclosing_class,
+                import_bindings=import_bindings,
+                module=module,
+                method_returns=method_returns,
+                function_returns=function_returns,
+            )
+        return ""
+
+    def _propagate_local_value_types(
+        self,
+        mapping: dict[str, str],
+        assignments: list[tuple[str, object]],
+        *,
+        cls_table: dict[str, str],
+        enclosing_class: str,
+        import_bindings: dict[str, str],
+        module: str,
+        method_returns: dict[tuple[str, str], str] | None,
+        function_returns: dict[str, str] | None,
+    ) -> None:
+        for _ in range(len(assignments) + 1):
+            changed = False
+            for name, assign in assignments:
+                inferred = self._resolve_local_value_expr_type(
+                    cast(Any, assign).child_by_field_name("right"),
+                    mapping,
+                    cls_table=cls_table,
+                    enclosing_class=enclosing_class,
+                    import_bindings=import_bindings,
+                    module=module,
+                    method_returns=method_returns,
+                    function_returns=function_returns,
+                )
+                if inferred and name not in mapping:
+                    mapping[name] = inferred
+                    changed = True
+            if not changed:
+                break
 
     def _local_value_types(
         self,
@@ -2864,52 +3489,151 @@ class PythonAdapter(TreeSitterAdapter):
     ) -> dict[str, str]:
         """Flow-insensitive local value types from annotations, params, and copies."""
         mapping = self._declared_parameter_types(func_node, import_bindings, module)
-        assignments: list[tuple[str, object]] = []
-        for assign in self._iter_nodes(func_node):
-            if assign.type != "assignment":
-                continue
-            left = assign.child_by_field_name("left")
-            if left is None or left.type != "identifier":
-                continue
-            typ = assign.child_by_field_name("type")
-            if typ is not None:
-                targets = self._type_ref_targets(typ, import_bindings, module)
-                if targets:
-                    mapping.setdefault(_node_text(left), targets[0][1])
-            assignments.append((_node_text(left), assign))
+        assignments = self._collect_local_value_assignments(
+            func_node,
+            mapping,
+            import_bindings=import_bindings,
+            module=module,
+        )
+        self._propagate_local_value_types(
+            mapping,
+            assignments,
+            cls_table=cls_table,
+            enclosing_class=enclosing_class,
+            import_bindings=import_bindings,
+            module=module,
+            method_returns=method_returns,
+            function_returns=function_returns,
+        )
+        return mapping
 
-        def resolve_expr(expr) -> str:
-            if expr is None:
-                return ""
-            if expr.type == "identifier":
-                return mapping.get(_node_text(expr), "")
-            if expr.type == "attribute":
-                obj = expr.child_by_field_name("object")
-                attr = expr.child_by_field_name("attribute")
-                if obj is not None and _node_text(obj) == "self" and attr is not None:
-                    return cls_table.get(_node_text(attr), "")
-                return ""
-            if expr.type == "call":
-                return self._call_result_type(
-                    expr.child_by_field_name("function"),
-                    enclosing_class=enclosing_class,
+    def _class_body_level_attrs(
+        self,
+        body,
+        *,
+        import_bindings: dict[str, str],
+        module: str,
+    ) -> dict[str, str]:
+        attrs: dict[str, str] = {}
+        for stmt in body.children:
+            if stmt.type != "expression_statement":
+                continue
+            for assign in stmt.children:
+                if assign.type != "assignment":
+                    continue
+                left = assign.child_by_field_name("left")
+                right = assign.child_by_field_name("right")
+                typ = assign.child_by_field_name("type")
+                if left is None or left.type != "identifier":
+                    continue
+                lname = _node_text(left)
+                if lname.endswith("_cls") and right is not None and right.type == "string":
+                    literal = self._string_literal_text(right)
+                    if ":" in literal:
+                        attrs.setdefault(lname[:-4], literal.replace(":", "."))
+                elif typ is not None:
+                    type_ident = self._type_identifier(typ)
+                    if type_ident:
+                        attrs.setdefault(
+                            lname, self._resolve_type_name(type_ident, import_bindings, module)
+                        )
+        return attrs
+
+    def _self_attr_type_from_method_assignment(
+        self,
+        assign,
+        *,
+        cname: str,
+        attrs: dict[str, str],
+        local_types: dict[str, str],
+        import_bindings: dict[str, str],
+        module: str,
+        method_returns: dict[tuple[str, str], str],
+        function_returns: dict[str, str],
+        method_name: str,
+    ) -> str | None:
+        left = assign.child_by_field_name("left")
+        right = assign.child_by_field_name("right")
+        typ = assign.child_by_field_name("type")
+        if left is None or left.type != "attribute":
+            return None
+        obj = left.child_by_field_name("object")
+        attr = left.child_by_field_name("attribute")
+        if obj is None or _node_text(obj) != "self" or attr is None:
+            return None
+        aname = _node_text(attr)
+        if typ is not None:
+            targets = self._type_ref_targets(typ, import_bindings, module)
+            if targets:
+                return targets[0][1]
+        if right is not None and right.type == "identifier":
+            rname = _node_text(right)
+            if rname in local_types:
+                return local_types[rname]
+        if right is None or right.type != "call":
+            return None
+        callee = right.child_by_field_name("function")
+        return self._call_result_type(
+            callee,
+            enclosing_class=cname,
+            import_bindings=import_bindings,
+            module=module,
+            method_returns=method_returns,
+            function_returns=function_returns,
+            allow_bare_constructor=method_name == "__init__",
+        ) or None
+
+    def _infer_instance_attrs_from_methods(
+        self,
+        body,
+        *,
+        cname: str,
+        attrs: dict[str, str],
+        import_bindings: dict[str, str],
+        module: str,
+        method_returns: dict[tuple[str, str], str],
+        function_returns: dict[str, str],
+    ) -> None:
+        for fn in body.children:
+            if fn.type != "function_definition":
+                continue
+            fn_name = fn.child_by_field_name("name")
+            if fn_name is None:
+                continue
+            method_name = _node_text(fn_name)
+            local_types = self._local_value_types(
+                fn,
+                cls_table=attrs,
+                enclosing_class=cname,
+                import_bindings=import_bindings,
+                module=module,
+                method_returns=method_returns,
+                function_returns=function_returns,
+            )
+            for assign in self._iter_nodes(fn):
+                if assign.type != "assignment":
+                    continue
+                left = assign.child_by_field_name("left")
+                if left is None or left.type != "attribute":
+                    continue
+                obj = left.child_by_field_name("object")
+                attr = left.child_by_field_name("attribute")
+                if obj is None or _node_text(obj) != "self" or attr is None:
+                    continue
+                aname = _node_text(attr)
+                inferred = self._self_attr_type_from_method_assignment(
+                    assign,
+                    cname=cname,
+                    attrs=attrs,
+                    local_types=local_types,
                     import_bindings=import_bindings,
                     module=module,
                     method_returns=method_returns,
                     function_returns=function_returns,
+                    method_name=method_name,
                 )
-            return ""
-
-        for _ in range(len(assignments) + 1):
-            changed = False
-            for name, assign in assignments:
-                inferred = resolve_expr(cast(Any, assign).child_by_field_name("right"))
-                if inferred and name not in mapping:
-                    mapping[name] = inferred
-                    changed = True
-            if not changed:
-                break
-        return mapping
+                if inferred:
+                    attrs.setdefault(aname, inferred)
 
     def _build_attr_type_table(
         self,
@@ -2939,102 +3663,134 @@ class PythonAdapter(TreeSitterAdapter):
             if name_node is None or body is None:
                 continue
             cname = _node_text(name_node)
-            attrs: dict[str, str] = {}
-            # Class-body assignments: string-cls convention + annotations (direct children only).
-            for stmt in body.children:
-                if stmt.type != "expression_statement":
-                    continue
-                for assign in stmt.children:
-                    if assign.type != "assignment":
-                        continue
-                    left = assign.child_by_field_name("left")
-                    right = assign.child_by_field_name("right")
-                    typ = assign.child_by_field_name("type")
-                    if left is None or left.type != "identifier":
-                        continue
-                    lname = _node_text(left)
-                    if lname.endswith("_cls") and right is not None and right.type == "string":
-                        literal = self._string_literal_text(right)
-                        if ":" in literal:
-                            attrs.setdefault(lname[:-4], literal.replace(":", "."))
-                    elif typ is not None:
-                        type_ident = self._type_identifier(typ)
-                        if type_ident:
-                            attrs.setdefault(
-                                lname, self._resolve_type_name(type_ident, import_bindings, module)
-                            )
-            # Instance-method assignments: the class shape may be established by
-            # __init__, configure/bind methods, or framework hooks. Keep the signal
-            # structural: only typed params/locals, explicit annotations, known
-            # return types, or constructor-looking calls carry a type.
-            for fn in body.children:
-                if fn.type != "function_definition":
-                    continue
-                fn_name = fn.child_by_field_name("name")
-                if fn_name is None:
-                    continue
-                method_name = _node_text(fn_name)
-                local_types = self._local_value_types(
-                    fn,
-                    cls_table=attrs,
-                    enclosing_class=cname,
-                    import_bindings=import_bindings,
-                    module=module,
-                    method_returns=method_returns,
-                    function_returns=function_returns,
-                )
-                for assign in self._iter_nodes(fn):
-                    if assign.type != "assignment":
-                        continue
-                    left = assign.child_by_field_name("left")
-                    right = assign.child_by_field_name("right")
-                    typ = assign.child_by_field_name("type")
-                    if left is None or left.type != "attribute":
-                        continue
-                    obj = left.child_by_field_name("object")
-                    attr = left.child_by_field_name("attribute")
-                    if obj is None or _node_text(obj) != "self" or attr is None:
-                        continue
-                    aname = _node_text(attr)
-                    # (a) explicit annotation: ``self.x: Type = ...`` — the developer
-                    # declared the attribute's type. Use the type-ref resolver so a
-                    # qualified annotation (``routing.APIRouter``) keeps its module
-                    # (``fastapi.routing.APIRouter``), not the current one.
-                    if typ is not None:
-                        targets = self._type_ref_targets(typ, import_bindings, module)
-                        if targets:
-                            attrs.setdefault(aname, targets[0][1])
-                            continue
-                    # (c) typed value propagation: ``self.x = param`` where ``param``
-                    # is type-annotated, or ``self.x = local`` where ``local`` copied
-                    # such a value / a known-return factory result.
-                    if right is not None and right.type == "identifier":
-                        rname = _node_text(right)
-                        if rname in local_types:
-                            attrs.setdefault(aname, local_types[rname])
-                        continue
-                    # (d) known return / constructor: ``self.x = factory()`` when
-                    # factory has a visible return type, or ``self.x = Class(...)`` /
-                    # ``self.x = mod.Class(...)``. Preserve the old __init__ behavior
-                    # for bare constructor calls; outside __init__, require a
-                    # constructor-looking name or a known return type.
-                    if right is None or right.type != "call":
-                        continue
-                    callee = right.child_by_field_name("function")
-                    inferred = self._call_result_type(
-                        callee,
-                        enclosing_class=cname,
-                        import_bindings=import_bindings,
-                        module=module,
-                        method_returns=method_returns,
-                        function_returns=function_returns,
-                        allow_bare_constructor=method_name == "__init__",
-                    )
-                    if inferred:
-                        attrs.setdefault(aname, inferred)
+            attrs = self._class_body_level_attrs(
+                body,
+                import_bindings=import_bindings,
+                module=module,
+            )
+            self._infer_instance_attrs_from_methods(
+                body,
+                cname=cname,
+                attrs=attrs,
+                import_bindings=import_bindings,
+                module=module,
+                method_returns=method_returns,
+                function_returns=function_returns,
+            )
             if attrs:
                 table.setdefault(cname, {}).update(attrs)
         return table
+
+    def _return_type_from_annotation(
+        self,
+        fn_node,
+        *,
+        import_bindings: dict[str, str],
+        module: str,
+    ) -> str:
+        ret = fn_node.child_by_field_name("return_type")
+        if ret is None:
+            return ""
+        ident = self._type_identifier(ret)
+        if not ident:
+            return ""
+        return self._resolve_type_name(ident, import_bindings, module)
+
+    def _return_type_from_constructor_return(
+        self,
+        fn_node,
+        *,
+        import_bindings: dict[str, str],
+        module: str,
+    ) -> str:
+        body = fn_node.child_by_field_name("body")
+        if body is None:
+            return ""
+        for node in self._iter_nodes(body):
+            if node.type != "return_statement":
+                continue
+            expr = node.named_children[0] if node.named_children else None
+            if expr is None or expr.type != "call":
+                continue
+            callee = expr.child_by_field_name("function")
+            if callee is None or callee.type != "identifier":
+                continue
+            name = _node_text(callee)
+            if name[:1].isupper():
+                return self._resolve_type_name(name, import_bindings, module)
+        return ""
+
+    def _inferred_function_return_type(
+        self,
+        fn_node,
+        *,
+        import_bindings: dict[str, str],
+        module: str,
+    ) -> str:
+        annotated = self._return_type_from_annotation(
+            fn_node,
+            import_bindings=import_bindings,
+            module=module,
+        )
+        if annotated:
+            return annotated
+        return self._return_type_from_constructor_return(
+            fn_node,
+            import_bindings=import_bindings,
+            module=module,
+        )
+
+    def _collect_class_method_returns(
+        self,
+        tree,
+        *,
+        import_bindings: dict[str, str],
+        module: str,
+        method_returns: dict[tuple[str, str], str],
+    ) -> None:
+        for cls in self._iter_nodes(tree.root_node):
+            if cls.type != "class_definition":
+                continue
+            cname_node = cls.child_by_field_name("name")
+            body = cls.child_by_field_name("body")
+            if cname_node is None or body is None:
+                continue
+            cname = _node_text(cname_node)
+            for fn in body.children:
+                if fn.type != "function_definition":
+                    continue
+                fname_node = fn.child_by_field_name("name")
+                if fname_node is None:
+                    continue
+                rtype = self._inferred_function_return_type(
+                    fn,
+                    import_bindings=import_bindings,
+                    module=module,
+                )
+                if rtype:
+                    method_returns.setdefault((cname, _node_text(fname_node)), rtype)
+
+    def _collect_module_function_returns(
+        self,
+        tree,
+        *,
+        import_bindings: dict[str, str],
+        module: str,
+        function_returns: dict[str, str],
+    ) -> None:
+        for fn in self._iter_nodes(tree.root_node):
+            if fn.type != "function_definition":
+                continue
+            fname_node = fn.child_by_field_name("name")
+            if fname_node is None:
+                continue
+            rtype = self._inferred_function_return_type(
+                fn,
+                import_bindings=import_bindings,
+                module=module,
+            )
+            if rtype:
+                function_returns.setdefault(_node_text(fname_node), rtype)
 
     def _build_return_type_table(
         self, tree, import_bindings: dict[str, str], module: str
@@ -3052,58 +3808,141 @@ class PythonAdapter(TreeSitterAdapter):
         """
         method_returns: dict[tuple[str, str], str] = {}
         function_returns: dict[str, str] = {}
-
-        def _return_type_of(fn_node) -> str:
-            ret = fn_node.child_by_field_name("return_type")
-            if ret is not None:
-                ident = self._type_identifier(ret)
-                if ident:
-                    return self._resolve_type_name(ident, import_bindings, module)
-            body = fn_node.child_by_field_name("body")
-            if body is None:
-                return ""
-            for node in self._iter_nodes(body):
-                if node.type != "return_statement":
-                    continue
-                expr = node.named_children[0] if node.named_children else None
-                # Don't descend into nested functions' returns.
-                if expr is not None and expr.type == "call":
-                    callee = expr.child_by_field_name("function")
-                    if callee is not None and callee.type == "identifier":
-                        name = _node_text(callee)
-                        if name[:1].isupper():
-                            return self._resolve_type_name(name, import_bindings, module)
-            return ""
-
-        for cls in self._iter_nodes(tree.root_node):
-            if cls.type != "class_definition":
-                continue
-            cname_node = cls.child_by_field_name("name")
-            body = cls.child_by_field_name("body")
-            if cname_node is None or body is None:
-                continue
-            cname = _node_text(cname_node)
-            for fn in body.children:
-                if fn.type != "function_definition":
-                    continue
-                fname_node = fn.child_by_field_name("name")
-                if fname_node is None:
-                    continue
-                rtype = _return_type_of(fn)
-                if rtype:
-                    method_returns.setdefault((cname, _node_text(fname_node)), rtype)
-
-        for fn in self._iter_nodes(tree.root_node):
-            if fn.type != "function_definition":
-                continue
-            fname_node = fn.child_by_field_name("name")
-            if fname_node is None:
-                continue
-            rtype = _return_type_of(fn)
-            if rtype:
-                function_returns.setdefault(_node_text(fname_node), rtype)
-
+        self._collect_class_method_returns(
+            tree,
+            import_bindings=import_bindings,
+            module=module,
+            method_returns=method_returns,
+        )
+        self._collect_module_function_returns(
+            tree,
+            import_bindings=import_bindings,
+            module=module,
+            function_returns=function_returns,
+        )
         return method_returns, function_returns
+
+    @staticmethod
+    def _collect_function_nodes_and_aliases(tree) -> tuple[dict[str, object], dict[str, str]]:
+        func_nodes: dict[str, object] = {}
+        func_aliases: dict[str, str] = {}
+        for node in PythonAdapter._iter_nodes(tree.root_node):
+            if node.type == "function_definition":
+                nm = node.child_by_field_name("name")
+                if nm is not None:
+                    func_nodes[_node_text(nm)] = node
+            elif node.type == "assignment":
+                lf = node.child_by_field_name("left")
+                rt = node.child_by_field_name("right")
+                if (
+                    lf is not None
+                    and lf.type == "identifier"
+                    and rt is not None
+                    and rt.type == "identifier"
+                ):
+                    func_aliases[_node_text(lf)] = _node_text(rt)
+        return func_nodes, func_aliases
+
+    def _annotated_proxy_binding(
+        self,
+        stmt,
+        *,
+        var_name: str,
+        right,
+        typ,
+        import_bindings: dict[str, str],
+        module: str,
+        context_var_types: dict[str, str],
+        source_code: str,
+    ) -> dict | None:
+        type_ident = self._type_identifier(typ)
+        if not type_ident:
+            return None
+        context_binding = self._proxy_context_binding(
+            right,
+            context_var_types,
+            source_code,
+        )
+        return {
+            "target_type": self._resolve_type_name(type_ident, import_bindings, module),
+            "target_source": "annotation",
+            "wrapped_callable": "",
+            "confidence": 1.0,
+            **context_binding,
+        }
+
+    def _wrapped_callable_proxy_binding(
+        self,
+        *,
+        var_name: str,
+        right,
+        func_nodes: dict[str, object],
+        func_aliases: dict[str, str],
+        source_code: str,
+        import_bindings: dict[str, str],
+        module: str,
+    ) -> dict | None:
+        wrapped = self._first_positional_identifier(right)
+        if not wrapped:
+            return None
+        resolved_wrapped = func_aliases.get(wrapped, wrapped)
+        fn = func_nodes.get(resolved_wrapped)
+        if fn is None:
+            return None
+        target_qn = self._constructed_imported_class(fn, source_code, import_bindings, module)
+        if not target_qn:
+            return None
+        return {
+            "target_type": target_qn,
+            "target_source": "wrapped_callable",
+            "wrapped_callable": f"{module}.{resolved_wrapped}",
+            "confidence": 0.65,
+        }
+
+    def _proxy_binding_from_assignment(
+        self,
+        stmt,
+        *,
+        import_bindings: dict[str, str],
+        module: str,
+        context_var_types: dict[str, str],
+        source_code: str,
+        func_nodes: dict[str, object],
+        func_aliases: dict[str, str],
+    ) -> tuple[str, dict] | None:
+        left = stmt.child_by_field_name("left")
+        right = stmt.child_by_field_name("right")
+        typ = stmt.child_by_field_name("type")
+        if left is None or left.type != "identifier" or right is None or right.type != "call":
+            return None
+        callee = right.child_by_field_name("function")
+        if callee is None or callee.type != "identifier":
+            return None
+        if not _node_text(callee).endswith("Proxy"):
+            return None
+        var_name = _node_text(left)
+        if typ is not None:
+            record = self._annotated_proxy_binding(
+                stmt,
+                var_name=var_name,
+                right=right,
+                typ=typ,
+                import_bindings=import_bindings,
+                module=module,
+                context_var_types=context_var_types,
+                source_code=source_code,
+            )
+            return (var_name, record) if record is not None else None
+        record = self._wrapped_callable_proxy_binding(
+            var_name=var_name,
+            right=right,
+            func_nodes=func_nodes,
+            func_aliases=func_aliases,
+            source_code=source_code,
+            import_bindings=import_bindings,
+            module=module,
+        )
+        return (var_name, record) if record is not None else None
 
     def _build_proxy_binding_table(
         self, tree, source_code: str, import_bindings: dict[str, str], module: str
@@ -3125,79 +3964,25 @@ class PythonAdapter(TreeSitterAdapter):
             import_bindings,
             module,
         )
-
-        # name -> function_definition node, and simple ``alias = other`` function aliases.
-        func_nodes: dict[str, object] = {}
-        func_aliases: dict[str, str] = {}
-        for node in self._iter_nodes(tree.root_node):
-            if node.type == "function_definition":
-                nm = node.child_by_field_name("name")
-                if nm is not None:
-                    func_nodes[_node_text(nm)] = node
-            elif node.type == "assignment":
-                lf = node.child_by_field_name("left")
-                rt = node.child_by_field_name("right")
-                if (
-                    lf is not None
-                    and lf.type == "identifier"
-                    and rt is not None
-                    and rt.type == "identifier"
-                ):
-                    func_aliases[_node_text(lf)] = _node_text(rt)
+        func_nodes, func_aliases = self._collect_function_nodes_and_aliases(tree)
 
         table: dict[str, dict] = {}
         for stmt in self._iter_nodes(tree.root_node):
             if stmt.type != "assignment":
                 continue
-            left = stmt.child_by_field_name("left")
-            right = stmt.child_by_field_name("right")
-            typ = stmt.child_by_field_name("type")
-            if left is None or left.type != "identifier" or right is None:
+            binding = self._proxy_binding_from_assignment(
+                stmt,
+                import_bindings=import_bindings,
+                module=module,
+                context_var_types=context_var_types,
+                source_code=source_code,
+                func_nodes=func_nodes,
+                func_aliases=func_aliases,
+            )
+            if binding is None:
                 continue
-            if right.type != "call":
-                continue
-            callee = right.child_by_field_name("function")
-            if callee is None or callee.type != "identifier":
-                continue
-            if not _node_text(callee).endswith("Proxy"):
-                continue
-            var_name = _node_text(left)
-
-            # Source 1: annotation names the forwarded type directly.
-            if typ is not None:
-                type_ident = self._type_identifier(typ)
-                if type_ident:
-                    context_binding = self._proxy_context_binding(
-                        right,
-                        context_var_types,
-                        source_code,
-                    )
-                    table[var_name] = {
-                        "target_type": self._resolve_type_name(type_ident, import_bindings, module),
-                        "target_source": "annotation",
-                        "wrapped_callable": "",
-                        "confidence": 1.0,
-                        **context_binding,
-                    }
-                continue
-
-            # Source 2: bare ``Proxy(callable)`` — resolve via the wrapped callable's body.
-            wrapped = self._first_positional_identifier(right)
-            if not wrapped:
-                continue
-            resolved_wrapped = func_aliases.get(wrapped, wrapped)
-            fn = func_nodes.get(resolved_wrapped)
-            if fn is None:
-                continue
-            target_qn = self._constructed_imported_class(fn, source_code, import_bindings, module)
-            if not target_qn:
-                continue
-            table[var_name] = {
-                "target_type": target_qn,
-                "target_source": "wrapped_callable",
-                "wrapped_callable": f"{module}.{resolved_wrapped}",
-                "confidence": 0.65,
-            }
+            var_name, record = binding
+            table[var_name] = record
         return table
 
     def _build_context_var_type_table(
@@ -3223,32 +4008,39 @@ class PythonAdapter(TreeSitterAdapter):
         return table
 
     @staticmethod
+    def _context_var_payload_from_generic_type(node) -> str:
+        named = [child for child in node.children if child.is_named]
+        if len(named) < 2:
+            return ""
+        base = named[0]
+        if base.type != "identifier" or _node_text(base) != "ContextVar":
+            return ""
+        payload = next(
+            (
+                child
+                for child in named[1:]
+                if child.type in {"type", "type_parameter", "identifier"}
+            ),
+            None,
+        )
+        if payload is None:
+            return ""
+        if payload.type == "identifier":
+            return _node_text(payload)
+        for child in PythonAdapter._iter_nodes(payload):
+            if child.type == "identifier":
+                return _node_text(child)
+        return ""
+
+    @staticmethod
     def _context_var_payload_type_identifier(type_node) -> str:
         """Return ``T`` for ``ContextVar[T]`` annotations, else ``''``."""
         for node in PythonAdapter._iter_nodes(type_node):
             if node.type != "generic_type":
                 continue
-            named = [child for child in node.children if child.is_named]
-            if len(named) < 2:
-                continue
-            base = named[0]
-            if base.type != "identifier" or _node_text(base) != "ContextVar":
-                continue
-            payload = next(
-                (
-                    child
-                    for child in named[1:]
-                    if child.type in {"type", "type_parameter", "identifier"}
-                ),
-                None,
-            )
-            if payload is None:
-                continue
-            if payload.type == "identifier":
-                return _node_text(payload)
-            for child in PythonAdapter._iter_nodes(payload):
-                if child.type == "identifier":
-                    return _node_text(child)
+            payload = PythonAdapter._context_var_payload_from_generic_type(node)
+            if payload:
+                return payload
         return ""
 
     def _proxy_context_binding(
@@ -3306,6 +4098,45 @@ class PythonAdapter(TreeSitterAdapter):
             return ""  # first positional is not a bare identifier (e.g. a lambda)
         return ""
 
+    def _function_local_import_bindings(
+        self,
+        func_node,
+        import_bindings: dict[str, str],
+        module: str,
+    ) -> dict[str, str]:
+        bindings = dict(import_bindings)
+        package = module.rsplit(".", 1)[0] if "." in module else ""
+        for node in self._iter_nodes(func_node):
+            if node.type not in ("import_from_statement",):
+                continue
+            text = _node_text(node).strip()
+            from_parts = split_python_from_import(text)
+            if not from_parts:
+                continue
+            import_module, names = from_parts
+            target_module = self._resolve_import_module(import_module, package)
+            for item in names.split(","):
+                item = item.strip()
+                original, _, alias = item.partition(" as ")
+                local = alias.strip() or original.strip()
+                if local and local != "*":
+                    bindings[local] = f"{target_module}.{original.strip()}"
+        return bindings
+
+    @staticmethod
+    def _constructed_classes_in_body(func_node, bindings: dict[str, str]) -> set[str]:
+        constructed: set[str] = set()
+        for node in PythonAdapter._iter_nodes(func_node):
+            if node.type != "call":
+                continue
+            fn = node.child_by_field_name("function")
+            if fn is None or fn.type != "identifier":
+                continue
+            name = _node_text(fn)
+            if name in bindings:
+                constructed.add(bindings[name])
+        return constructed
+
     def _constructed_imported_class(
         self, func_node, source_code: str, import_bindings: dict[str, str], module: str
     ) -> str:
@@ -3316,34 +4147,8 @@ class PythonAdapter(TreeSitterAdapter):
         (not capitalization). Returns the resolved qualified name only when exactly one
         such class is constructed (ambiguity -> no edge, precision over recall).
         """
-        # Body-local from-imports add to the visible bindings for this function.
-        bindings = dict(import_bindings)
-        for node in self._iter_nodes(func_node):
-            if node.type in ("import_from_statement",):
-                text = _node_text(node).strip()
-                from_parts = split_python_from_import(text)
-                if from_parts:
-                    import_module, names = from_parts
-                    target_module = self._resolve_import_module(
-                        import_module, module.rsplit(".", 1)[0] if "." in module else ""
-                    )
-                    for item in names.split(","):
-                        item = item.strip()
-                        original, _, alias = item.partition(" as ")
-                        local = alias.strip() or original.strip()
-                        if local and local != "*":
-                            bindings[local] = f"{target_module}.{original.strip()}"
-
-        constructed: set[str] = set()
-        for node in self._iter_nodes(func_node):
-            if node.type != "call":
-                continue
-            fn = node.child_by_field_name("function")
-            if fn is None or fn.type != "identifier":
-                continue
-            name = _node_text(fn)
-            if name in bindings:
-                constructed.add(bindings[name])
+        bindings = self._function_local_import_bindings(func_node, import_bindings, module)
+        constructed = self._constructed_classes_in_body(func_node, bindings)
         return next(iter(constructed)) if len(constructed) == 1 else ""
 
     @staticmethod
@@ -3422,19 +4227,19 @@ class PythonAdapter(TreeSitterAdapter):
     def _single_method_candidate_uid(candidates: list) -> str | None:
         return str(candidates[0].uid) if len(candidates) == 1 else None
 
-    def _resolve_method_uid(
-        self, caller_node, method_name: str, by_name: dict[str, list]
-    ) -> str | None:
-        candidates = by_name.get(method_name, [])
-        if not candidates:
-            return None
-
-        class_node = caller_node
+    @staticmethod
+    def _enclosing_class_definition(node):
+        class_node = node
         while class_node and class_node.type != "class_definition":
             class_node = class_node.parent
-        if not class_node:
-            return self._single_method_candidate_uid(candidates)
+        return class_node
 
+    def _method_uid_for_class_node(
+        self,
+        class_node,
+        method_name: str,
+        candidates: list,
+    ) -> str | None:
         class_name_node = class_node.child_by_field_name("name")
         if not class_name_node:
             return None
@@ -3443,6 +4248,19 @@ class PythonAdapter(TreeSitterAdapter):
         if resolved:
             return resolved
         return self._single_method_candidate_uid(candidates)
+
+    def _resolve_method_uid(
+        self, caller_node, method_name: str, by_name: dict[str, list]
+    ) -> str | None:
+        candidates = by_name.get(method_name, [])
+        if not candidates:
+            return None
+
+        class_node = self._enclosing_class_definition(caller_node)
+        if not class_node:
+            return self._single_method_candidate_uid(candidates)
+
+        return self._method_uid_for_class_node(class_node, method_name, candidates)
 
     def extract_reexports(self, source_code: str, file_path: str) -> list[dict]:
         """Re-export edges: a package ``__init__`` surfacing a symbol from a submodule.

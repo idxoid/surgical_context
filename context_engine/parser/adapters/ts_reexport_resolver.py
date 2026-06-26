@@ -64,6 +64,64 @@ class TsReexportResolver:
         self._surface_cache[abs_key] = surface
         return surface
 
+    def _record_export_specifier(
+        self,
+        spec,
+        *,
+        target_module: str,
+        seen: set[tuple[str, str]],
+        out: dict[str, str],
+    ) -> None:
+        if spec.type != "export_specifier":
+            return
+        name_node = spec.child_by_field_name("name")
+        alias_node = spec.child_by_field_name("alias")
+        if name_node is None:
+            return
+        original = self._adapter._node_text(name_node)
+        export_name = (
+            self._adapter._node_text(alias_node) if alias_node is not None else original
+        )
+        if original == "default":
+            return
+        export_qn = f"{target_module}.{original}"
+        key = (export_name, export_qn)
+        if key in seen:
+            return
+        seen.add(key)
+        out[export_name] = export_qn
+
+    def _surface_from_export_statement(
+        self,
+        stmt,
+        *,
+        file_path: str,
+        depth: int,
+        seen: set[tuple[str, str]],
+        out: dict[str, str],
+    ) -> None:
+        source_node = next((c for c in stmt.children if c.type == "string"), None)
+        if source_node is None:
+            return
+        import_source = self._adapter._string_literal_text(source_node)
+        if not import_source:
+            return
+        target_module = self._adapter._normalize_import_source(file_path, import_source)
+        export_clause = next(
+            (c for c in stmt.children if c.type == "export_clause"),
+            None,
+        )
+        if export_clause is None:
+            self._merge_star_export(out, file_path, target_module, depth=depth)
+            return
+        for spec in export_clause.named_children:
+            self._record_export_specifier(
+                spec,
+                target_module=target_module,
+                seen=seen,
+                out=out,
+            )
+
     def _surface_from_source(
         self,
         source_code: str,
@@ -78,39 +136,13 @@ class TsReexportResolver:
         for stmt in self._adapter._iter_nodes(tree.root_node):
             if stmt.type != "export_statement":
                 continue
-            source_node = next((c for c in stmt.children if c.type == "string"), None)
-            if source_node is None:
-                continue
-            import_source = self._adapter._string_literal_text(source_node)
-            if not import_source:
-                continue
-            target_module = self._adapter._normalize_import_source(file_path, import_source)
-            export_clause = next(
-                (c for c in stmt.children if c.type == "export_clause"),
-                None,
+            self._surface_from_export_statement(
+                stmt,
+                file_path=file_path,
+                depth=depth,
+                seen=seen,
+                out=out,
             )
-            if export_clause is None:
-                self._merge_star_export(out, file_path, target_module, depth=depth)
-                continue
-            for spec in export_clause.named_children:
-                if spec.type != "export_specifier":
-                    continue
-                name_node = spec.child_by_field_name("name")
-                alias_node = spec.child_by_field_name("alias")
-                if name_node is None:
-                    continue
-                original = self._adapter._node_text(name_node)
-                export_name = (
-                    self._adapter._node_text(alias_node) if alias_node is not None else original
-                )
-                if original == "default":
-                    continue
-                export_qn = f"{target_module}.{original}"
-                key = (export_name, export_qn)
-                if key in seen:
-                    continue
-                seen.add(key)
-                out[export_name] = export_qn
 
         return out
 

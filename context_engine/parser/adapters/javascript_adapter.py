@@ -275,6 +275,29 @@ class JavaScriptAdapter(TreeSitterAdapter):
                 name=match.group(2) or "",
             )
 
+    def _finalize_javascript_symbols(
+        self,
+        symbols: list[SymbolMetadata],
+        source_code: str,
+        file_path: str,
+        *,
+        tree,
+    ) -> None:
+        from context_engine.parser.adapters.typescript_adapter import TypeScriptAdapter
+        from context_engine.parser.docstring_extract import attach_docstrings
+
+        ts_helpers = TypeScriptAdapter()
+        ts_helpers._mark_property_accessor_symbols(symbols, tree, source_code, file_path)
+        ts_helpers._mark_react_hook_symbols(symbols)
+        ts_helpers._mark_behavioral_shape_symbols(symbols, tree)
+        attach_docstrings(
+            symbols,
+            source_code,
+            file_path,
+            tree=tree,
+            language=self.language_name,
+        )
+
     def extract_symbols(
         self, source_code: str, file_path: str, *, tree=None
     ) -> list[SymbolMetadata]:
@@ -292,21 +315,7 @@ class JavaScriptAdapter(TreeSitterAdapter):
 
         if tree is None:
             tree = self._parse(source_code)
-        from context_engine.parser.adapters.typescript_adapter import TypeScriptAdapter
-
-        ts_helpers = TypeScriptAdapter()
-        ts_helpers._mark_property_accessor_symbols(symbols, tree, source_code, file_path)
-        ts_helpers._mark_react_hook_symbols(symbols)
-        ts_helpers._mark_behavioral_shape_symbols(symbols, tree)
-        from context_engine.parser.docstring_extract import attach_docstrings
-
-        attach_docstrings(
-            symbols,
-            source_code,
-            file_path,
-            tree=tree,
-            language=self.language_name,
-        )
+        self._finalize_javascript_symbols(symbols, source_code, file_path, tree=tree)
         return symbols
 
     def extract_proxy_bindings(self, source_code: str, file_path: str, *, tree=None) -> list[dict]:
@@ -713,6 +722,79 @@ class JavaScriptAdapter(TreeSitterAdapter):
         )
         return call
 
+    def _js_call_from_capture(
+        self,
+        node,
+        tag: str,
+        *,
+        symbol_uids: set[str],
+        source_code: str,
+        file_path: str,
+        import_bindings: dict[str, str],
+        by_name: dict[str, list],
+        scope_graph,
+        ts,
+    ) -> dict | None:
+        if tag != "call":
+            return None
+
+        func_node = node.child_by_field_name("function")
+        if func_node is None and node.type == "new_expression":
+            func_node = node.child_by_field_name("constructor")
+        if func_node is None:
+            return None
+
+        parent = self._enclosing_symbol_owner(node)
+        if parent is None:
+            return None
+
+        caller_uid = self._caller_uid_for_indexed_owner(
+            parent,
+            symbol_uids,
+            source_code,
+            file_path,
+        )
+        if not caller_uid:
+            return None
+
+        return self._js_call_from_node(
+            node,
+            func_node,
+            parent=parent,
+            caller_uid=caller_uid,
+            source_code=source_code,
+            file_path=file_path,
+            import_bindings=import_bindings,
+            by_name=by_name,
+            scope_graph=scope_graph,
+            ts=ts,
+        )
+
+    def _javascript_call_index_context(
+        self,
+        source_code: str,
+        file_path: str,
+        *,
+        tree,
+    ) -> tuple[dict[str, list], set[str], dict[str, str], object, object]:
+        from context_engine.parser.adapters.ts_scope_graph import TsScopeGraph
+        from context_engine.parser.adapters.typescript_adapter import TypeScriptAdapter
+
+        symbols = self.extract_symbols(source_code, file_path, tree=tree)
+        by_name: dict[str, list] = {}
+        for symbol in symbols:
+            by_name.setdefault(symbol.name, []).append(symbol)
+        symbol_uids = {str(symbol.uid) for symbol in symbols}
+        import_bindings, _ = self._extract_import_bindings(source_code, file_path)
+        ts = TypeScriptAdapter()
+        scope_graph = TsScopeGraph.build(
+            tree.root_node,
+            import_bindings=import_bindings,
+            node_text=TypeScriptAdapter._node_text,
+            normalize_require=lambda path: self._normalize_import_source(file_path, path),
+        )
+        return by_name, symbol_uids, import_bindings, scope_graph, ts
+
     def extract_calls_from_source(
         self, source_code: str, file_path: str, *, tree=None
     ) -> list[dict]:
@@ -731,51 +813,18 @@ class JavaScriptAdapter(TreeSitterAdapter):
             tree.root_node,
         )
 
-        symbols = self.extract_symbols(source_code, file_path, tree=tree)
-        by_name: dict[str, list] = {}
-        for symbol in symbols:
-            by_name.setdefault(symbol.name, []).append(symbol)
-        symbol_uids = {str(symbol.uid) for symbol in symbols}
-
-        import_bindings, _ = self._extract_import_bindings(source_code, file_path)
-        from context_engine.parser.adapters.ts_scope_graph import TsScopeGraph
-
-        ts = TypeScriptAdapter()
-        scope_graph = TsScopeGraph.build(
-            tree.root_node,
-            import_bindings=import_bindings,
-            node_text=TypeScriptAdapter._node_text,
-            normalize_require=lambda path: self._normalize_import_source(file_path, path),
+        by_name, symbol_uids, import_bindings, scope_graph, ts = self._javascript_call_index_context(
+            source_code,
+            file_path,
+            tree=tree,
         )
+
         calls = []
         for node, tag in captures:
-            if tag != "call":
-                continue
-
-            func_node = node.child_by_field_name("function")
-            if func_node is None and node.type == "new_expression":
-                func_node = node.child_by_field_name("constructor")
-            if func_node is None:
-                continue
-
-            parent = self._enclosing_symbol_owner(node)
-            if parent is None:
-                continue
-
-            caller_uid = self._caller_uid_for_indexed_owner(
-                parent,
-                symbol_uids,
-                source_code,
-                file_path,
-            )
-            if not caller_uid:
-                continue
-
-            call = self._js_call_from_node(
+            call = self._js_call_from_capture(
                 node,
-                func_node,
-                parent=parent,
-                caller_uid=caller_uid,
+                tag,
+                symbol_uids=symbol_uids,
                 source_code=source_code,
                 file_path=file_path,
                 import_bindings=import_bindings,
@@ -1110,6 +1159,46 @@ class JavaScriptAdapter(TreeSitterAdapter):
     def _single_method_candidate_uid(candidates: list) -> str | None:
         return str(candidates[0].uid) if len(candidates) == 1 else None
 
+    @staticmethod
+    def _enclosing_class_declaration(node):
+        class_node = node
+        while class_node and class_node.type != "class_declaration":
+            class_node = class_node.parent
+        return class_node
+
+    def _resolve_method_uid_from_property_assignment(
+        self,
+        caller_node,
+        method_name: str,
+        candidates: list,
+        source_code: str,
+    ) -> str | None:
+        if not source_code or caller_node.type not in {"function_expression", "arrow_function"}:
+            return None
+        assignment = self._property_assignment_for_value_node(caller_node, source_code)
+        if not assignment:
+            return None
+        owner, _method = assignment
+        for candidate in candidates:
+            if f".{owner}.{method_name}" in candidate.qualified_name:
+                return str(candidate.uid)
+        return None
+
+    def _method_uid_for_class_node(
+        self,
+        class_node,
+        method_name: str,
+        candidates: list,
+    ) -> str | None:
+        class_name_node = class_node.child_by_field_name("name")
+        if not class_name_node:
+            return None
+        class_name = class_name_node.text.decode("utf-8")
+        resolved = self._method_uid_for_class_name(candidates, class_name, method_name)
+        if resolved:
+            return resolved
+        return self._single_method_candidate_uid(candidates)
+
     def _resolve_method_uid(
         self,
         caller_node,
@@ -1122,27 +1211,19 @@ class JavaScriptAdapter(TreeSitterAdapter):
         if not candidates:
             return None
 
-        class_node = caller_node
-        while class_node and class_node.type != "class_declaration":
-            class_node = class_node.parent
+        class_node = self._enclosing_class_declaration(caller_node)
         if not class_node:
-            if source_code and caller_node.type in {"function_expression", "arrow_function"}:
-                assignment = self._property_assignment_for_value_node(caller_node, source_code)
-                if assignment:
-                    owner, _method = assignment
-                    for candidate in candidates:
-                        if f".{owner}.{method_name}" in candidate.qualified_name:
-                            return str(candidate.uid)
+            resolved = self._resolve_method_uid_from_property_assignment(
+                caller_node,
+                method_name,
+                candidates,
+                source_code,
+            )
+            if resolved:
+                return resolved
             return self._single_method_candidate_uid(candidates)
 
-        class_name_node = class_node.child_by_field_name("name")
-        if not class_name_node:
-            return None
-        class_name = class_name_node.text.decode("utf-8")
-        resolved = self._method_uid_for_class_name(candidates, class_name, method_name)
-        if resolved:
-            return resolved
-        return self._single_method_candidate_uid(candidates)
+        return self._method_uid_for_class_node(class_node, method_name, candidates)
 
 
 def make_adapter() -> JavaScriptAdapter:

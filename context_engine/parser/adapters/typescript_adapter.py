@@ -354,20 +354,14 @@ class TypeScriptAdapter(TreeSitterAdapter):
         self._mark_react_hook_symbols(symbols)
         self._mark_behavioral_shape_symbols(symbols, tree)
 
-    def extract_symbols(
-        self, source_code: str, file_path: str, *, tree=None
+    def _apply_typescript_export_enrichments(
+        self,
+        symbols: list[SymbolMetadata],
+        source_code: str,
+        file_path: str,
+        *,
+        tree,
     ) -> list[SymbolMetadata]:
-        """Extract TS symbols with a fallback for exported lexical APIs.
-
-        Tree-sitter can recover imperfectly on very type-heavy files and skip
-        otherwise simple `export const foo = ...` declarations. We still want
-        those public API surfaces indexed, so we add a conservative text
-        fallback for top-level exported lexical declarations that were not
-        surfaced by the AST query.
-        """
-        if tree is None:
-            tree = self._parse(source_code)
-        symbols = super().extract_symbols(source_code, file_path, tree=tree)
         object_api_ranges = self._exported_object_api_ranges(source_code)
         if object_api_ranges:
             symbols = self._qualify_exported_object_api_members(
@@ -397,6 +391,27 @@ class TypeScriptAdapter(TreeSitterAdapter):
             language=self.language_name,
         )
         return symbols
+
+    def extract_symbols(
+        self, source_code: str, file_path: str, *, tree=None
+    ) -> list[SymbolMetadata]:
+        """Extract TS symbols with a fallback for exported lexical APIs.
+
+        Tree-sitter can recover imperfectly on very type-heavy files and skip
+        otherwise simple `export const foo = ...` declarations. We still want
+        those public API surfaces indexed, so we add a conservative text
+        fallback for top-level exported lexical declarations that were not
+        surfaced by the AST query.
+        """
+        if tree is None:
+            tree = self._parse(source_code)
+        symbols = super().extract_symbols(source_code, file_path, tree=tree)
+        return self._apply_typescript_export_enrichments(
+            symbols,
+            source_code,
+            file_path,
+            tree=tree,
+        )
 
     # Return-shape constructor names (``return new Map()`` → mapping). Plain
     # ``return new Foo()`` is a constructed type; collection builtins are the
@@ -2254,6 +2269,192 @@ class TypeScriptAdapter(TreeSitterAdapter):
                 )
         return out
 
+    def _ts_classify_identifier_call_node(
+        self,
+        func_node,
+        *,
+        source_code: str,
+        call_at_byte: int,
+        import_bindings: dict[str, str],
+        by_name: dict[str, list],
+        scope_graph,
+    ) -> tuple[str, str, str, float, str, str | None, bool, str]:
+        call_name = source_code[func_node.start_byte : func_node.end_byte]
+        rel_type, tier, confidence, resolver, callee_uid, skip_call, callee_qn = (
+            self._classify_identifier_call(
+                call_name,
+                import_bindings=import_bindings,
+                by_name=by_name,
+                scope_graph=scope_graph,
+                at_byte=call_at_byte,
+            )
+        )
+        return call_name, rel_type, tier, confidence, resolver, callee_uid, skip_call, callee_qn
+
+    def _ts_classify_member_call_node(
+        self,
+        func_node,
+        *,
+        parent,
+        source_code: str,
+        call_at_byte: int,
+        import_bindings: dict[str, str],
+        by_name: dict[str, list],
+        scope_graph,
+    ) -> tuple[str, str, str, float, str, str | None, bool, str] | None:
+        named_children = [child for child in func_node.children if child.is_named]
+        if len(named_children) < 2:
+            return None
+        receiver_node = named_children[0]
+        method_node = named_children[-1]
+        receiver_text = source_code[receiver_node.start_byte : receiver_node.end_byte]
+        call_name = source_code[method_node.start_byte : method_node.end_byte]
+        rel_type, tier, confidence, resolver, callee_uid, skip_call, callee_qn = (
+            self._classify_member_call(
+                receiver_text,
+                call_name,
+                parent=parent,
+                import_bindings=import_bindings,
+                by_name=by_name,
+                scope_graph=scope_graph,
+                at_byte=call_at_byte,
+            )
+        )
+        return call_name, rel_type, tier, confidence, resolver, callee_uid, skip_call, callee_qn
+
+    def _ts_apply_imported_callee_qn(
+        self,
+        call: dict,
+        *,
+        func_node,
+        call_name: str,
+        rel_type: str,
+        callee_qn: str,
+        import_bindings: dict[str, str],
+        source_code: str,
+    ) -> None:
+        if rel_type != "CALLS_IMPORTED":
+            return
+        if callee_qn:
+            call["callee_qualified_name"] = callee_qn
+            return
+        if func_node.type == "identifier":
+            call["callee_qualified_name"] = import_bindings[call_name]
+            return
+        receiver_node = [child for child in func_node.children if child.is_named][0]
+        receiver_text = source_code[receiver_node.start_byte : receiver_node.end_byte]
+        base = import_bindings.get(receiver_text, "")
+        if base:
+            call["callee_qualified_name"] = f"{base}.{call_name}"
+
+    def _ts_call_from_capture(
+        self,
+        node,
+        tag: str,
+        *,
+        source_code: str,
+        file_path: str,
+        import_bindings: dict[str, str],
+        by_name: dict[str, list],
+        scope_graph,
+    ) -> dict | None:
+        if tag != "call":
+            return None
+
+        func_node = node.child_by_field_name("function")
+        if func_node is None and node.type == "new_expression":
+            func_node = node.child_by_field_name("constructor")
+        if func_node is None:
+            return None
+
+        parent = self._enclosing_symbol_owner(node)
+        if parent is None:
+            return None
+
+        caller_uid = self._caller_uid_for_owner(parent, source_code, file_path)
+        if not caller_uid:
+            return None
+
+        call_at_byte = node.start_byte
+        call_kind = "construct" if node.type == "new_expression" else "call"
+        classified = None
+        if func_node.type == "identifier":
+            classified = self._ts_classify_identifier_call_node(
+                func_node,
+                source_code=source_code,
+                call_at_byte=call_at_byte,
+                import_bindings=import_bindings,
+                by_name=by_name,
+                scope_graph=scope_graph,
+            )
+        elif func_node.type == "member_expression":
+            classified = self._ts_classify_member_call_node(
+                func_node,
+                parent=parent,
+                source_code=source_code,
+                call_at_byte=call_at_byte,
+                import_bindings=import_bindings,
+                by_name=by_name,
+                scope_graph=scope_graph,
+            )
+        else:
+            return None
+        if classified is None:
+            return None
+
+        call_name, rel_type, tier, confidence, resolver, callee_uid, skip_call, callee_qn = (
+            classified
+        )
+        if skip_call or callee_uid == caller_uid:
+            return None
+
+        call = {
+            "caller_uid": caller_uid,
+            "callee_name": call_name,
+            "rel_type": rel_type,
+            "tier": tier,
+            "confidence": confidence,
+            "resolver": resolver,
+            "call_site_line": node.start_point[0] + 1,
+            "call_kind": call_kind,
+        }
+        if callee_uid:
+            call["callee_uid"] = callee_uid
+        self._ts_apply_imported_callee_qn(
+            call,
+            func_node=func_node,
+            call_name=call_name,
+            rel_type=rel_type,
+            callee_qn=callee_qn,
+            import_bindings=import_bindings,
+            source_code=source_code,
+        )
+        return call
+
+    def _append_resolved_ts_calls(
+        self,
+        calls: list[dict],
+        captures,
+        *,
+        source_code: str,
+        file_path: str,
+        import_bindings: dict[str, str],
+        by_name: dict[str, list],
+        scope_graph,
+    ) -> None:
+        for node, tag in captures:
+            call = self._ts_call_from_capture(
+                node,
+                tag,
+                source_code=source_code,
+                file_path=file_path,
+                import_bindings=import_bindings,
+                by_name=by_name,
+                scope_graph=scope_graph,
+            )
+            if call is not None:
+                calls.append(call)
+
     def extract_calls_from_source(
         self, source_code: str, file_path: str, *, tree=None
     ) -> list[dict]:
@@ -2287,98 +2488,16 @@ class TypeScriptAdapter(TreeSitterAdapter):
             node_text=self._node_text,
             normalize_require=lambda path: self._normalize_import_source(file_path, path),
         )
-        calls = []
-        for node, tag in captures:
-            if tag != "call":
-                continue
-
-            func_node = node.child_by_field_name("function")
-            if func_node is None and node.type == "new_expression":
-                func_node = node.child_by_field_name("constructor")
-            if func_node is None:
-                continue
-
-            parent = self._enclosing_symbol_owner(node)
-            if parent is None:
-                continue
-
-            caller_uid = self._caller_uid_for_owner(parent, source_code, file_path)
-            if not caller_uid:
-                continue
-
-            call_at_byte = node.start_byte
-            call_kind = "construct" if node.type == "new_expression" else "call"
-            skip_call = False
-            callee_uid = None
-            call_name = ""
-            rel_type = "CALLS_GUESS"
-            tier = "guess"
-            confidence = 0.4
-            resolver = "ts-ambiguity-gate-v1"
-
-            if func_node.type == "identifier":
-                call_name = source_code[func_node.start_byte : func_node.end_byte]
-                rel_type, tier, confidence, resolver, callee_uid, skip_call, callee_qn = (
-                    self._classify_identifier_call(
-                        call_name,
-                        import_bindings=import_bindings,
-                        by_name=by_name,
-                        scope_graph=scope_graph,
-                        at_byte=call_at_byte,
-                    )
-                )
-            elif func_node.type == "member_expression":
-                named_children = [child for child in func_node.children if child.is_named]
-                if len(named_children) < 2:
-                    continue
-                receiver_node = named_children[0]
-                method_node = named_children[-1]
-                receiver_text = source_code[receiver_node.start_byte : receiver_node.end_byte]
-                call_name = source_code[method_node.start_byte : method_node.end_byte]
-                rel_type, tier, confidence, resolver, callee_uid, skip_call, callee_qn = (
-                    self._classify_member_call(
-                        receiver_text,
-                        call_name,
-                        parent=parent,
-                        import_bindings=import_bindings,
-                        by_name=by_name,
-                        scope_graph=scope_graph,
-                        at_byte=call_at_byte,
-                    )
-                )
-            else:
-                continue
-
-            if skip_call:
-                continue
-
-            if callee_uid == caller_uid:
-                continue
-
-            call = {
-                "caller_uid": caller_uid,
-                "callee_name": call_name,
-                "rel_type": rel_type,
-                "tier": tier,
-                "confidence": confidence,
-                "resolver": resolver,
-                "call_site_line": node.start_point[0] + 1,
-                "call_kind": call_kind,
-            }
-            if callee_uid:
-                call["callee_uid"] = callee_uid
-            if rel_type == "CALLS_IMPORTED":
-                if callee_qn:
-                    call["callee_qualified_name"] = callee_qn
-                elif func_node.type == "identifier":
-                    call["callee_qualified_name"] = import_bindings[call_name]
-                else:
-                    receiver_node = [child for child in func_node.children if child.is_named][0]
-                    receiver_text = source_code[receiver_node.start_byte : receiver_node.end_byte]
-                    base = import_bindings.get(receiver_text, "")
-                    if base:
-                        call["callee_qualified_name"] = f"{base}.{call_name}"
-            calls.append(call)
+        calls: list[dict] = []
+        self._append_resolved_ts_calls(
+            calls,
+            captures,
+            source_code=source_code,
+            file_path=file_path,
+            import_bindings=import_bindings,
+            by_name=by_name,
+            scope_graph=scope_graph,
+        )
 
         self._append_exported_initializer_call_fallbacks(
             calls,

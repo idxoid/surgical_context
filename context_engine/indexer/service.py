@@ -102,6 +102,97 @@ def _finalize_index_batch(
     )
 
 
+def _process_index_batch_group(
+    group: list[IndexWorkItem],
+    *,
+    user_id: str,
+    base_workspace_id: str,
+    index_workspace_id: str,
+    job_log: IndexJobLog,
+    extractor,
+    metrics: MetricsRegistry,
+    overlay: InMemoryOverlay,
+    vector_db: LanceDBClient,
+) -> None:
+    from context_engine.indexer.code import hash_file, index_file
+
+    missing_paths, unsupported_paths, indexable_paths, _existing_paths = (
+        _partition_index_batch_paths(group)
+    )
+    _log_skipped_index_paths(
+        missing_paths=missing_paths,
+        unsupported_paths=unsupported_paths,
+        base_workspace_id=base_workspace_id,
+        metrics=metrics,
+    )
+    if not indexable_paths:
+        return
+    extractor.project_root = os.path.commonpath(indexable_paths) if indexable_paths else None
+
+    current_hashes = {path: hash_file(path) for path in indexable_paths}
+    completed = 0
+    all_changed_uids: list[str] = []
+    indexed_paths: list[str] = []
+    adjacency_seeds: set[str] = set()
+    batch_project_path = (
+        str(Path(indexable_paths[0]).parent)
+        if len(indexable_paths) == 1
+        else os.path.commonpath(indexable_paths)
+    )
+    with db_session(user_id=user_id) as db:
+        get_file_hashes = getattr(db, "get_file_hashes", None)
+        stored_hashes = (
+            get_file_hashes(indexable_paths, workspace_id=index_workspace_id)
+            if callable(get_file_hashes)
+            else {}
+        )
+        for path in indexable_paths:
+            file_hash = current_hashes[path]
+            if stored_hashes.get(path) == file_hash:
+                metrics.increment(
+                    "context_engine_index_queue_skipped_total",
+                    labels={"reason": "unchanged_hash", "workspace": base_workspace_id},
+                )
+                continue
+            try:
+                with job_log.track_file_job(path, file_hash=file_hash):
+                    changed = index_file(
+                        path,
+                        db,
+                        vector_db,
+                        extractor,
+                        workspace_id=index_workspace_id,
+                        skip_affects=True,
+                        collected_adjacency_seeds=adjacency_seeds,
+                    )
+                    all_changed_uids.extend(changed)
+                    indexed_paths.append(path)
+                    completed += 1
+                    overlay.clear(
+                        path,
+                        workspace_id=base_workspace_id,
+                        user_id=user_id,
+                    )
+            except Exception:
+                logger.exception("Queued indexing failed for %s", path)
+                metrics.increment(
+                    "context_engine_index_queue_failures_total",
+                    labels={"workspace": base_workspace_id},
+                )
+        _finalize_index_batch(
+            completed=completed,
+            all_changed_uids=all_changed_uids,
+            indexed_paths=indexed_paths,
+            adjacency_seeds=adjacency_seeds,
+            batch_project_path=batch_project_path,
+            base_workspace_id=base_workspace_id,
+            index_workspace_id=index_workspace_id,
+            db=db,
+            vector_db=vector_db,
+            metrics=metrics,
+        )
+
+
 class IndexingService:
     """Index files synchronously, via the batch queue, or through git HEAD deltas."""
 
@@ -206,7 +297,6 @@ class IndexingService:
 
         from collections import defaultdict
 
-        from context_engine.indexer.code import hash_file, index_file
         from context_engine.parser.extractor import SymbolExtractor
 
         grouped: dict[tuple[str, str], list[IndexWorkItem]] = defaultdict(list)
@@ -216,84 +306,17 @@ class IndexingService:
         job_log = IndexJobLog()
         extractor = SymbolExtractor()
         for (user_id, base_workspace_id), group in grouped.items():
-            index_workspace_id = effective_index_workspace_id(base_workspace_id)
-            missing_paths, unsupported_paths, indexable_paths, _existing_paths = (
-                _partition_index_batch_paths(group)
-            )
-            _log_skipped_index_paths(
-                missing_paths=missing_paths,
-                unsupported_paths=unsupported_paths,
+            _process_index_batch_group(
+                group,
+                user_id=user_id,
                 base_workspace_id=base_workspace_id,
+                index_workspace_id=effective_index_workspace_id(base_workspace_id),
+                job_log=job_log,
+                extractor=extractor,
                 metrics=self.metrics,
+                overlay=self.overlay,
+                vector_db=self.vector_db,
             )
-            if not indexable_paths:
-                continue
-            extractor.project_root = (
-                os.path.commonpath(indexable_paths) if indexable_paths else None
-            )
-
-            current_hashes = {path: hash_file(path) for path in indexable_paths}
-            completed = 0
-            all_changed_uids: list[str] = []
-            indexed_paths: list[str] = []
-            adjacency_seeds: set[str] = set()
-            batch_project_path = (
-                str(Path(indexable_paths[0]).parent)
-                if len(indexable_paths) == 1
-                else os.path.commonpath(indexable_paths)
-            )
-            with db_session(user_id=user_id) as db:
-                get_file_hashes = getattr(db, "get_file_hashes", None)
-                stored_hashes = (
-                    get_file_hashes(indexable_paths, workspace_id=index_workspace_id)
-                    if callable(get_file_hashes)
-                    else {}
-                )
-                for path in indexable_paths:
-                    file_hash = current_hashes[path]
-                    if stored_hashes.get(path) == file_hash:
-                        self.metrics.increment(
-                            "context_engine_index_queue_skipped_total",
-                            labels={"reason": "unchanged_hash", "workspace": base_workspace_id},
-                        )
-                        continue
-                    try:
-                        with job_log.track_file_job(path, file_hash=file_hash):
-                            changed = index_file(
-                                path,
-                                db,
-                                self.vector_db,
-                                extractor,
-                                workspace_id=index_workspace_id,
-                                skip_affects=True,
-                                collected_adjacency_seeds=adjacency_seeds,
-                            )
-                            all_changed_uids.extend(changed)
-                            indexed_paths.append(path)
-                            completed += 1
-                            self.overlay.clear(
-                                path,
-                                workspace_id=base_workspace_id,
-                                user_id=user_id,
-                            )
-                    except Exception:
-                        logger.exception("Queued indexing failed for %s", path)
-                        self.metrics.increment(
-                            "context_engine_index_queue_failures_total",
-                            labels={"workspace": base_workspace_id},
-                        )
-                _finalize_index_batch(
-                    completed=completed,
-                    all_changed_uids=all_changed_uids,
-                    indexed_paths=indexed_paths,
-                    adjacency_seeds=adjacency_seeds,
-                    batch_project_path=batch_project_path,
-                    base_workspace_id=base_workspace_id,
-                    index_workspace_id=index_workspace_id,
-                    db=db,
-                    vector_db=self.vector_db,
-                    metrics=self.metrics,
-                )
 
     def track_git_delta_target(
         self,

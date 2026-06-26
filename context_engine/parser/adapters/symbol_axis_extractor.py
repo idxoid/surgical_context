@@ -9,7 +9,7 @@ payloads entirely.
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 
 from context_engine.axis.schema import AxisExtraction, AxisFact, AxisName
 from context_engine.parser.protocol import SymbolMetadata
@@ -17,6 +17,191 @@ from context_engine.parser.protocol import SymbolMetadata
 
 class SymbolAxisExtractor:
     """Extract conservative, language-neutral axis facts from symbols."""
+
+    def _emit_class_symbol_facts(
+        self,
+        sym: SymbolMetadata,
+        emit: Callable[..., None],
+    ) -> None:
+        emit(
+            sym,
+            "struct",
+            "class_def",
+            ast_kind="SymbolMetadata",
+            payload={"name": sym.name},
+        )
+        emit(
+            sym,
+            "dfg",
+            "callable_value",
+            ast_kind="SymbolMetadata",
+            payload={
+                "callable_kind": "class",
+                "origin": "definition",
+                "name": sym.name,
+            },
+        )
+
+    def _emit_callable_symbol_facts(
+        self,
+        sym: SymbolMetadata,
+        emit: Callable[..., None],
+    ) -> None:
+        emit(
+            sym,
+            "struct",
+            "function_def",
+            ast_kind="SymbolMetadata",
+            payload={"name": sym.name},
+        )
+        emit(
+            sym,
+            "cfg",
+            "callable_body",
+            ast_kind="SymbolMetadata",
+            payload={"callable_kind": sym.kind},
+        )
+        emit(
+            sym,
+            "dfg",
+            "callable_value",
+            ast_kind="SymbolMetadata",
+            payload={
+                "callable_kind": sym.kind,
+                "origin": "definition",
+                "name": sym.name,
+            },
+        )
+
+    def _emit_variable_symbol_facts(
+        self,
+        sym: SymbolMetadata,
+        emit: Callable[..., None],
+    ) -> None:
+        emit(
+            sym,
+            "struct",
+            "variable_decl",
+            ast_kind="SymbolMetadata",
+            payload={"name": sym.name},
+        )
+
+    def _emit_return_shape_facts(
+        self,
+        sym: SymbolMetadata,
+        emit: Callable[..., None],
+    ) -> None:
+        if sym.returns_function_expression:
+            emit(
+                sym,
+                "dfg",
+                "callable_value",
+                ast_kind="ReturnShape",
+                payload={"callable_kind": "function_expression", "origin": "return"},
+            )
+            emit(sym, "dfg", "return_output", ast_kind="ReturnShape")
+        if sym.returns_mapping:
+            emit(
+                sym,
+                "dfg",
+                "return_output",
+                ast_kind="ReturnShape",
+                payload={"shape": "mapping"},
+            )
+            emit(
+                sym,
+                "dfg",
+                "collection_assembly",
+                ast_kind="ReturnShape",
+                payload={"shape": "mapping"},
+            )
+            emit(
+                sym,
+                "struct",
+                "literal_shape",
+                ast_kind="ReturnShape",
+                payload={"shape": "mapping"},
+            )
+        if sym.returns_sequence:
+            emit(
+                sym,
+                "dfg",
+                "return_output",
+                ast_kind="ReturnShape",
+                payload={"shape": "sequence"},
+            )
+            emit(
+                sym,
+                "dfg",
+                "collection_assembly",
+                ast_kind="ReturnShape",
+                payload={"shape": "sequence"},
+            )
+            emit(
+                sym,
+                "struct",
+                "literal_shape",
+                ast_kind="ReturnShape",
+                payload={"shape": "sequence"},
+            )
+        if sym.returns_constructed_type:
+            emit(
+                sym,
+                "dfg",
+                "return_output",
+                ast_kind="ReturnShape",
+                payload={"shape": "constructed"},
+            )
+            emit(sym, "cfg", "constructor_call", ast_kind="ReturnShape")
+            emit(sym, "dfg", "constructor_value", ast_kind="ReturnShape")
+
+    def _emit_iteration_shape_facts(
+        self,
+        sym: SymbolMetadata,
+        emit: Callable[..., None],
+    ) -> None:
+        if sym.iterates_attr_call:
+            emit(sym, "dfg", "iteration_source", ast_kind="IterationShape")
+            emit(sym, "cfg", "value_call", ast_kind="IterationShape")
+        if sym.assembles_mapping_in_loop:
+            emit(
+                sym,
+                "dfg",
+                "container_write_value",
+                ast_kind="IterationShape",
+                payload={"container": "loop_mapping"},
+            )
+            emit(
+                sym,
+                "dfg",
+                "keyed_write",
+                ast_kind="IterationShape",
+                payload={"container": "loop_mapping"},
+            )
+
+    def _emit_accessor_and_hook_facts(
+        self,
+        sym: SymbolMetadata,
+        emit: Callable[..., None],
+    ) -> None:
+        if sym.is_getter:
+            emit(
+                sym,
+                "struct",
+                "property_accessor",
+                ast_kind="SymbolMetadata",
+                payload={"kind": "get"},
+            )
+        if sym.is_setter:
+            emit(
+                sym,
+                "struct",
+                "property_accessor",
+                ast_kind="SymbolMetadata",
+                payload={"kind": "set"},
+            )
+        if sym.is_react_hook:
+            emit(sym, "struct", "hook_convention", ast_kind="SymbolMetadata")
 
     def extract(
         self,
@@ -49,158 +234,15 @@ class SymbolAxisExtractor:
 
         for sym in symbols:
             if sym.kind == "class":
-                emit(
-                    sym,
-                    "struct",
-                    "class_def",
-                    ast_kind="SymbolMetadata",
-                    payload={"name": sym.name},
-                )
-                emit(
-                    sym,
-                    "dfg",
-                    "callable_value",
-                    ast_kind="SymbolMetadata",
-                    payload={
-                        "callable_kind": "class",
-                        "origin": "definition",
-                        "name": sym.name,
-                    },
-                )
+                self._emit_class_symbol_facts(sym, emit)
             elif sym.kind in {"function", "method"}:
-                emit(
-                    sym,
-                    "struct",
-                    "function_def",
-                    ast_kind="SymbolMetadata",
-                    payload={"name": sym.name},
-                )
-                emit(
-                    sym,
-                    "cfg",
-                    "callable_body",
-                    ast_kind="SymbolMetadata",
-                    payload={"callable_kind": sym.kind},
-                )
-                emit(
-                    sym,
-                    "dfg",
-                    "callable_value",
-                    ast_kind="SymbolMetadata",
-                    payload={
-                        "callable_kind": sym.kind,
-                        "origin": "definition",
-                        "name": sym.name,
-                    },
-                )
+                self._emit_callable_symbol_facts(sym, emit)
             elif sym.kind == "variable":
-                emit(
-                    sym,
-                    "struct",
-                    "variable_decl",
-                    ast_kind="SymbolMetadata",
-                    payload={"name": sym.name},
-                )
+                self._emit_variable_symbol_facts(sym, emit)
 
-            if sym.returns_function_expression:
-                emit(
-                    sym,
-                    "dfg",
-                    "callable_value",
-                    ast_kind="ReturnShape",
-                    payload={"callable_kind": "function_expression", "origin": "return"},
-                )
-                emit(sym, "dfg", "return_output", ast_kind="ReturnShape")
-            if sym.returns_mapping:
-                emit(
-                    sym,
-                    "dfg",
-                    "return_output",
-                    ast_kind="ReturnShape",
-                    payload={"shape": "mapping"},
-                )
-                emit(
-                    sym,
-                    "dfg",
-                    "collection_assembly",
-                    ast_kind="ReturnShape",
-                    payload={"shape": "mapping"},
-                )
-                emit(
-                    sym,
-                    "struct",
-                    "literal_shape",
-                    ast_kind="ReturnShape",
-                    payload={"shape": "mapping"},
-                )
-            if sym.returns_sequence:
-                emit(
-                    sym,
-                    "dfg",
-                    "return_output",
-                    ast_kind="ReturnShape",
-                    payload={"shape": "sequence"},
-                )
-                emit(
-                    sym,
-                    "dfg",
-                    "collection_assembly",
-                    ast_kind="ReturnShape",
-                    payload={"shape": "sequence"},
-                )
-                emit(
-                    sym,
-                    "struct",
-                    "literal_shape",
-                    ast_kind="ReturnShape",
-                    payload={"shape": "sequence"},
-                )
-            if sym.returns_constructed_type:
-                emit(
-                    sym,
-                    "dfg",
-                    "return_output",
-                    ast_kind="ReturnShape",
-                    payload={"shape": "constructed"},
-                )
-                emit(sym, "cfg", "constructor_call", ast_kind="ReturnShape")
-                emit(sym, "dfg", "constructor_value", ast_kind="ReturnShape")
-            if sym.iterates_attr_call:
-                emit(sym, "dfg", "iteration_source", ast_kind="IterationShape")
-                emit(sym, "cfg", "value_call", ast_kind="IterationShape")
-            if sym.assembles_mapping_in_loop:
-                emit(
-                    sym,
-                    "dfg",
-                    "container_write_value",
-                    ast_kind="IterationShape",
-                    payload={"container": "loop_mapping"},
-                )
-                emit(
-                    sym,
-                    "dfg",
-                    "keyed_write",
-                    ast_kind="IterationShape",
-                    payload={"container": "loop_mapping"},
-                )
-            if sym.is_getter:
-                emit(
-                    sym,
-                    "struct",
-                    "property_accessor",
-                    ast_kind="SymbolMetadata",
-                    payload={"kind": "get"},
-                )
-            if sym.is_setter:
-                emit(
-                    sym,
-                    "struct",
-                    "property_accessor",
-                    ast_kind="SymbolMetadata",
-                    payload={"kind": "set"},
-                )
-            if sym.is_react_hook:
-                emit(sym, "struct", "hook_convention", ast_kind="SymbolMetadata")
+            self._emit_return_shape_facts(sym, emit)
+            self._emit_iteration_shape_facts(sym, emit)
+            self._emit_accessor_and_hook_facts(sym, emit)
 
         return AxisExtraction(file_path=file_path, facts=facts)
 
