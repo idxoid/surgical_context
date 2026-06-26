@@ -16,24 +16,15 @@ function renderMessageCard(message, selectedRequestId) {
   const statusClass = message.status ? ` status-${message.status}` : "";
   const requestAttrs = message.requestId ? ` data-request-id="${escapeHtml(message.requestId)}"` : "";
   const selectionAttrs = isSelectablePrompt ? ` data-action="selectPrompt" role="button" tabindex="0" aria-pressed="${isSelected}"` : "";
-  if (message.type === "user") {
-    return `
-      <article class="${baseClass}${statusClass}" data-message-id="${escapeHtml(message.id)}"${requestAttrs}${selectionAttrs} title="${escapeHtml(message.content)}">
-        <div class="message-content">${escapeHtml(message.content)}</div>
-        ${renderMessageFooter(message)}
-      </article>
-    `;
-  }
-  let content = `
-    <article class="${baseClass}${statusClass}" data-message-id="${escapeHtml(message.id)}"${requestAttrs}>
+  const userAttrs = message.type === "user" ? `${selectionAttrs} title="${escapeHtml(message.content)}"` : "";
+  const errorBlock = message.type !== "user" && message.error ? `<div class="message-error">Error: ${escapeHtml(message.error)}</div>` : "";
+  return `
+    <article class="${baseClass}${statusClass}" data-message-id="${escapeHtml(message.id)}"${requestAttrs}${userAttrs}>
       <div class="message-content">${escapeHtml(message.content)}</div>
+      ${errorBlock}
+      ${renderMessageFooter(message)}
+    </article>
   `;
-  if (message.error) {
-    content += `<div class="message-error">Error: ${escapeHtml(message.error)}</div>`;
-  }
-  content += renderMessageFooter(message);
-  content += "</article>";
-  return content;
 }
 function renderMessageFooter(message) {
   const time = formatMessageTime(message.timestamp);
@@ -71,6 +62,9 @@ function formatModelRoute(message) {
   if (!route) {
     return null;
   }
+  return presentModelRoute(route);
+}
+function presentModelRoute(route) {
   const provider = routeText(route.provider) || "unknown";
   const model = routeText(route.model);
   const preference = routeText(route.preference);
@@ -78,19 +72,15 @@ function formatModelRoute(message) {
   const degraded = Boolean(route.degraded);
   const fallback = degraded || reason.includes("fallback") || reason.includes("unavailable");
   const reasonText = routeReasonLabel(reason);
-  const labelParts = [provider, model].filter(Boolean);
-  const label = `${labelParts.join(" / ") || provider}${fallback ? " \xB7 fallback" : ""}`;
-  const titleParts = [
-    `Answered by ${labelParts.join(" / ") || provider}`,
+  const routeName = [provider, model].filter(Boolean).join(" / ") || provider;
+  const label = `${routeName}${fallback ? " \xB7 fallback" : ""}`;
+  const title = [
+    `Answered by ${routeName}`,
     preference ? `Preference: ${preference}` : "",
     reasonText,
     degraded ? "Response was degraded." : ""
-  ].filter(Boolean);
-  return {
-    label,
-    title: titleParts.join(" | "),
-    fallback
-  };
+  ].filter(Boolean).join(" | ");
+  return { label, title, fallback };
 }
 function routeText(value) {
   return typeof value === "string" ? value.trim() : "";
@@ -135,52 +125,37 @@ function renderAccordion(id, title, content, expanded = false) {
     </div>
   `;
 }
-function renderEnvironmentAccordion(state, expanded = false) {
-  const content = `
+function renderAccordionRow(label, value) {
+  return `
     <div class="accordion-row">
-      <div class="accordion-label">Workspace</div>
-      <div class="accordion-value">${escapeHtml(state.workspace)}</div>
+      <div class="accordion-label">${escapeHtml(label)}</div>
+      <div class="accordion-value">${typeof value === "number" ? value : escapeHtml(value)}</div>
     </div>
-    <div class="accordion-row">
-      <div class="accordion-label">Cloud</div>
-      <div class="accordion-value">${escapeHtml(state.cloud)}</div>
-    </div>
-    <div class="accordion-row">
-      <div class="accordion-label">Mode</div>
-      <div class="accordion-value">${escapeHtml(state.mode)}</div>
-    </div>
-    ${state.symbol ? `<div class="accordion-row">
-      <div class="accordion-label">Symbol</div>
-      <div class="accordion-value">${escapeHtml(state.symbol)}</div>
-    </div>` : ""}
   `;
-  return renderAccordion("environment", "Environment", content, expanded);
+}
+function renderPlaceholderAccordion(id, title, expanded) {
+  return renderAccordion(id, title, "Run an ask to populate this section.", expanded);
+}
+function renderEnvironmentAccordion(state, expanded = false) {
+  const rows = [
+    renderAccordionRow("Workspace", state.workspace),
+    renderAccordionRow("Cloud", state.cloud),
+    renderAccordionRow("Mode", state.mode),
+    ...state.symbol ? [renderAccordionRow("Symbol", state.symbol)] : []
+  ];
+  return renderAccordion("environment", "Environment", rows.join(""), expanded);
 }
 function renderContextSummaryAccordion(summary, expanded = false) {
   if (!summary) {
-    return renderAccordion("contextSummary", "Context Summary", "Run an ask to populate this section.", expanded);
+    return renderPlaceholderAccordion("contextSummary", "Context Summary", expanded);
   }
-  const content = `
-    <div class="accordion-row">
-      <div class="accordion-label">Primary</div>
-      <div class="accordion-value">${escapeHtml(summary.primaryLabel)}</div>
-    </div>
-    <div class="accordion-row">
-      <div class="accordion-label">Graph Symbols</div>
-      <div class="accordion-value">${summary.graphCount}</div>
-    </div>
-    <div class="accordion-row">
-      <div class="accordion-label">Doc Chunks</div>
-      <div class="accordion-value">${summary.docsCount}</div>
-    </div>
-    <div class="accordion-row">
-      <div class="accordion-label">Tokens</div>
-      <div class="accordion-value">${escapeHtml(summary.tokenText)}</div>
-    </div>
-    <div class="accordion-chips">
-      ${summary.chips.map(renderContextChip).join("")}
-    </div>
-  `;
+  const content = [
+    renderAccordionRow("Primary", summary.primaryLabel),
+    renderAccordionRow("Graph Symbols", summary.graphCount),
+    renderAccordionRow("Doc Chunks", summary.docsCount),
+    renderAccordionRow("Tokens", summary.tokenText),
+    `<div class="accordion-chips">${summary.chips.map(renderContextChip).join("")}</div>`
+  ].join("");
   return renderAccordion("contextSummary", "Context Summary", content, expanded);
 }
 function renderContextChip(chip) {
@@ -190,22 +165,13 @@ function renderContextChip(chip) {
 }
 function renderAdvancedInfoAccordion(info, expanded = false) {
   if (!info) {
-    return renderAccordion("advancedInfo", "Advanced Info", "Run an ask to populate this section.", expanded);
+    return renderPlaceholderAccordion("advancedInfo", "Advanced Info", expanded);
   }
-  const content = `
-    <div class="accordion-row">
-      <div class="accordion-label">Intent</div>
-      <div class="accordion-value">${escapeHtml(info.intent)}</div>
-    </div>
-    <div class="accordion-row">
-      <div class="accordion-label">Tiers Used</div>
-      <div class="accordion-value">${info.tiersUsed.map(escapeHtml).join(", ")}</div>
-    </div>
-    <div class="accordion-row">
-      <div class="accordion-label">Has Unsaved Changes</div>
-      <div class="accordion-value">${info.isDirty ? "Yes" : "No"}</div>
-    </div>
-  `;
+  const content = [
+    renderAccordionRow("Intent", info.intent),
+    renderAccordionRow("Tiers Used", info.tiersUsed.map(escapeHtml).join(", ")),
+    renderAccordionRow("Has Unsaved Changes", info.isDirty ? "Yes" : "No")
+  ].join("");
   return renderAccordion("advancedInfo", "Advanced Info", content, expanded);
 }
 function renderStatusChips(state) {
@@ -258,6 +224,18 @@ function resizeComposerToFit(textarea, maxHeightPx = 220) {
 }
 
 // src/webview/shared/impactLayout.ts
+var REACH_CATEGORIES = /* @__PURE__ */ new Set(["event", "config", "data", "api"]);
+var HIGH_SEVERITY_CATEGORIES = /* @__PURE__ */ new Set(["api", "data", "cross_repo"]);
+var SEVERITY_BASE_SCORE = {
+  high: 0.88,
+  medium: 0.66,
+  low: 0.42
+};
+var CATEGORY_UTILITY_BOOST = {
+  api: 0.08,
+  data: 0.08,
+  event: 0.05
+};
 function renderImpactWorkspace(impact, symbol, sourceLabel = "live graph", options = {}) {
   const model = buildImpactModel(impact);
   const depth = clampDepth(options.depth ?? impact.max_depth ?? 3, options);
@@ -433,31 +411,17 @@ function classifyCategory(sym, filePath, relation) {
 function classifySeverity(category, depth, filePath) {
   if (category === "test" || isDocFile(filePath)) return "low";
   if (category === "event" || category === "config") return "medium";
-  if (category === "api" || category === "data" || category === "cross_repo") return "high";
+  if (HIGH_SEVERITY_CATEGORIES.has(category)) return "high";
   return depth === void 0 || depth <= 1 ? "high" : "medium";
 }
 function classifyZone(category, depth, filePath) {
   if (category === "test" || category === "cross_repo" || isDocFile(filePath)) return "risk";
-  if (category === "event" || category === "config" || category === "data" || category === "api") {
-    return "reach";
-  }
+  if (REACH_CATEGORIES.has(category)) return "reach";
   return depth === void 0 || depth <= 1 ? "direct" : "reach";
 }
 function fallbackUtility(severity, category, depth) {
-  let base;
-  if (severity === "high") {
-    base = 0.88;
-  } else if (severity === "medium") {
-    base = 0.66;
-  } else {
-    base = 0.42;
-  }
-  let categoryBoost = 0;
-  if (category === "api" || category === "data") {
-    categoryBoost = 0.08;
-  } else if (category === "event") {
-    categoryBoost = 0.05;
-  }
+  const base = SEVERITY_BASE_SCORE[severity];
+  const categoryBoost = CATEGORY_UTILITY_BOOST[category] ?? 0;
   const depthPenalty = typeof depth === "number" ? Math.min(depth, 4) * 0.04 : 0;
   return Math.max(0.15, Math.min(0.99, base + categoryBoost - depthPenalty));
 }
@@ -1567,30 +1531,19 @@ const MainSurface = class {
     listenForHostMessages((message) => {
       switch (message.type) {
         case "surface.init":
-          this.state = message.state;
-          if (message.state.lastContext && !this.currentPromptContext) {
-            this.currentPromptContext = message.state.lastContext;
-            this.applyHydratedContext(message.state.lastContext);
-            this.selectedPromptRequestId = this.findRequestIdForContext(message.state.lastContext) || this.selectedPromptRequestId;
-          }
-          this.render();
+          this.onSurfaceInit(message);
           break;
         case "surface.showChat":
-          this.surface = "chat";
-          this.render();
+          this.showSurface("chat");
           break;
         case "surface.showInspector":
-          this.surface = "inspector";
-          this.render();
+          this.showSurface("inspector");
           break;
         case "surface.showImpact":
-          this.surface = "impact";
-          this.render();
+          this.showSurface("impact");
           break;
         case "surface.showSettings":
-          this.surface = "settings";
-          this.render();
-          this.requestSettings();
+          this.showSurface("settings", () => this.requestSettings());
           break;
         case "chat.requestStarted":
           this.surface = "chat";
@@ -1613,68 +1566,28 @@ const MainSurface = class {
           this.refreshAccordions();
           break;
         case "workspace.updated":
-          if (this.state) {
-            this.state.workspace = {
-              activeFile: message.activeFile,
-              selectedSymbol: message.symbol,
-              isDirty: message.isDirty
-            };
-            this.refreshWorkspaceBits();
-          }
+          this.onWorkspaceUpdated(message);
           break;
         case "backend.updated":
-          if (this.state) {
-            this.state.backend = {
-              context_engineHealth: message.context_engineHealth,
-              cloudStatus: message.cloudStatus
-            };
-            this.refreshWorkspaceBits();
-          }
+          this.onBackendUpdated(message);
           break;
         case "impact.loading":
-          this.surface = "impact";
-          this.impactLoading = true;
-          this.impactError = null;
-          this.render();
+          this.onImpactLoading();
           break;
         case "impact.loaded":
-          this.surface = "impact";
-          this.impactLoading = false;
-          this.currentImpactSymbol = message.symbol;
-          this.currentImpactFilePath = message.impact.file_path || null;
-          this.currentImpact = message.impact;
-          this.currentImpactDepth = clampImpactDepth(message.impact.max_depth || this.currentImpactDepth);
-          this.currentImpactSource = "graph";
-          this.impactError = null;
-          this.render();
+          this.onImpactLoaded(message);
           break;
         case "impact.loadFailed":
-          this.surface = "impact";
-          this.impactLoading = false;
-          this.currentImpact = null;
-          this.impactError = message.error;
-          this.render();
+          this.onImpactLoadFailed(message);
           break;
         case "inspector.loaded":
-          this.surface = "inspector";
-          this.currentPromptContext = message.context;
-          this.intentMatches = null;
-          if (message.context) {
-            this.applyHydratedContext(message.context);
-          }
-          this.render();
+          this.onInspectorLoaded(message);
           break;
         case "inspector.intentLoaded":
-          this.intentMatches = message.intentMatches;
-          if (this.surface === "inspector" && this.inspectorTab === "intent") {
-            this.render();
-          }
+          this.onInspectorIntentLoaded(message);
           break;
         case "settings.loaded":
-          this.settings = message.settings;
-          if (this.surface === "settings") {
-            this.render();
-          }
+          this.onSettingsLoaded(message);
           break;
         case "settings.saved":
           showFeedback(message.message, "success");
@@ -1690,6 +1603,87 @@ const MainSurface = class {
           break;
       }
     });
+  }
+  showSurface(surface, beforeRender) {
+    this.surface = surface;
+    beforeRender?.();
+    this.render();
+  }
+  onSurfaceInit(message) {
+    this.state = message.state;
+    if (message.state.lastContext && !this.currentPromptContext) {
+      this.currentPromptContext = message.state.lastContext;
+      this.applyHydratedContext(message.state.lastContext);
+      this.selectedPromptRequestId = this.findRequestIdForContext(message.state.lastContext) || this.selectedPromptRequestId;
+    }
+    this.render();
+  }
+  onWorkspaceUpdated(message) {
+    if (!this.state) return;
+    this.state.workspace = {
+      activeFile: message.activeFile,
+      selectedSymbol: message.symbol,
+      isDirty: message.isDirty
+    };
+    this.refreshWorkspaceBits();
+  }
+  onBackendUpdated(message) {
+    if (!this.state) return;
+    this.state.backend = {
+      context_engineHealth: message.context_engineHealth,
+      cloudStatus: message.cloudStatus
+    };
+    this.refreshWorkspaceBits();
+  }
+  onImpactLoading() {
+    this.mutateImpactSurface(() => {
+      this.impactLoading = true;
+      this.impactError = null;
+    });
+  }
+  onImpactLoaded(message) {
+    this.mutateImpactSurface(() => {
+      this.impactLoading = false;
+      this.currentImpactSymbol = message.symbol;
+      this.currentImpactFilePath = message.impact.file_path || null;
+      this.currentImpact = message.impact;
+      this.currentImpactDepth = clampImpactDepth(message.impact.max_depth || this.currentImpactDepth);
+      this.currentImpactSource = "graph";
+      this.impactError = null;
+    });
+  }
+  onImpactLoadFailed(message) {
+    this.mutateImpactSurface(() => {
+      this.impactLoading = false;
+      this.currentImpact = null;
+      this.impactError = message.error;
+    });
+  }
+  mutateImpactSurface(mutator) {
+    this.surface = "impact";
+    mutator();
+    this.render();
+  }
+  onInspectorLoaded(message) {
+    this.showSurface("inspector", () => {
+      this.currentPromptContext = message.context;
+      this.intentMatches = null;
+      if (message.context) {
+        this.applyHydratedContext(message.context);
+      }
+    });
+  }
+  onInspectorIntentLoaded(message) {
+    this.intentMatches = message.intentMatches;
+    if (this.surface === "inspector" && this.inspectorTab === "intent") {
+      this.render();
+    }
+  }
+  onSettingsLoaded(message) {
+    this.settings = message.settings;
+    if (this.surface === "settings") {
+      this.render();
+    }
   }
   render() {
     const root = document.getElementById("root");
@@ -1876,24 +1870,27 @@ const MainSurface = class {
         </div>`
     );
   }
+  renderInspectorSurfaceShell(content) {
+    return `
+      <section class="surface surface-inspector" aria-label="Context inspector">
+        ${this.renderChrome()}
+        ${content}
+      </section>
+    `;
+  }
   renderInspectorSurface() {
     const context = this.currentPromptContext;
     if (!context) {
-      return `
-        <section class="surface surface-inspector" aria-label="Context inspector">
-          ${this.renderChrome()}
+      return this.renderInspectorSurfaceShell(`
           <div class="surface-title">Context Inspector</div>
           <div class="surface-subtitle">${escapeHtml(this.selectedPromptText() || "Inspect the evidence behind the selected answer.")}</div>
           <div class="empty-state">
             No prompt context yet. Ask a question first, then come back here.
           </div>
           <button class="primary-action surface-inline-action" data-action="openChat">Open Chat</button>
-        </section>
-      `;
+      `);
     }
-    return `
-      <section class="surface surface-inspector" aria-label="Context inspector">
-        ${this.renderChrome()}
+    return this.renderInspectorSurfaceShell(`
         <div class="inspector-header">
           <h2>Context Inspector</h2>
           <div class="surface-subtitle">${escapeHtml(this.selectedPromptText() || "Selected prompt")}</div>
@@ -1910,8 +1907,7 @@ const MainSurface = class {
         <div class="inspector-content">
           ${this.renderInspectorTabContent(context)}
         </div>
-      </section>
-    `;
+    `);
   }
   renderInspectorTabButton(tab, label) {
     return `

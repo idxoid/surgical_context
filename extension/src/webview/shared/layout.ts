@@ -14,29 +14,20 @@ export function renderMessageCard(message: ChatMessage, selectedRequestId?: stri
   const selectionAttrs = isSelectablePrompt
     ? ` data-action="selectPrompt" role="button" tabindex="0" aria-pressed="${isSelected}"`
     : '';
+  const userAttrs = message.type === 'user'
+    ? `${selectionAttrs} title="${escapeHtml(message.content)}"`
+    : '';
+  const errorBlock = message.type !== 'user' && message.error
+    ? `<div class="message-error">Error: ${escapeHtml(message.error)}</div>`
+    : '';
 
-  if (message.type === 'user') {
-    return `
-      <article class="${baseClass}${statusClass}" data-message-id="${escapeHtml(message.id)}"${requestAttrs}${selectionAttrs} title="${escapeHtml(message.content)}">
-        <div class="message-content">${escapeHtml(message.content)}</div>
-        ${renderMessageFooter(message)}
-      </article>
-    `;
-  }
-
-  let content = `
-    <article class="${baseClass}${statusClass}" data-message-id="${escapeHtml(message.id)}"${requestAttrs}>
+  return `
+    <article class="${baseClass}${statusClass}" data-message-id="${escapeHtml(message.id)}"${requestAttrs}${userAttrs}>
       <div class="message-content">${escapeHtml(message.content)}</div>
+      ${errorBlock}
+      ${renderMessageFooter(message)}
+    </article>
   `;
-
-  if (message.error) {
-    content += `<div class="message-error">Error: ${escapeHtml(message.error)}</div>`;
-  }
-
-  content += renderMessageFooter(message);
-
-  content += '</article>';
-  return content;
 }
 
 function renderMessageFooter(message: ChatMessage): string {
@@ -82,6 +73,10 @@ function formatModelRoute(message: ChatMessage): { label: string; title: string;
     return null;
   }
 
+  return presentModelRoute(route);
+}
+
+function presentModelRoute(route: Record<string, unknown>): { label: string; title: string; fallback: boolean } {
   const provider = routeText(route.provider) || 'unknown';
   const model = routeText(route.model);
   const preference = routeText(route.preference);
@@ -89,20 +84,16 @@ function formatModelRoute(message: ChatMessage): { label: string; title: string;
   const degraded = Boolean(route.degraded);
   const fallback = degraded || reason.includes('fallback') || reason.includes('unavailable');
   const reasonText = routeReasonLabel(reason);
-  const labelParts = [provider, model].filter(Boolean);
-  const label = `${labelParts.join(' / ') || provider}${fallback ? ' · fallback' : ''}`;
-  const titleParts = [
-    `Answered by ${labelParts.join(' / ') || provider}`,
+  const routeName = [provider, model].filter(Boolean).join(' / ') || provider;
+  const label = `${routeName}${fallback ? ' · fallback' : ''}`;
+  const title = [
+    `Answered by ${routeName}`,
     preference ? `Preference: ${preference}` : '',
     reasonText,
     degraded ? 'Response was degraded.' : '',
-  ].filter(Boolean);
+  ].filter(Boolean).join(' | ');
 
-  return {
-    label,
-    title: titleParts.join(' | '),
-    fallback,
-  };
+  return { label, title, fallback };
 }
 
 function routeText(value: unknown): string {
@@ -157,35 +148,32 @@ export function renderAccordion(id: string, title: string, content: string, expa
   `;
 }
 
+function renderAccordionRow(label: string, value: string | number): string {
+  return `
+    <div class="accordion-row">
+      <div class="accordion-label">${escapeHtml(label)}</div>
+      <div class="accordion-value">${typeof value === 'number' ? value : escapeHtml(value)}</div>
+    </div>
+  `;
+}
+
+function renderPlaceholderAccordion(id: string, title: string, expanded: boolean): string {
+  return renderAccordion(id, title, 'Run an ask to populate this section.', expanded);
+}
+
 export function renderEnvironmentAccordion(state: {
   workspace: string;
   cloud: string;
   mode: string;
   symbol?: string;
 }, expanded = false): string {
-  const content = `
-    <div class="accordion-row">
-      <div class="accordion-label">Workspace</div>
-      <div class="accordion-value">${escapeHtml(state.workspace)}</div>
-    </div>
-    <div class="accordion-row">
-      <div class="accordion-label">Cloud</div>
-      <div class="accordion-value">${escapeHtml(state.cloud)}</div>
-    </div>
-    <div class="accordion-row">
-      <div class="accordion-label">Mode</div>
-      <div class="accordion-value">${escapeHtml(state.mode)}</div>
-    </div>
-    ${
-      state.symbol
-        ? `<div class="accordion-row">
-      <div class="accordion-label">Symbol</div>
-      <div class="accordion-value">${escapeHtml(state.symbol)}</div>
-    </div>`
-        : ''
-    }
-  `;
-  return renderAccordion('environment', 'Environment', content, expanded);
+  const rows = [
+    renderAccordionRow('Workspace', state.workspace),
+    renderAccordionRow('Cloud', state.cloud),
+    renderAccordionRow('Mode', state.mode),
+    ...(state.symbol ? [renderAccordionRow('Symbol', state.symbol)] : []),
+  ];
+  return renderAccordion('environment', 'Environment', rows.join(''), expanded);
 }
 
 export function renderContextSummaryAccordion(summary?: {
@@ -196,30 +184,16 @@ export function renderContextSummaryAccordion(summary?: {
   chips: string[];
 }, expanded = false): string {
   if (!summary) {
-    return renderAccordion('contextSummary', 'Context Summary', 'Run an ask to populate this section.', expanded);
+    return renderPlaceholderAccordion('contextSummary', 'Context Summary', expanded);
   }
 
-  const content = `
-    <div class="accordion-row">
-      <div class="accordion-label">Primary</div>
-      <div class="accordion-value">${escapeHtml(summary.primaryLabel)}</div>
-    </div>
-    <div class="accordion-row">
-      <div class="accordion-label">Graph Symbols</div>
-      <div class="accordion-value">${summary.graphCount}</div>
-    </div>
-    <div class="accordion-row">
-      <div class="accordion-label">Doc Chunks</div>
-      <div class="accordion-value">${summary.docsCount}</div>
-    </div>
-    <div class="accordion-row">
-      <div class="accordion-label">Tokens</div>
-      <div class="accordion-value">${escapeHtml(summary.tokenText)}</div>
-    </div>
-    <div class="accordion-chips">
-      ${summary.chips.map(renderContextChip).join('')}
-    </div>
-  `;
+  const content = [
+    renderAccordionRow('Primary', summary.primaryLabel),
+    renderAccordionRow('Graph Symbols', summary.graphCount),
+    renderAccordionRow('Doc Chunks', summary.docsCount),
+    renderAccordionRow('Tokens', summary.tokenText),
+    `<div class="accordion-chips">${summary.chips.map(renderContextChip).join('')}</div>`,
+  ].join('');
   return renderAccordion('contextSummary', 'Context Summary', content, expanded);
 }
 
@@ -234,23 +208,14 @@ export function renderAdvancedInfoAccordion(
   expanded = false
 ): string {
   if (!info) {
-    return renderAccordion('advancedInfo', 'Advanced Info', 'Run an ask to populate this section.', expanded);
+    return renderPlaceholderAccordion('advancedInfo', 'Advanced Info', expanded);
   }
 
-  const content = `
-    <div class="accordion-row">
-      <div class="accordion-label">Intent</div>
-      <div class="accordion-value">${escapeHtml(info.intent)}</div>
-    </div>
-    <div class="accordion-row">
-      <div class="accordion-label">Tiers Used</div>
-      <div class="accordion-value">${info.tiersUsed.map(escapeHtml).join(', ')}</div>
-    </div>
-    <div class="accordion-row">
-      <div class="accordion-label">Has Unsaved Changes</div>
-      <div class="accordion-value">${info.isDirty ? 'Yes' : 'No'}</div>
-    </div>
-  `;
+  const content = [
+    renderAccordionRow('Intent', info.intent),
+    renderAccordionRow('Tiers Used', info.tiersUsed.map(escapeHtml).join(', ')),
+    renderAccordionRow('Has Unsaved Changes', info.isDirty ? 'Yes' : 'No'),
+  ].join('');
   return renderAccordion('advancedInfo', 'Advanced Info', content, expanded);
 }
 

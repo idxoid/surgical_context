@@ -96,151 +96,170 @@ class MainSurface {
     listenForHostMessages<HostToWebviewMessage>((message) => {
       switch (message.type) {
         case 'surface.init':
-          this.state = message.state;
-          if (message.state.lastContext && !this.currentPromptContext) {
-            this.currentPromptContext = message.state.lastContext;
-            this.applyHydratedContext(message.state.lastContext);
-            this.selectedPromptRequestId = this.findRequestIdForContext(message.state.lastContext) || this.selectedPromptRequestId;
-          }
-          this.render();
+          this.onSurfaceInit(message);
           break;
-
         case 'surface.showChat':
-          this.surface = 'chat';
-          this.render();
+          this.showSurface('chat');
           break;
-
         case 'surface.showInspector':
-          this.surface = 'inspector';
-          this.render();
+          this.showSurface('inspector');
           break;
-
         case 'surface.showImpact':
-          this.surface = 'impact';
-          this.render();
+          this.showSurface('impact');
           break;
-
         case 'surface.showSettings':
-          this.surface = 'settings';
-          this.render();
-          this.requestSettings();
+          this.showSurface('settings', () => this.requestSettings());
           break;
-
         case 'chat.requestStarted':
           this.surface = 'chat';
           this.onRequestStarted(message.requestId, message.symbol);
           break;
-
         case 'chat.streamChunk':
           this.onStreamChunk(message.requestId, message.chunk);
           break;
-
         case 'chat.requestCompleted':
           this.onRequestCompleted(message.requestId, message.answer, message.context);
           break;
-
         case 'chat.requestFailed':
           this.onRequestFailed(message.requestId, message.error);
           break;
-
         case 'chat.requestStopped':
           this.onRequestStopped(message.requestId);
           break;
-
         case 'chat.contextSummary':
           this.currentContextSummary = message.summary;
           this.refreshAccordions();
           break;
-
         case 'workspace.updated':
-          if (this.state) {
-            this.state.workspace = {
-              activeFile: message.activeFile,
-              selectedSymbol: message.symbol,
-              isDirty: message.isDirty,
-            };
-            this.refreshWorkspaceBits();
-          }
+          this.onWorkspaceUpdated(message);
           break;
-
         case 'backend.updated':
-          if (this.state) {
-            this.state.backend = {
-              context_engineHealth: message.context_engineHealth,
-              cloudStatus: message.cloudStatus,
-            };
-            this.refreshWorkspaceBits();
-          }
+          this.onBackendUpdated(message);
           break;
-
         case 'impact.loading':
-          this.surface = 'impact';
-          this.impactLoading = true;
-          this.impactError = null;
-          this.render();
+          this.onImpactLoading();
           break;
-
         case 'impact.loaded':
-          this.surface = 'impact';
-          this.impactLoading = false;
-          this.currentImpactSymbol = message.symbol;
-          this.currentImpactFilePath = message.impact.file_path || null;
-          this.currentImpact = message.impact;
-          this.currentImpactDepth = clampImpactDepth(message.impact.max_depth || this.currentImpactDepth);
-          this.currentImpactSource = 'graph';
-          this.impactError = null;
-          this.render();
+          this.onImpactLoaded(message);
           break;
-
         case 'impact.loadFailed':
-          this.surface = 'impact';
-          this.impactLoading = false;
-          this.currentImpact = null;
-          this.impactError = message.error;
-          this.render();
+          this.onImpactLoadFailed(message);
           break;
-
         case 'inspector.loaded':
-          this.surface = 'inspector';
-          this.currentPromptContext = message.context;
-          this.intentMatches = null;
-          if (message.context) {
-            this.applyHydratedContext(message.context);
-          }
-          this.render();
+          this.onInspectorLoaded(message);
           break;
-
         case 'inspector.intentLoaded':
-          this.intentMatches = message.intentMatches;
-          if (this.surface === 'inspector' && this.inspectorTab === 'intent') {
-            this.render();
-          }
+          this.onInspectorIntentLoaded(message);
           break;
-
         case 'settings.loaded':
-          this.settings = message.settings;
-          if (this.surface === 'settings') {
-            this.render();
-          }
+          this.onSettingsLoaded(message);
           break;
-
         case 'settings.saved':
           showFeedback(message.message, 'success');
           break;
-
         case 'settings.saveFailed':
           showFeedback(message.error, 'error');
           break;
-
         case 'settings.testUrlComplete':
           showFieldStatus('backendUrl', message.success, message.message);
           break;
-
         case 'toast.show':
           this.showToast(message.message, message.level);
           break;
       }
     });
+  }
+
+  private showSurface(surface: Surface, beforeRender?: () => void): void {
+    this.surface = surface;
+    beforeRender?.();
+    this.render();
+  }
+
+  private onSurfaceInit(message: Extract<HostToWebviewMessage, { type: 'surface.init' }>): void {
+    this.state = message.state;
+    if (message.state.lastContext && !this.currentPromptContext) {
+      this.currentPromptContext = message.state.lastContext;
+      this.applyHydratedContext(message.state.lastContext);
+      this.selectedPromptRequestId = this.findRequestIdForContext(message.state.lastContext) || this.selectedPromptRequestId;
+    }
+    this.render();
+  }
+
+  private onWorkspaceUpdated(message: Extract<HostToWebviewMessage, { type: 'workspace.updated' }>): void {
+    if (!this.state) return;
+    this.state.workspace = {
+      activeFile: message.activeFile,
+      selectedSymbol: message.symbol,
+      isDirty: message.isDirty,
+    };
+    this.refreshWorkspaceBits();
+  }
+
+  private onBackendUpdated(message: Extract<HostToWebviewMessage, { type: 'backend.updated' }>): void {
+    if (!this.state) return;
+    this.state.backend = {
+      context_engineHealth: message.context_engineHealth,
+      cloudStatus: message.cloudStatus,
+    };
+    this.refreshWorkspaceBits();
+  }
+
+  private onImpactLoading(): void {
+    this.mutateImpactSurface(() => {
+      this.impactLoading = true;
+      this.impactError = null;
+    });
+  }
+
+  private onImpactLoaded(message: Extract<HostToWebviewMessage, { type: 'impact.loaded' }>): void {
+    this.mutateImpactSurface(() => {
+      this.impactLoading = false;
+      this.currentImpactSymbol = message.symbol;
+      this.currentImpactFilePath = message.impact.file_path || null;
+      this.currentImpact = message.impact;
+      this.currentImpactDepth = clampImpactDepth(message.impact.max_depth || this.currentImpactDepth);
+      this.currentImpactSource = 'graph';
+      this.impactError = null;
+    });
+  }
+
+  private onImpactLoadFailed(message: Extract<HostToWebviewMessage, { type: 'impact.loadFailed' }>): void {
+    this.mutateImpactSurface(() => {
+      this.impactLoading = false;
+      this.currentImpact = null;
+      this.impactError = message.error;
+    });
+  }
+
+  private mutateImpactSurface(mutator: () => void): void {
+    this.surface = 'impact';
+    mutator();
+    this.render();
+  }
+
+  private onInspectorLoaded(message: Extract<HostToWebviewMessage, { type: 'inspector.loaded' }>): void {
+    this.showSurface('inspector', () => {
+      this.currentPromptContext = message.context;
+      this.intentMatches = null;
+      if (message.context) {
+        this.applyHydratedContext(message.context);
+      }
+    });
+  }
+
+  private onInspectorIntentLoaded(message: Extract<HostToWebviewMessage, { type: 'inspector.intentLoaded' }>): void {
+    this.intentMatches = message.intentMatches;
+    if (this.surface === 'inspector' && this.inspectorTab === 'intent') {
+      this.render();
+    }
+  }
+
+  private onSettingsLoaded(message: Extract<HostToWebviewMessage, { type: 'settings.loaded' }>): void {
+    this.settings = message.settings;
+    if (this.surface === 'settings') {
+      this.render();
+    }
   }
 
   private render(): void {
@@ -456,26 +475,30 @@ class MainSurface {
     );
   }
 
+  private renderInspectorSurfaceShell(content: string): string {
+    return `
+      <section class="surface surface-inspector" aria-label="Context inspector">
+        ${this.renderChrome()}
+        ${content}
+      </section>
+    `;
+  }
+
   private renderInspectorSurface(): string {
     const context = this.currentPromptContext;
 
     if (!context) {
-      return `
-        <section class="surface surface-inspector" aria-label="Context inspector">
-          ${this.renderChrome()}
+      return this.renderInspectorSurfaceShell(`
           <div class="surface-title">Context Inspector</div>
           <div class="surface-subtitle">${escapeHtml(this.selectedPromptText() || 'Inspect the evidence behind the selected answer.')}</div>
           <div class="empty-state">
             No prompt context yet. Ask a question first, then come back here.
           </div>
           <button class="primary-action surface-inline-action" data-action="openChat">Open Chat</button>
-        </section>
-      `;
+      `);
     }
 
-    return `
-      <section class="surface surface-inspector" aria-label="Context inspector">
-        ${this.renderChrome()}
+    return this.renderInspectorSurfaceShell(`
         <div class="inspector-header">
           <h2>Context Inspector</h2>
           <div class="surface-subtitle">${escapeHtml(this.selectedPromptText() || 'Selected prompt')}</div>
@@ -492,8 +515,7 @@ class MainSurface {
         <div class="inspector-content">
           ${this.renderInspectorTabContent(context)}
         </div>
-      </section>
-    `;
+    `);
   }
 
   private renderInspectorTabButton(tab: InspectorTab, label: string): string {

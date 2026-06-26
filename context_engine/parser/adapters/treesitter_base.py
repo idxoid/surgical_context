@@ -104,7 +104,6 @@ class TreeSitterAdapter(LanguageAdapter):
         self,
         node,
         tag: str,
-        source_code: str,
         file_path: str,
     ) -> SymbolMetadata | None:
         name_node = node.child_by_field_name("name")
@@ -182,7 +181,7 @@ class TreeSitterAdapter(LanguageAdapter):
         file_path: str,
     ) -> SymbolMetadata | None:
         if tag in ("func.def", "class.def"):
-            return self._declaration_symbol_from_capture(node, tag, source_code, file_path)
+            return self._declaration_symbol_from_capture(node, tag, file_path)
         if tag.startswith("var."):
             return self._variable_symbol_from_capture(node, tag, var_names, source_code, file_path)
         return None
@@ -244,7 +243,7 @@ class TreeSitterAdapter(LanguageAdapter):
         parent_name_node = parent.child_by_field_name("name")
         if parent_name_node is None:
             return None
-        caller_uid = self._symbol_uid_from_node(parent, source_code, file_path)
+        caller_uid = self._symbol_uid_from_node(parent, file_path)
         return {
             "caller_uid": caller_uid,
             "callee_name": call_name,
@@ -287,7 +286,7 @@ class TreeSitterAdapter(LanguageAdapter):
 
         return module_name_from_path(file_path)
 
-    def _symbol_uid_from_node(self, node, source_code: str, file_path: str) -> str:
+    def _symbol_uid_from_node(self, node, file_path: str) -> str:
         qualified_name = qualified_name_for(node, file_path)
         raw_signature, _ = signature_from_node(node, self.language_name)
         return compute_uid(qualified_name, raw_signature, self.language_name)

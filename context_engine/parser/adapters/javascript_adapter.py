@@ -1074,7 +1074,7 @@ class JavaScriptAdapter(TreeSitterAdapter):
         qualified_name = self._property_method_qualified_name(file_path, owner, name)
         return compute_uid(qualified_name, f"{name}()->_", self.language_name)
 
-    def _uid_for_node(self, node, source_code: str, file_path: str) -> str:
+    def _uid_for_node(self, node, file_path: str) -> str:
         qualified_name = qualified_name_for(node, file_path)
         raw_signature, _ = signature_from_node(node, self.language_name)
         return compute_uid(qualified_name, raw_signature, self.language_name)
@@ -1103,7 +1103,7 @@ class JavaScriptAdapter(TreeSitterAdapter):
             if assignment:
                 owner, method_name = assignment
                 return self._property_method_uid(file_path, owner, method_name)
-        return self._uid_for_node(node, source_code, file_path)
+        return self._uid_for_node(node, file_path)
 
     def _member_assignment_from_expression(
         self,

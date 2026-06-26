@@ -6,6 +6,19 @@ export { escapeHtml };
 type Severity = 'high' | 'medium' | 'low';
 type ImpactZone = 'direct' | 'reach' | 'risk';
 
+const REACH_CATEGORIES = new Set(['event', 'config', 'data', 'api']);
+const HIGH_SEVERITY_CATEGORIES = new Set(['api', 'data', 'cross_repo']);
+const SEVERITY_BASE_SCORE: Record<Severity, number> = {
+  high: 0.88,
+  medium: 0.66,
+  low: 0.42,
+};
+const CATEGORY_UTILITY_BOOST: Record<string, number> = {
+  api: 0.08,
+  data: 0.08,
+  event: 0.05,
+};
+
 interface ImpactItem {
   source: Record<string, unknown>;
   symbolName: string;
@@ -264,35 +277,19 @@ function classifyCategory(
 function classifySeverity(category: string, depth: number | undefined, filePath: string): Severity {
   if (category === 'test' || isDocFile(filePath)) return 'low';
   if (category === 'event' || category === 'config') return 'medium';
-  if (category === 'api' || category === 'data' || category === 'cross_repo') return 'high';
+  if (HIGH_SEVERITY_CATEGORIES.has(category)) return 'high';
   return depth === undefined || depth <= 1 ? 'high' : 'medium';
 }
 
 function classifyZone(category: string, depth: number | undefined, filePath: string): ImpactZone {
   if (category === 'test' || category === 'cross_repo' || isDocFile(filePath)) return 'risk';
-  if (category === 'event' || category === 'config' || category === 'data' || category === 'api') {
-    return 'reach';
-  }
+  if (REACH_CATEGORIES.has(category)) return 'reach';
   return depth === undefined || depth <= 1 ? 'direct' : 'reach';
 }
 
 function fallbackUtility(severity: Severity, category: string, depth: number | undefined): number {
-  let base: number;
-  if (severity === 'high') {
-    base = 0.88;
-  } else if (severity === 'medium') {
-    base = 0.66;
-  } else {
-    base = 0.42;
-  }
-
-  let categoryBoost = 0;
-  if (category === 'api' || category === 'data') {
-    categoryBoost = 0.08;
-  } else if (category === 'event') {
-    categoryBoost = 0.05;
-  }
-
+  const base = SEVERITY_BASE_SCORE[severity];
+  const categoryBoost = CATEGORY_UTILITY_BOOST[category] ?? 0;
   const depthPenalty = typeof depth === 'number' ? Math.min(depth, 4) * 0.04 : 0;
   return Math.max(0.15, Math.min(0.99, base + categoryBoost - depthPenalty));
 }

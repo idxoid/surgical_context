@@ -798,7 +798,7 @@ class PythonAdapter(TreeSitterAdapter):
             args = next((c for c in node.children if c.type == "argument_list"), None)
         if args is None:
             return []
-        subclass_uid = self._uid_for_node(node, source_code, file_path)
+        subclass_uid = self._uid_for_node(node, file_path)
         edges: list[InheritanceEdge] = []
         for base_node in args.named_children:
             if base_node.type == "comment":
@@ -1019,7 +1019,7 @@ class PythonAdapter(TreeSitterAdapter):
             fn_body = cast(Any, fn).child_by_field_name("body")
             if fn_body is None:
                 continue
-            caller_uid = self._uid_for_node(fn, source_code, file_path)
+            caller_uid = self._uid_for_node(fn, file_path)
             local_src = self._local_proxy_sources(fn_body, returns_global)
             if not local_src:
                 continue
@@ -1240,7 +1240,7 @@ class PythonAdapter(TreeSitterAdapter):
         name_node = defn.child_by_field_name("name")
         if name_node is None:
             return []
-        decorated_uid = self._uid_for_node(defn, source_code, file_path)
+        decorated_uid = self._uid_for_node(defn, file_path)
         decorated_name = _node_text(name_node)
         records: list[dict] = []
         for deco in node.children:
@@ -1329,7 +1329,7 @@ class PythonAdapter(TreeSitterAdapter):
         defn = node.child_by_field_name("definition")
         if defn is None or defn.type != "function_definition":
             return
-        site_uid = self._uid_for_node(defn, source_code, file_path)
+        site_uid = self._uid_for_node(defn, file_path)
         if not site_uid:
             return
         for deco in node.children:
@@ -1556,7 +1556,7 @@ class PythonAdapter(TreeSitterAdapter):
             self._hook_decorated_def(node) if decorated else None
         ) or self._enclosing_def_node(node)
         return (
-            self._uid_for_node(site_node, source_code, file_path) if site_node is not None else ""
+            self._uid_for_node(site_node, file_path) if site_node is not None else ""
         )
 
     def _process_hook_register_call(
@@ -1601,7 +1601,7 @@ class PythonAdapter(TreeSitterAdapter):
         self._emit_hook_fact(
             out,
             seen,
-            site_uid=self._uid_for_node(site, source_code, file_path),
+            site_uid=self._uid_for_node(site, file_path),
             hook_name=sig,
             kind="config",
             target_kind="object",
@@ -1974,7 +1974,7 @@ class PythonAdapter(TreeSitterAdapter):
         body = fn.child_by_field_name("body")
         if name_node is None or body is None:
             return
-        accessor_uid = self._uid_for_node(fn, source_code, file_path)
+        accessor_uid = self._uid_for_node(fn, file_path)
         accessor_name = _node_text(name_node)
         enclosing_class = self._enclosing_class_name(fn)
         cls_table = attr_type_table.get(enclosing_class, {})
@@ -2133,7 +2133,7 @@ class PythonAdapter(TreeSitterAdapter):
     ) -> None:
         if referrer_node is None or type_node is None:
             return
-        referrer_uid = self._uid_for_node(referrer_node, source_code, file_path)
+        referrer_uid = self._uid_for_node(referrer_node, file_path)
         rname_node = referrer_node.child_by_field_name("name")
         referrer_name = _node_text(rname_node) if rname_node is not None else ""
         for type_name, type_qn in self._type_ref_targets(type_node, import_bindings, module):
@@ -2360,7 +2360,7 @@ class PythonAdapter(TreeSitterAdapter):
         params = node.child_by_field_name("parameters")
         if params is None:
             return None
-        owner_uid = self._uid_for_node(node, source_code, file_path)
+        owner_uid = self._uid_for_node(node, file_path)
         owner_name_node = node.child_by_field_name("name")
         owner_name = _node_text(owner_name_node) if owner_name_node is not None else ""
         return owner_uid, owner_name
@@ -2678,7 +2678,7 @@ class PythonAdapter(TreeSitterAdapter):
             var_uid = self._module_assignment_variable_uid(call_node, module)
             caller_uid = var_uid if var_uid is not None else module_uid
         else:
-            caller_uid = self._uid_for_node(caller_node, source_code, file_path)
+            caller_uid = self._uid_for_node(caller_node, file_path)
         key = (caller_uid, type_qn, "external" if is_external else "internal")
         if key in seen:
             return
@@ -3202,7 +3202,7 @@ class PythonAdapter(TreeSitterAdapter):
         if parent is None:
             return None
 
-        caller_uid = self._uid_for_node(parent, source_code, file_path)
+        caller_uid = self._uid_for_node(parent, file_path)
         if func_node.type == "identifier":
             call_name = _node_text(func_node)
             rel_type, tier, confidence, callee_uid, callee_qualified_name = (
@@ -3386,7 +3386,7 @@ class PythonAdapter(TreeSitterAdapter):
         qualified_name = f"{module_name_from_path(file_path)}.{name}"
         return compute_uid(qualified_name, f"{name}()->_", self.language_name)
 
-    def _uid_for_node(self, node, source_code: str, file_path: str) -> str:
+    def _uid_for_node(self, node, file_path: str) -> str:
         qualified_name = qualified_name_for(node, file_path)
         raw_signature, _ = signature_from_node(node, self.language_name)
         return compute_uid(qualified_name, raw_signature, self.language_name)

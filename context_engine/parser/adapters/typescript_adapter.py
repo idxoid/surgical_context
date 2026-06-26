@@ -366,7 +366,6 @@ class TypeScriptAdapter(TreeSitterAdapter):
         if object_api_ranges:
             symbols = self._qualify_exported_object_api_members(
                 symbols,
-                source_code,
                 file_path,
                 tree,
             )
@@ -754,7 +753,7 @@ class TypeScriptAdapter(TreeSitterAdapter):
             is_set = any(child.type == "set" for child in node.children)
             if not is_get and not is_set:
                 continue
-            uid = self._uid_for_node(node, source_code, file_path)
+            uid = self._uid_for_node(node, file_path)
             symbol = by_uid.get(uid)
             if symbol is None:
                 continue
@@ -861,7 +860,6 @@ class TypeScriptAdapter(TreeSitterAdapter):
     def _qualify_exported_object_api_members(
         self,
         symbols: list[SymbolMetadata],
-        source_code: str,
         file_path: str,
         tree,
     ) -> list[SymbolMetadata]:
@@ -1090,7 +1088,7 @@ class TypeScriptAdapter(TreeSitterAdapter):
             decorated_name = self._decoratable_name(decorated)
             if not decorated_name:
                 continue
-            decorated_uid = self._uid_for_node(decorated, source_code, file_path)
+            decorated_uid = self._uid_for_node(decorated, file_path)
             if not decorated_uid:
                 continue
             base = self._decorator_base_name(deco)
@@ -1226,7 +1224,7 @@ class TypeScriptAdapter(TreeSitterAdapter):
             decorated_name = self._decoratable_name(decorated)
             if not decorated_name:
                 continue
-            decorated_uid = self._uid_for_node(decorated, source_code, file_path)
+            decorated_uid = self._uid_for_node(decorated, file_path)
             if not decorated_uid:
                 continue
             base = self._decorator_base_name(deco)
@@ -1451,7 +1449,7 @@ class TypeScriptAdapter(TreeSitterAdapter):
         out: list[dict],
         seen: set[tuple[str, str]],
     ) -> None:
-        owner_uid = self._uid_for_node(member, source_code, file_path)
+        owner_uid = self._uid_for_node(member, file_path)
         owner_name_node = class_node.child_by_field_name("name")
         owner_name = self._node_text(owner_name_node) if owner_name_node is not None else ""
         params = member.child_by_field_name("parameters")
@@ -1684,7 +1682,7 @@ class TypeScriptAdapter(TreeSitterAdapter):
         method_name = self._node_text(name_node)
         if method_name not in self._LIFECYCLE_METHOD_NAMES:
             return False
-        site_uid = self._uid_for_node(node, source_code, file_path)
+        site_uid = self._uid_for_node(node, file_path)
         self._append_hook_fact(
             out,
             seen,
@@ -2080,7 +2078,7 @@ class TypeScriptAdapter(TreeSitterAdapter):
             decorated = self._decorated_node_from_decorator(deco, class_only=True)
             if decorated is None:
                 continue
-            class_uid = self._uid_for_node(decorated, source_code, file_path)
+            class_uid = self._uid_for_node(decorated, file_path)
             prefix = self._http_path_from_decorator(deco)
             if class_uid and prefix is not None:
                 controller_prefix_by_class[class_uid] = prefix
@@ -2112,7 +2110,7 @@ class TypeScriptAdapter(TreeSitterAdapter):
             decorated = self._decorated_node_from_decorator(deco)
             if decorated is None:
                 continue
-            site_uid = self._uid_for_node(decorated, source_code, file_path)
+            site_uid = self._uid_for_node(decorated, file_path)
             if not site_uid:
                 continue
             subpath = self._http_path_from_decorator(deco) or ""
@@ -2331,7 +2329,7 @@ class TypeScriptAdapter(TreeSitterAdapter):
         parent = node.parent
         while parent:
             if parent.type in self._CLASS_DECL_TYPES:
-                return self._uid_for_node(parent, source_code, file_path)
+                return self._uid_for_node(parent, file_path)
             parent = parent.parent
         return ""
 
@@ -2384,7 +2382,7 @@ class TypeScriptAdapter(TreeSitterAdapter):
             name_field = node.child_by_field_name("name")
             if name_field is None or self._node_text(name_field) != name:
                 continue
-            return self._uid_for_node(node, source_code, file_path)
+            return self._uid_for_node(node, file_path)
         return ""
 
     def _resolve_metadata_key(
@@ -2721,7 +2719,7 @@ class TypeScriptAdapter(TreeSitterAdapter):
         name_node = fn.child_by_field_name("name")
         if body is None or name_node is None:
             return
-        accessor_uid = self._uid_for_node(fn, source_code, file_path)
+        accessor_uid = self._uid_for_node(fn, file_path)
         accessor_name = self._node_text(name_node)
         class_name = self._enclosing_class_name(fn)
         receiver_qn = f"{module}.{class_name}" if class_name else ""
@@ -3580,7 +3578,7 @@ class TypeScriptAdapter(TreeSitterAdapter):
         if owner.type in {"interface_declaration", "type_alias_declaration", "variable_declarator"}:
             name = self._owner_name_for_type_reference(owner, source_code)
             return self._uid(file_path, name) if name else ""
-        return self._uid_for_node(owner, source_code, file_path)
+        return self._uid_for_node(owner, file_path)
 
     @staticmethod
     def _owner_name_for_type_reference(owner, source_code: str) -> str:
@@ -3631,7 +3629,7 @@ class TypeScriptAdapter(TreeSitterAdapter):
         qualified_name = f"{module_name_from_path(file_path)}.{name}"
         return compute_uid(qualified_name, f"{name}()->_", self.language_name)
 
-    def _uid_for_node(self, node, source_code: str, file_path: str) -> str:
+    def _uid_for_node(self, node, file_path: str) -> str:
         qualified_name = qualified_name_for(node, file_path)
         if node.type == "method_definition":
             owner = self._object_literal_owner_variable(node)
@@ -3852,7 +3850,7 @@ class TypeScriptAdapter(TreeSitterAdapter):
                 return None
             name = source_code[name_node.start_byte : name_node.end_byte]
             return self._uid(file_path, name)
-        return self._uid_for_node(node, source_code, file_path)
+        return self._uid_for_node(node, file_path)
 
     @staticmethod
     def _is_top_level_variable_declarator(node) -> bool:

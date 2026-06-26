@@ -276,7 +276,7 @@ class TypeScriptAxisExtractor:
             return self.adapter._uid(file_path, name), f"{module}.{name}", "variable"
         if node.type in self._CLASS_TYPES:
             return (
-                self.adapter._uid_for_node(node, source, file_path),
+                self.adapter._uid_for_node(node, file_path),
                 qualified_name_for(node, file_path),
                 "class",
             )
@@ -285,7 +285,7 @@ class TypeScriptAxisExtractor:
             if node.type in {"function_expression", "arrow_function"} and owner is not None:
                 return self._scope(owner, source, file_path)
             return (
-                self.adapter._uid_for_node(node, source, file_path),
+                self.adapter._uid_for_node(node, file_path),
                 qualified_name_for(node, file_path),
                 "function",
             )
