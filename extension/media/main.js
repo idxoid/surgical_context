@@ -1218,9 +1218,9 @@ function renderTextInput(spec) {
     spec.placeholder ? `placeholder="${escapeHtml(spec.placeholder)}"` : "",
     `aria-label="${escapeHtml(spec.label)}"`,
     `aria-describedby="${spec.id}-hint"`,
-    spec.min !== void 0 ? `min="${spec.min}"` : "",
-    spec.max !== void 0 ? `max="${spec.max}"` : "",
-    spec.step !== void 0 ? `step="${spec.step}"` : ""
+    spec.min === void 0 ? "" : `min="${spec.min}"`,
+    spec.max === void 0 ? "" : `max="${spec.max}"`,
+    spec.step === void 0 ? "" : `step="${spec.step}"`
   ].filter(Boolean).join(" ");
   const inputHtml = spec.testAction ? `<div class="field-group"><input ${inputAttrs} /><button class="field-action-btn" data-action="${spec.testAction.action}" aria-label="Test connection">${spec.testAction.label}</button></div>` : `<input ${inputAttrs} />`;
   const statusHtml = spec.showStatus ? `<div class="field-status" id="${spec.id}-status"></div>` : "";

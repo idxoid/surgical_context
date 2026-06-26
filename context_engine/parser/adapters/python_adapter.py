@@ -3732,7 +3732,6 @@ class PythonAdapter(TreeSitterAdapter):
         assign,
         *,
         cname: str,
-        attrs: dict[str, str],
         local_types: dict[str, str],
         import_bindings: dict[str, str],
         module: str,
@@ -3817,7 +3816,6 @@ class PythonAdapter(TreeSitterAdapter):
             inferred = self._self_attr_type_from_method_assignment(
                 assign,
                 cname=cname,
-                attrs=attrs,
                 local_types=local_types,
                 import_bindings=import_bindings,
                 module=module,
@@ -4100,9 +4098,7 @@ class PythonAdapter(TreeSitterAdapter):
 
     def _annotated_proxy_binding(
         self,
-        stmt,
         *,
-        var_name: str,
         right,
         typ,
         import_bindings: dict[str, str],
@@ -4129,7 +4125,6 @@ class PythonAdapter(TreeSitterAdapter):
     def _wrapped_callable_proxy_binding(
         self,
         *,
-        var_name: str,
         right,
         func_nodes: dict[str, object],
         func_aliases: dict[str, str],
@@ -4178,8 +4173,6 @@ class PythonAdapter(TreeSitterAdapter):
         var_name = _node_text(left)
         if typ is not None:
             record = self._annotated_proxy_binding(
-                stmt,
-                var_name=var_name,
                 right=right,
                 typ=typ,
                 import_bindings=import_bindings,
@@ -4189,7 +4182,6 @@ class PythonAdapter(TreeSitterAdapter):
             )
             return (var_name, record) if record is not None else None
         record = self._wrapped_callable_proxy_binding(
-            var_name=var_name,
             right=right,
             func_nodes=func_nodes,
             func_aliases=func_aliases,
@@ -4215,7 +4207,6 @@ class PythonAdapter(TreeSitterAdapter):
         """
         context_var_types = self._build_context_var_type_table(
             tree,
-            source_code,
             import_bindings,
             module,
         )
@@ -4243,7 +4234,6 @@ class PythonAdapter(TreeSitterAdapter):
     def _build_context_var_type_table(
         self,
         tree,
-        source_code: str,
         import_bindings: dict[str, str],
         module: str,
     ) -> dict[str, str]:
@@ -4531,7 +4521,7 @@ class PythonAdapter(TreeSitterAdapter):
         and ``export_qualified_name`` (best-effort target qn, relative imports
         resolved).
         """
-        if Path(file_path).name not in ("__init__.py", "__init__.pyi"):
+        if Path(file_path).name not in (_INIT_PY, "__init__.pyi"):
             return []
         bindings = self._extract_import_bindings(source_code, file_path)
         return [
@@ -4576,7 +4566,7 @@ class PythonAdapter(TreeSitterAdapter):
     def _extract_import_bindings(self, source_code: str, file_path: str) -> dict[str, str]:
         """Return local import alias -> best-effort target qualified name."""
         module = module_name_from_path(file_path)
-        if Path(file_path).name in ("__init__.py", "__init__.pyi"):
+        if Path(file_path).name in (_INIT_PY, "__init__.pyi"):
             package = module
         else:
             package = module.rsplit(".", 1)[0] if "." in module else ""

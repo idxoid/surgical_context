@@ -79,9 +79,9 @@ function renderTextInput(spec: TextInputSpec): string {
     spec.placeholder ? `placeholder="${escapeHtml(spec.placeholder)}"` : '',
     `aria-label="${escapeHtml(spec.label)}"`,
     `aria-describedby="${spec.id}-hint"`,
-    spec.min !== undefined ? `min="${spec.min}"` : '',
-    spec.max !== undefined ? `max="${spec.max}"` : '',
-    spec.step !== undefined ? `step="${spec.step}"` : '',
+    spec.min === undefined ? '' : `min="${spec.min}"`,
+    spec.max === undefined ? '' : `max="${spec.max}"`,
+    spec.step === undefined ? '' : `step="${spec.step}"`,
   ].filter(Boolean).join(' ');
 
   const inputHtml = spec.testAction

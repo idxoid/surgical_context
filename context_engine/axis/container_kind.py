@@ -133,7 +133,11 @@ class GraphContextProbe(Protocol):
 class NullGraphProbe:
     """Default probe: no graph context available, every probe returns 'no'."""
 
-    def outgoing_kind_edges(self, symbol_uid: str, kinds: Iterable[str]) -> int:
+    def outgoing_kind_edges(
+        self,
+        _symbol_uid: str,
+        _kinds: Iterable[str],
+    ) -> int:
         return 0
 
     def library_marker_kinds(self, symbol_uid: str) -> set[str]:
@@ -154,10 +158,10 @@ class NullGraphProbe:
     def is_event_signal(self, symbol_uid: str) -> bool:
         return False
 
-    def peer_container_kinds_for(self, qualified_name_prefix: str) -> set[str]:
+    def peer_container_kinds_for(self, _qualified_name_prefix: str) -> set[str]:
         return set()
 
-    def is_error_model_type_name(self, key_name: str, symbol_uid: str) -> bool:
+    def is_error_model_type_name(self, _key_name: str, _symbol_uid: str) -> bool:
         return False
 
     def inherits_error_dispatch(self, symbol_uid: str) -> bool:

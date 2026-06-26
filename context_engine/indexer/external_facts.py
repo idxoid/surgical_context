@@ -243,9 +243,9 @@ def _parse_from_import_line(line: str, add_link) -> bool:
 
 
 def _parse_bare_import_line(line: str, add_link) -> None:
-    if not line.startswith("import "):
+    if not line.startswith(_IMPORT_LINE_PREFIX):
         return
-    body = line[len("import ") :].strip().strip("()").strip()
+    body = line[len(_IMPORT_LINE_PREFIX) :].strip().strip("()").strip()
     for chunk in body.split(","):
         item = chunk.strip()
         if not item:

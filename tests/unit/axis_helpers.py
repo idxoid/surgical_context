@@ -125,9 +125,10 @@ class FakeLanceTable:
         outer = self
 
         class _Lance:
-            def to_table(self, columns=None):
+            def to_table(self, /, **kwargs: object):
                 class _Arrow:
-                    def to_pylist(self_inner):
+                    @staticmethod
+                    def to_pylist():
                         return list(outer._rows)
 
                 return _Arrow()

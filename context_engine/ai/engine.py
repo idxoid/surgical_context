@@ -258,7 +258,7 @@ class AIEngine:
         self.last_route = self.route(token_count, intent)
 
         if use_claude and self.anthropic:
-            return self._chat_claude(system_prompt, user_message, token_count)
+            return self._chat_claude(system_prompt, user_message)
         else:
             return self._chat_ollama(system_prompt, user_message)
 
@@ -296,7 +296,7 @@ class AIEngine:
             return False
         return ModelRouter.should_use_claude(token_count, intent)
 
-    def _chat_claude(self, system_prompt: str, user_message: str, token_count: int) -> str:
+    def _chat_claude(self, system_prompt: str, user_message: str) -> str:
         """Chat using Claude with prompt caching on graph_context."""
         try:
             assert self.anthropic is not None, "anthropic client must be initialized"
@@ -360,11 +360,11 @@ class AIEngine:
         self.last_route = self.route(token_count, intent)
 
         if use_claude and self.anthropic:
-            yield from self._stream_claude(system_prompt, user_message, token_count)
+            yield from self._stream_claude(system_prompt, user_message)
         else:
             yield from self._stream_ollama(system_prompt, user_message)
 
-    def _stream_claude(self, system_prompt: str, user_message: str, token_count: int):
+    def _stream_claude(self, system_prompt: str, user_message: str):
         """Stream Claude response."""
         try:
             assert self.anthropic is not None, "anthropic client must be initialized"

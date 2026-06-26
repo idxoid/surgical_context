@@ -37,15 +37,15 @@ class FakeAnchorLance:
         self.text_search_called = False
         self.vector_queries: list[list[float]] = []
 
-    def scan_docs_workspace(self, workspace_id):
+    def scan_docs_workspace(self, _workspace_id: str) -> list[dict]:
         return self._rows.to_dict("records")
 
-    def search_symbols(self, query, limit=5, threshold=1.5):
+    def search_symbols(self, _query: str, /, **kwargs: object) -> list[dict]:
         self.search_called = True
         self.text_search_called = True
         return []
 
-    def search_symbols_by_vector(self, vector, limit=5, threshold=1.5):
+    def search_symbols_by_vector(self, vector: list[float], /, **kwargs: object) -> list[dict]:
         self.vector_queries.append(vector)
         return []
 

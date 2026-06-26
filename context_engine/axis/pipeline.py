@@ -54,7 +54,7 @@ from context_engine.axis import (
     structural_neighbours,
     trace_traversal,
 )
-from context_engine.axis.context_builder import ContextBundle, ContextSymbol
+from context_engine.axis.context_builder import ContextBundle, ContextRenderBudget, ContextSymbol
 from context_engine.axis.intent_classifier import IntentMatch
 from context_engine.axis.proximity import proximity_boost
 from context_engine.axis.retrieval_budget import ARCHITECTURE, budget_for_intent
@@ -461,6 +461,13 @@ def _build_context_bundles_with_budget(
     options: _ContextBuildOptions,
 ) -> list[ContextBundle]:
     profile = options.budget_profile
+    budget = ContextRenderBudget(
+        token_budget=options.token_budget,
+        render_mode=options.render_mode,
+        per_transaction_share=profile.per_transaction_share if profile else 0.10,
+        file_soft_cap_share=profile.file_soft_cap_share if profile else 0.25,
+        signature_only_initial=profile.signature_only_initial if profile else False,
+    )
     return context_builder.build_context_for_candidates(
         candidates,
         workspace_id=options.workspace_id,
@@ -468,11 +475,7 @@ def _build_context_bundles_with_budget(
         lance=options.lance,
         max_per_seed=options.context_per_seed,
         hook_transparency=options.hook_transparency,
-        token_budget=options.token_budget,
-        render_mode=options.render_mode,
-        per_transaction_share=profile.per_transaction_share if profile else 0.10,
-        file_soft_cap_share=profile.file_soft_cap_share if profile else 0.25,
-        signature_only_initial=profile.signature_only_initial if profile else False,
+        render_budget=budget,
         traversal_mode=options.traversal_mode,
         include_tests=options.include_tests,
         overlay=options.overlay,

@@ -158,8 +158,9 @@ def test_anchor_symbol_uses_architecture_budget(stub_stages, monkeypatch):
     captured: dict = {}
 
     def _capture(candidates, **kw):
-        captured["render_mode"] = kw.get("render_mode")
-        captured["token_budget"] = kw.get("token_budget")
+        budget = kw.get("render_budget")
+        captured["render_mode"] = budget.render_mode if budget else "full"
+        captured["token_budget"] = budget.token_budget if budget else None
         return []
 
     monkeypatch.setattr(_ctx_mod, "build_context_for_candidates", _capture)
@@ -351,7 +352,10 @@ def test_intent_budget_can_be_disabled_for_ab(stub_stages, monkeypatch):
         _ctx_mod,
         "build_context_for_candidates",
         lambda candidates, **kw: (
-            captured.update(token_budget=kw.get("token_budget"), render_mode=kw.get("render_mode"))
+            captured.update(
+                token_budget=(budget.token_budget if (budget := kw.get("render_budget")) else None),
+                render_mode=(budget.render_mode if budget else "full"),
+            )
             or []
         ),
     )
@@ -368,8 +372,9 @@ def test_intent_budget_defaults_to_architecture_profile(stub_stages, monkeypatch
 
     def _capture(candidates, **kw):
         captured["n_seeds"] = len(list(candidates))
-        captured["token_budget"] = kw.get("token_budget")
-        captured["render_mode"] = kw.get("render_mode")
+        budget = kw.get("render_budget")
+        captured["token_budget"] = budget.token_budget if budget else None
+        captured["render_mode"] = budget.render_mode if budget else "full"
         return []
 
     monkeypatch.setattr(_ctx_mod, "build_context_for_candidates", _capture)

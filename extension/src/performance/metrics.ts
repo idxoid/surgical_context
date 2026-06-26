@@ -85,6 +85,6 @@ export function serializeChatChunks(count: number): number {
 }
 
 export function extractFunctionName(source: string): string | null {
-  const match = source.match(/function\s+(\w+)/);
+  const match = /function\s+(\w+)/.exec(source);
   return match ? match[1] : null;
 }

@@ -44,6 +44,8 @@ _RENDER_LADDER: tuple[str, ...] = (
     "full",
 )
 
+_CLASS_DEF_PREFIX = "class "
+
 # One expansion hit: a neighbour reached from a seed, tagged with the
 # step that found it. Mirrors the fields the bundle builder reads off the
 # legacy ``AxisGraphHit``.
@@ -101,6 +103,17 @@ _CALLER_KINDS = frozenset(
 def _candidate_direction(candidate: RoleCandidate) -> str:
     kind = candidate.satisfying_kinds[0] if candidate.satisfying_kinds else ""
     return "caller" if kind in _CALLER_KINDS else "callee"
+
+
+@dataclass(frozen=True)
+class ContextRenderBudget:
+    """Echelon-2 render and token-packing knobs for ``build_context_for_candidates``."""
+
+    token_budget: int | None = None
+    render_mode: str = "full"
+    per_transaction_share: float = 0.10
+    file_soft_cap_share: float = 0.25
+    signature_only_initial: bool = False
 
 
 @dataclass(frozen=True)
@@ -378,7 +391,7 @@ def _hydrate_missing_symbol_code(
 
 
 def _is_callable_header(stripped: str) -> bool:
-    return stripped.startswith(("def ", "async def ", "class "))
+    return stripped.startswith(("def ", "async def ", _CLASS_DEF_PREFIX))
 
 
 def _code_signature(code: str | None) -> str:
@@ -539,9 +552,9 @@ def _class_parent_from_qualified_name(sym: ContextSymbol) -> str | None:
         return None
     raw_signature = _code_signature(sym.code)
     signature = raw_signature.lstrip()
-    if signature.startswith("class "):
+    if signature.startswith(_CLASS_DEF_PREFIX):
         return qn
-    if not (signature.startswith("def ") or signature.startswith("async def ")):
+    if not signature.startswith(("def ", "async def ")):
         return None
     header_line = next(
         (
@@ -581,7 +594,7 @@ def _indent_block(code: str) -> str:
 
 def _is_class_definition_symbol(sym: ContextSymbol, parent: str) -> bool:
     sig = _code_signature(sym.code).lstrip()
-    return sig.startswith("class ") and sym.qualified_name == parent
+    return sig.startswith(_CLASS_DEF_PREFIX) and sym.qualified_name == parent
 
 
 def _index_class_member_groups(
@@ -740,7 +753,10 @@ def _render_impact_tiered(
         core_tier_only=True,
     )
     if not symbols:
-        return replace(bundle, render_mode="impact_tiered")
+        return cast(
+            ContextBundle,
+            replace(bundle, render_mode="impact_tiered"),
+        )
     trimmed: list[ContextSymbol] = []
     for sym in symbols:
         if sym.expansion_step == "fold":
@@ -760,7 +776,10 @@ def _render_impact_tiered(
             )
     seed = trimmed[0]
     related = tuple(trimmed[1:])
-    return replace(bundle, seed=seed, related=related, render_mode="impact_tiered")
+    return cast(
+        ContextBundle,
+        replace(bundle, seed=seed, related=related, render_mode="impact_tiered"),
+    )
 
 
 def _trim_symbol_for_mode(
@@ -1947,11 +1966,7 @@ def build_context_for_candidates(
     traversal_mode: str | None = "deferred_binding_flow",
     include_tests: bool = False,
     hook_transparency: bool = False,
-    token_budget: int | None = None,
-    render_mode: str = "full",
-    per_transaction_share: float = 0.10,
-    file_soft_cap_share: float = 0.25,
-    signature_only_initial: bool = False,
+    render_budget: ContextRenderBudget | None = None,
     utility_score_fn: Callable[[RoleCandidate], float] | None = None,
     overlay: Any | None = None,
     user_id: str = "anonymous",
@@ -1973,7 +1988,7 @@ def build_context_for_candidates(
     expansion hits that land in conventional test surfaces are
     dropped. Impact-style consumers can flip the flag to keep them.
 
-    ``render_mode`` / ``token_budget`` are the echelon-2 budget knobs
+    ``render_budget`` / ``token_budget`` are the echelon-2 budget knobs
     (default off = whole pool, full code = benchmark behaviour):
     ``signature_only`` trims each symbol to its signature, and a non-None
     ``token_budget`` hands the pool to the Token Credit packer, which buys the
@@ -1983,6 +1998,7 @@ def build_context_for_candidates(
     if not candidates:
         return []
 
+    budget = render_budget or ContextRenderBudget()
     all_uids = [c.uid for c in candidates]
     hits_per_seed = _collect_hits_per_seed(
         db,
@@ -2020,16 +2036,17 @@ def build_context_for_candidates(
         )
     return _apply_render_and_budget(
         bundles,
-        token_budget=token_budget,
-        render_mode=render_mode,
-        per_transaction_share=per_transaction_share,
-        file_soft_cap_share=file_soft_cap_share,
-        signature_only_initial=signature_only_initial,
+        token_budget=budget.token_budget,
+        render_mode=budget.render_mode,
+        per_transaction_share=budget.per_transaction_share,
+        file_soft_cap_share=budget.file_soft_cap_share,
+        signature_only_initial=budget.signature_only_initial,
     )
 
 
 __all__ = [
     "ContextBundle",
+    "ContextRenderBudget",
     "ContextSymbol",
     "build_context_for_candidates",
 ]

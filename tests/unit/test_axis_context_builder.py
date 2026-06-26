@@ -7,7 +7,7 @@ from typing import Any
 
 import pytest
 
-from context_engine.axis.context_builder import build_context_for_candidates
+from context_engine.axis.context_builder import ContextRenderBudget, build_context_for_candidates
 from context_engine.axis.role_retrieval import RoleCandidate
 from tests.unit.axis_helpers import axis_test_file_path
 
@@ -399,7 +399,7 @@ def test_build_context_threads_qualified_name_for_fold_render():
         workspace_id=WORKSPACE,
         db=db,
         lance=lance,
-        render_mode="fold",
+        render_budget=ContextRenderBudget(render_mode="fold"),
     )
 
     assert bundle.seed.name == "Service"
