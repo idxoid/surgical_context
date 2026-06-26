@@ -45,6 +45,14 @@ HOOK_AMBIGUITY_MAX = 3
 # wire a dense hub instead of a precise decorator→scanner link, so skip it.
 METADATA_BRIDGE_FANOUT_MAX = 12
 
+_WORKSPACE_GRAPH_VERSION_MATCH = "MATCH (w:Workspace {id: $workspace_id})"
+_WORKSPACE_GRAPH_VERSION_SET = "SET w.graph_version = coalesce(w.graph_version, 0) + 1"
+_BUMP_WORKSPACE_GRAPH_VERSION = f"{_WORKSPACE_GRAPH_VERSION_MATCH}\n{_WORKSPACE_GRAPH_VERSION_SET}"
+
+
+def _bump_workspace_graph_version(session, workspace_id: str) -> None:
+    session.run(_BUMP_WORKSPACE_GRAPH_VERSION, workspace_id=workspace_id)
+
 
 def _batched_class_api_edges(
     edges: list[ClassApiEdge], batch_size: int = _CLASS_API_EDGE_WRITE_BATCH_SIZE
@@ -333,8 +341,8 @@ class Neo4jClient:
         """Remove symbols no longer present in a file while preserving unchanged symbols."""
         with self.driver.session() as session:
             session.run(
-                """
-                MATCH (f:File {path: $path, workspace_id: $workspace_id})-[c:CONTAINS]->(s:Symbol)
+                f"""
+                MATCH (f:File {{path: $path, workspace_id: $workspace_id}})-[c:CONTAINS]->(s:Symbol)
                 WHERE NOT s.uid IN $keep_uids
                 OPTIONAL MATCH (s)-[r]-(other:Symbol)
                 WHERE r IS NULL OR (
@@ -352,9 +360,9 @@ class Neo4jClient:
                 WHERE owners = 0
                 DETACH DELETE sym
                 WITH count(*) AS deleted_symbols
-                MATCH (w:Workspace {id: $workspace_id})
+                {_WORKSPACE_GRAPH_VERSION_MATCH}
                 WHERE deleted_symbols > 0
-                SET w.graph_version = coalesce(w.graph_version, 0) + 1
+                {_WORKSPACE_GRAPH_VERSION_SET}
                 """,
                 path=file_path,
                 keep_uids=keep_uids,
@@ -371,16 +379,16 @@ class Neo4jClient:
             return
         with self.driver.session() as session:
             session.run(
-                """
+                f"""
                 MATCH (s:Symbol)-[r:CALLS|CALLS_DIRECT|CALLS_SCOPED|CALLS_IMPORTED|CALLS_DYNAMIC|CALLS_INFERRED|CALLS_GUESS|CALLS_EXTERNAL|DEPENDS_ON|IMPLEMENTS|OVERRIDES|HAS_API|INHERITED_API|REFERENCES|REFERENCES_EXTERNAL]->()
                 WHERE s.uid IN $symbol_uids
                   AND coalesce(r.workspace_id, $workspace_id) = $workspace_id
                 WITH collect(r) AS edges
                 FOREACH (edge IN edges | DELETE edge)
                 WITH size(edges) AS deleted_edges
-                MATCH (w:Workspace {id: $workspace_id})
+                {_WORKSPACE_GRAPH_VERSION_MATCH}
                 WHERE deleted_edges > 0
-                SET w.graph_version = coalesce(w.graph_version, 0) + 1
+                {_WORKSPACE_GRAPH_VERSION_SET}
                 """,
                 symbol_uids=symbol_uids,
                 workspace_id=workspace_id,
@@ -456,14 +464,14 @@ class Neo4jClient:
         """Clear stale file import edges before relinking current imports."""
         with self.driver.session() as session:
             session.run(
-                """
-                MATCH (:File {path: $path, workspace_id: $workspace_id})-[r:IMPORTS]->()
+                f"""
+                MATCH (:File {{path: $path, workspace_id: $workspace_id}})-[r:IMPORTS]->()
                 WITH collect(r) AS edges
                 FOREACH (edge IN edges | DELETE edge)
                 WITH size(edges) AS deleted_edges
-                MATCH (w:Workspace {id: $workspace_id})
+                {_WORKSPACE_GRAPH_VERSION_MATCH}
                 WHERE deleted_edges > 0
-                SET w.graph_version = coalesce(w.graph_version, 0) + 1
+                {_WORKSPACE_GRAPH_VERSION_SET}
                 """,
                 path=file_path,
                 workspace_id=workspace_id,
@@ -473,8 +481,8 @@ class Neo4jClient:
         """Remove workspace-local edges and orphaned symbols for a File."""
         with self.driver.session() as session:
             session.run(
-                """
-                MATCH (f:File {path: $path, workspace_id: $workspace_id})-[c:CONTAINS]->(s:Symbol)
+                f"""
+                MATCH (f:File {{path: $path, workspace_id: $workspace_id}})-[c:CONTAINS]->(s:Symbol)
                 OPTIONAL MATCH (s)-[r]-(other:Symbol)
                 WHERE r IS NULL OR (
                     type(r) IN ['CALLS', 'CALLS_DIRECT', 'CALLS_SCOPED', 'CALLS_IMPORTED',
@@ -493,8 +501,8 @@ class Neo4jClient:
                 WHERE owners = 0
                 DETACH DELETE sym
                 WITH count(*) AS deleted_symbols
-                MATCH (w:Workspace {id: $workspace_id})
-                SET w.graph_version = coalesce(w.graph_version, 0) + 1
+                {_WORKSPACE_GRAPH_VERSION_MATCH}
+                {_WORKSPACE_GRAPH_VERSION_SET}
                 """,
                 path=file_path,
                 workspace_id=workspace_id,
@@ -573,13 +581,7 @@ class Neo4jClient:
         resolved = self._resolve_call_callees(calls, workspace_id=workspace_id)
         with self.driver.session() as session:
             session.execute_write(self._create_call_relations, resolved, workspace_id)
-            session.run(
-                """
-                MATCH (w:Workspace {id: $workspace_id})
-                SET w.graph_version = coalesce(w.graph_version, 0) + 1
-                """,
-                workspace_id=workspace_id,
-            )
+            _bump_workspace_graph_version(session, workspace_id)
 
     @staticmethod
     def _build_call_resolution_index(
@@ -771,13 +773,7 @@ class Neo4jClient:
             )
         with self.driver.session() as session:
             session.execute_write(self._create_import_relations, resolved, workspace_id)
-            session.run(
-                """
-                MATCH (w:Workspace {id: $workspace_id})
-                SET w.graph_version = coalesce(w.graph_version, 0) + 1
-                """,
-                workspace_id=workspace_id,
-            )
+            _bump_workspace_graph_version(session, workspace_id)
 
     @staticmethod
     def _create_import_relations(tx, imports, workspace_id):
@@ -802,15 +798,15 @@ class Neo4jClient:
     ):
         with self.driver.session() as session:
             session.run(
-                """
-                MATCH (f:File {path: $path, workspace_id: $workspace_id})-[r:IMPORTS_EXTERNAL]->(:ExternalPkg)
+                f"""
+                MATCH (f:File {{path: $path, workspace_id: $workspace_id}})-[r:IMPORTS_EXTERNAL]->(:ExternalPkg)
                 WHERE coalesce(r.workspace_id, $workspace_id) = $workspace_id
                 WITH collect(r) AS edges
                 FOREACH (edge IN edges | DELETE edge)
                 WITH size(edges) AS deleted_edges
-                MATCH (w:Workspace {id: $workspace_id})
+                {_WORKSPACE_GRAPH_VERSION_MATCH}
                 WHERE deleted_edges > 0
-                SET w.graph_version = coalesce(w.graph_version, 0) + 1
+                {_WORKSPACE_GRAPH_VERSION_SET}
                 """,
                 path=file_path,
                 workspace_id=workspace_id,
@@ -857,13 +853,7 @@ class Neo4jClient:
                     workspace_id,
                 )
             if calls_created or imports_created or symbol_import_links:
-                session.run(
-                    """
-                    MATCH (w:Workspace {id: $workspace_id})
-                    SET w.graph_version = coalesce(w.graph_version, 0) + 1
-                    """,
-                    workspace_id=workspace_id,
-                )
+                _bump_workspace_graph_version(session, workspace_id)
             session.run(
                 """
                 MATCH (e:ExternalPkg {workspace_id: $workspace_id})
@@ -933,13 +923,7 @@ class Neo4jClient:
             ).single()
             created = int((result and result.get("created")) or 0)
             if created:
-                session.run(
-                    """
-                    MATCH (w:Workspace {id: $workspace_id})
-                    SET w.graph_version = coalesce(w.graph_version, 0) + 1
-                    """,
-                    workspace_id=workspace_id,
-                )
+                _bump_workspace_graph_version(session, workspace_id)
             return created
 
     @staticmethod
@@ -1129,13 +1113,7 @@ class Neo4jClient:
 
             created = bare_created + dotted_created
             if created:
-                session.run(
-                    """
-                    MATCH (w:Workspace {id: $workspace_id})
-                    SET w.graph_version = coalesce(w.graph_version, 0) + 1
-                    """,
-                    workspace_id=workspace_id,
-                )
+                _bump_workspace_graph_version(session, workspace_id)
             return created
 
     @staticmethod
@@ -1186,13 +1164,7 @@ class Neo4jClient:
         with self.driver.session() as session:
             for batch in _batched_class_api_edges(edges):
                 session.execute_write(self._create_class_api_relations, batch, workspace_id)
-            session.run(
-                """
-                MATCH (w:Workspace {id: $workspace_id})
-                SET w.graph_version = coalesce(w.graph_version, 0) + 1
-                """,
-                workspace_id=workspace_id,
-            )
+            _bump_workspace_graph_version(session, workspace_id)
 
     def clear_class_api_edges(self, workspace_id: str = DEFAULT_WORKSPACE_ID):
         with self.driver.session() as session:
@@ -1215,13 +1187,7 @@ class Neo4jClient:
                 if deleted < _CLASS_API_EDGE_DELETE_BATCH_SIZE:
                     break
             if deleted_total:
-                session.run(
-                    """
-                    MATCH (w:Workspace {id: $workspace_id})
-                    SET w.graph_version = coalesce(w.graph_version, 0) + 1
-                    """,
-                    workspace_id=workspace_id,
-                )
+                _bump_workspace_graph_version(session, workspace_id)
 
     def link_symbol_api_edges(
         self,
@@ -1238,13 +1204,7 @@ class Neo4jClient:
                 workspace_id,
             )
             if created:
-                session.run(
-                    """
-                    MATCH (w:Workspace {id: $workspace_id})
-                    SET w.graph_version = coalesce(w.graph_version, 0) + 1
-                    """,
-                    workspace_id=workspace_id,
-                )
+                _bump_workspace_graph_version(session, workspace_id)
             return created, touched
 
     @staticmethod
@@ -1333,13 +1293,7 @@ class Neo4jClient:
                 self._create_inheritance_relations, inheritance_edges, workspace_id
             )
             if inheritance_edges:
-                session.run(
-                    """
-                    MATCH (w:Workspace {id: $workspace_id})
-                    SET w.graph_version = coalesce(w.graph_version, 0) + 1
-                    """,
-                    workspace_id=workspace_id,
-                )
+                _bump_workspace_graph_version(session, workspace_id)
 
     @staticmethod
     def _create_inheritance_relations(tx, inheritance_edges, workspace_id):
@@ -1484,13 +1438,7 @@ class Neo4jClient:
             return
         with self.driver.session() as session:
             session.execute_write(self._create_proxy_relations, proxy_bindings, workspace_id)
-            session.run(
-                """
-                MATCH (w:Workspace {id: $workspace_id})
-                SET w.graph_version = coalesce(w.graph_version, 0) + 1
-                """,
-                workspace_id=workspace_id,
-            )
+            _bump_workspace_graph_version(session, workspace_id)
 
     @staticmethod
     def _create_proxy_relations(tx, proxy_bindings, workspace_id):
@@ -1610,13 +1558,7 @@ class Neo4jClient:
                 rec = session.run(query, rows=rows, workspace_id=workspace_id).single()
                 created = int(rec["created"]) if rec else 0
                 if created:
-                    session.run(
-                        """
-                        MATCH (w:Workspace {id: $workspace_id})
-                        SET w.graph_version = coalesce(w.graph_version, 0) + 1
-                        """,
-                        workspace_id=workspace_id,
-                    )
+                    _bump_workspace_graph_version(session, workspace_id)
                 return created
         except Exception:
             return 0
@@ -1682,13 +1624,7 @@ class Neo4jClient:
                 rec = session.run(query, rows=rows, workspace_id=workspace_id).single()
                 created = int(rec["created"]) if rec else 0
                 if created:
-                    session.run(
-                        """
-                        MATCH (w:Workspace {id: $workspace_id})
-                        SET w.graph_version = coalesce(w.graph_version, 0) + 1
-                        """,
-                        workspace_id=workspace_id,
-                    )
+                    _bump_workspace_graph_version(session, workspace_id)
                 return created
         except Exception:
             return 0
@@ -1723,13 +1659,7 @@ class Neo4jClient:
             return
         with self.driver.session() as session:
             session.execute_write(self._create_decorator_relations, decorators, workspace_id)
-            session.run(
-                """
-                MATCH (w:Workspace {id: $workspace_id})
-                SET w.graph_version = coalesce(w.graph_version, 0) + 1
-                """,
-                workspace_id=workspace_id,
-            )
+            _bump_workspace_graph_version(session, workspace_id)
 
     @staticmethod
     def _create_decorator_relations(tx, decorators, workspace_id):
@@ -1850,13 +1780,7 @@ class Neo4jClient:
             return
         with self.driver.session() as session:
             session.execute_write(self._create_hook_relations, hooks, workspace_id)
-            session.run(
-                """
-                MATCH (w:Workspace {id: $workspace_id})
-                SET w.graph_version = coalesce(w.graph_version, 0) + 1
-                """,
-                workspace_id=workspace_id,
-            )
+            _bump_workspace_graph_version(session, workspace_id)
 
     @staticmethod
     def _create_hook_relations(tx, hooks, workspace_id):
@@ -2062,13 +1986,7 @@ class Neo4jClient:
             return
         with self.driver.session() as session:
             session.execute_write(self._create_metadata_bridges, facts, workspace_id)
-            session.run(
-                """
-                MATCH (w:Workspace {id: $workspace_id})
-                SET w.graph_version = coalesce(w.graph_version, 0) + 1
-                """,
-                workspace_id=workspace_id,
-            )
+            _bump_workspace_graph_version(session, workspace_id)
 
     @staticmethod
     def _metadata_bridge_indexes(
@@ -2162,13 +2080,7 @@ class Neo4jClient:
             return
         with self.driver.session() as session:
             session.execute_write(self._create_http_endpoints, facts, workspace_id)
-            session.run(
-                """
-                MATCH (w:Workspace {id: $workspace_id})
-                SET w.graph_version = coalesce(w.graph_version, 0) + 1
-                """,
-                workspace_id=workspace_id,
-            )
+            _bump_workspace_graph_version(session, workspace_id)
 
     @staticmethod
     def _create_http_endpoints(tx, facts, workspace_id):
@@ -2262,13 +2174,7 @@ class Neo4jClient:
             return
         with self.driver.session() as session:
             session.execute_write(self._create_attr_access_relations, accesses, workspace_id)
-            session.run(
-                """
-                MATCH (w:Workspace {id: $workspace_id})
-                SET w.graph_version = coalesce(w.graph_version, 0) + 1
-                """,
-                workspace_id=workspace_id,
-            )
+            _bump_workspace_graph_version(session, workspace_id)
 
     @staticmethod
     def _create_attr_access_relations(tx, accesses, workspace_id):
@@ -2360,13 +2266,7 @@ class Neo4jClient:
             session.execute_write(
                 self._create_decorator_composition_relations, compositions, workspace_id
             )
-            session.run(
-                """
-                MATCH (w:Workspace {id: $workspace_id})
-                SET w.graph_version = coalesce(w.graph_version, 0) + 1
-                """,
-                workspace_id=workspace_id,
-            )
+            _bump_workspace_graph_version(session, workspace_id)
 
     @staticmethod
     def _create_decorator_composition_relations(tx, compositions, workspace_id):
@@ -2449,13 +2349,7 @@ class Neo4jClient:
             return
         with self.driver.session() as session:
             session.execute_write(self._create_type_reference_relations, references, workspace_id)
-            session.run(
-                """
-                MATCH (w:Workspace {id: $workspace_id})
-                SET w.graph_version = coalesce(w.graph_version, 0) + 1
-                """,
-                workspace_id=workspace_id,
-            )
+            _bump_workspace_graph_version(session, workspace_id)
 
     @staticmethod
     def _create_type_reference_relations(tx, references, workspace_id):
@@ -2518,13 +2412,7 @@ class Neo4jClient:
                 workspace_id,
             )
             if created:
-                session.run(
-                    """
-                    MATCH (w:Workspace {id: $workspace_id})
-                    SET w.graph_version = coalesce(w.graph_version, 0) + 1
-                    """,
-                    workspace_id=workspace_id,
-                )
+                _bump_workspace_graph_version(session, workspace_id)
             return created, touched
 
     @staticmethod
@@ -2627,13 +2515,7 @@ class Neo4jClient:
             return
         with self.driver.session() as session:
             session.execute_write(self._create_reexport_relations, reexports, workspace_id)
-            session.run(
-                """
-                MATCH (w:Workspace {id: $workspace_id})
-                SET w.graph_version = coalesce(w.graph_version, 0) + 1
-                """,
-                workspace_id=workspace_id,
-            )
+            _bump_workspace_graph_version(session, workspace_id)
 
     @staticmethod
     def _create_reexport_relations(tx, reexports, workspace_id):
@@ -2693,13 +2575,7 @@ class Neo4jClient:
             session.execute_write(
                 self._create_instantiation_relations, instantiations, workspace_id
             )
-            session.run(
-                """
-                MATCH (w:Workspace {id: $workspace_id})
-                SET w.graph_version = coalesce(w.graph_version, 0) + 1
-                """,
-                workspace_id=workspace_id,
-            )
+            _bump_workspace_graph_version(session, workspace_id)
 
     @staticmethod
     def _create_instantiation_relations(tx, instantiations, workspace_id):
@@ -2809,13 +2685,7 @@ class Neo4jClient:
             return
         with self.driver.session() as session:
             session.execute_write(self._create_injection_relations, injections, workspace_id)
-            session.run(
-                """
-                MATCH (w:Workspace {id: $workspace_id})
-                SET w.graph_version = coalesce(w.graph_version, 0) + 1
-                """,
-                workspace_id=workspace_id,
-            )
+            _bump_workspace_graph_version(session, workspace_id)
 
     @staticmethod
     def _create_injection_relations(tx, injections, workspace_id):

@@ -576,9 +576,9 @@ button {
 }
 
 .chip.warning {
-  border-color: rgba(245, 158, 11, 0.35);
-  color: rgba(245, 158, 11, 0.86);
-  background: rgba(245, 158, 11, 0.06);
+  border-color: color-mix(in srgb, var(--sc-warn) 44%, transparent);
+  color: var(--sc-warn);
+  background: color-mix(in srgb, var(--sc-warn) 8%, transparent);
 }
 
 .composer-dock {

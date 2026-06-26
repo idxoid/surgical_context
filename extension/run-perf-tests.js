@@ -5,7 +5,7 @@
  * Run with: npm run perf-test
  */
 
-const { performance } = require('perf_hooks');
+const { performance } = require('node:perf_hooks');
 
 // Performance test thresholds
 const THRESHOLDS = {

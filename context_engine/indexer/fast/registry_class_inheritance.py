@@ -570,7 +570,9 @@ def _build_registry_class_lance_updates(
         self_data = lance_kinds.get(uid)
         if not self_data or "registry_class" in self_data["container_kinds"]:
             continue
-        ancestor_uids = _full_ancestor_uids_for_class(row, alias_targets, candidate_uids_by_local_qn)
+        ancestor_uids = _full_ancestor_uids_for_class(
+            row, alias_targets, candidate_uids_by_local_qn
+        )
         for anc_uid in ancestor_uids:
             anc = lance_kinds.get(anc_uid)
             if not anc or "registry_class" not in anc["container_kinds"]:

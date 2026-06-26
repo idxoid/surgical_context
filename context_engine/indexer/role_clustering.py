@@ -678,7 +678,9 @@ def _symbol_row_from_meta(
         reexport_in=int(reexport_in_per_uid.get(uid, 0)),
         is_proxy_binding=uid in proxy_uids,
         external_call_fan_out=float(external_fans.call_fan_out_per_uid.get(uid, 0.0)),
-        external_import_fan_out=float(external_fans.import_fan_out_by_file.get(meta["file_path"], 0.0)),
+        external_import_fan_out=float(
+            external_fans.import_fan_out_by_file.get(meta["file_path"], 0.0)
+        ),
         external_root_count=int(external_fans.root_count_per_uid.get(uid, 0)),
         external_integration_call_fan_out=float(
             external_fans.integration_call_fan_out_per_uid.get(uid, 0.0)

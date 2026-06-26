@@ -572,6 +572,7 @@ function renderImpactItemRow(item, targetSymbol) {
     </div>
   `;
 }
+const DEFAULT_CALLS_EDGE_LABEL = "CALLS_*";
 function impactHopSuffix(depth) {
   return depth > 1 ? ` \xD7 ${depth}` : "";
 }
@@ -588,14 +589,14 @@ function explainReverseCalls(ctx) {
   const { item, targetSymbol, edge, depth } = ctx;
   return {
     summary: depth <= 1 ? `${item.symbolName} calls or directly consumes ${targetSymbol}.` : `${item.symbolName} reaches ${targetSymbol} through ${depth} reverse call hops.`,
-    path: `${item.symbolName} \u2014${edge || "CALLS_*"}${impactHopSuffix(depth)}\u2192 ${targetSymbol}`
+    path: `${item.symbolName} \u2014${edge || DEFAULT_CALLS_EDGE_LABEL}${impactHopSuffix(depth)}\u2192 ${targetSymbol}`
   };
 }
 function explainForwardCalls(ctx) {
   const { item, targetSymbol, edge, depth } = ctx;
   return {
     summary: `${targetSymbol} calls or dispatches into ${item.symbolName}, so behavior can propagate forward.`,
-    path: `${targetSymbol} \u2014${edge || "CALLS_*"}${impactHopSuffix(depth)}\u2192 ${item.symbolName}`
+    path: `${targetSymbol} \u2014${edge || DEFAULT_CALLS_EDGE_LABEL}${impactHopSuffix(depth)}\u2192 ${item.symbolName}`
   };
 }
 function explainImpactedTests(ctx) {
@@ -633,7 +634,7 @@ function explainDefaultImpact(ctx) {
     path: `${targetSymbol} \u2014${edge || item.relation}, ${impactHopsLabel(depth)}\u2192 ${item.symbolName}`
   };
 }
-var IMPACT_KIND_EXPLAINERS = {
+const IMPACT_KIND_EXPLAINERS = {
   coverage_gap: explainCoverageGap,
   reverse_calls: explainReverseCalls,
   overlay_caller: explainReverseCalls,

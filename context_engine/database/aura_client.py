@@ -13,6 +13,8 @@ from context_engine.database.neo4j_env import NEO4J_PASSWORD, NEO4J_URI, NEO4J_U
 
 logger = logging.getLogger(__name__)
 
+_NEO4J_PING = "RETURN 1"
+
 
 def _env_truthy(name: str) -> bool:
     return os.getenv(name, "").strip().lower() in {"1", "true", "yes", "on"}
@@ -41,7 +43,7 @@ def connect_neo4j_driver(
             aura_uri = AuraClient._build_aura_uri(aura_instance_name)
             driver = GraphDatabase.driver(aura_uri, auth=(aura_username, aura_password))
             with driver.session() as session:
-                session.run("RETURN 1").consume()
+                session.run(_NEO4J_PING).consume()
             logger.info(
                 "Connected to Neo4j Aura (%s) as %s",
                 aura_instance_name,
@@ -56,7 +58,7 @@ def connect_neo4j_driver(
                     auth=(resolved_local_user, resolved_local_password),
                 )
                 with driver.session() as session:
-                    session.run("RETURN 1").consume()
+                    session.run(_NEO4J_PING).consume()
                 logger.info("Connected to local Neo4j (%s) as fallback", resolved_local_uri)
                 return driver, False, True
             except Exception:
@@ -68,7 +70,7 @@ def connect_neo4j_driver(
         auth=(resolved_local_user, resolved_local_password),
     )
     with driver.session() as session:
-        session.run("RETURN 1").consume()
+        session.run(_NEO4J_PING).consume()
     logger.info("Connected to local Neo4j (%s) as %s", resolved_local_uri, resolved_local_user)
     return driver, False, False
 
@@ -153,7 +155,7 @@ class AuraClient(Neo4jClient):
         """Health check: verify connection is alive."""
         try:
             with self.driver.session() as session:
-                _result = session.run("RETURN 1")
+                _result = session.run(_NEO4J_PING)
                 return {
                     "status": "healthy",
                     "mode": "aura" if self.use_aura else "local",

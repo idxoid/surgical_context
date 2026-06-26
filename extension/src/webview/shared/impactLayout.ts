@@ -426,6 +426,8 @@ function renderImpactItemRow(item: ImpactItem, targetSymbol: string): string {
   `;
 }
 
+const DEFAULT_CALLS_EDGE_LABEL = 'CALLS_*';
+
 interface ImpactExplainContext {
   item: ImpactItem;
   targetSymbol: string;
@@ -454,7 +456,7 @@ function explainReverseCalls(ctx: ImpactExplainContext): Pick<ImpactExplanation,
     summary: depth <= 1
       ? `${item.symbolName} calls or directly consumes ${targetSymbol}.`
       : `${item.symbolName} reaches ${targetSymbol} through ${depth} reverse call hops.`,
-    path: `${item.symbolName} —${edge || 'CALLS_*'}${impactHopSuffix(depth)}→ ${targetSymbol}`,
+    path: `${item.symbolName} —${edge || DEFAULT_CALLS_EDGE_LABEL}${impactHopSuffix(depth)}→ ${targetSymbol}`,
   };
 }
 
@@ -462,7 +464,7 @@ function explainForwardCalls(ctx: ImpactExplainContext): Pick<ImpactExplanation,
   const { item, targetSymbol, edge, depth } = ctx;
   return {
     summary: `${targetSymbol} calls or dispatches into ${item.symbolName}, so behavior can propagate forward.`,
-    path: `${targetSymbol} —${edge || 'CALLS_*'}${impactHopSuffix(depth)}→ ${item.symbolName}`,
+    path: `${targetSymbol} —${edge || DEFAULT_CALLS_EDGE_LABEL}${impactHopSuffix(depth)}→ ${item.symbolName}`,
   };
 }
 

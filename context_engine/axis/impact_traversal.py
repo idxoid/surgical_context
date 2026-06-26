@@ -43,6 +43,8 @@ from context_engine.axis.graph_walk import EdgeProfile, Neighbour, call_fan_in, 
 from context_engine.axis.role_retrieval import RoleCandidate
 from context_engine.axis.test_file_filter import is_test_path
 
+_CALLS_EDGE_TYPE = "CALLS_*"
+
 _HTTP_ENDPOINT_EDGES = ("CALLS_ENDPOINT", "IMPLEMENTS_ENDPOINT")
 
 # Intent roles whose canonical question shape asks about registration,
@@ -215,14 +217,14 @@ def expand_impact_neighbourhood(
     )
 
     walks: list[tuple[str, str, list[Neighbour]]] = [
-        ("reverse_calls", "CALLS_*", reverse_calls),
+        ("reverse_calls", _CALLS_EDGE_TYPE, reverse_calls),
         (
             "http_endpoint_counterpart",
             "CALLS_ENDPOINT|IMPLEMENTS_ENDPOINT",
             http_endpoint_counterparts,
         ),
-        ("forward_calls", "CALLS_*", spine),
-        ("impacted_tests", "CALLS_*", impacted_tests),
+        ("forward_calls", _CALLS_EDGE_TYPE, spine),
+        ("impacted_tests", _CALLS_EDGE_TYPE, impacted_tests),
         ("structural_inheritor", "EXTENDS_EXTERNAL|INHERITED_API", structural_inheritor),
         ("structural_api_carrier", "HAS_API", structural_api_carrier),
         ("forward_affects", "AFFECTS", forward_affects),

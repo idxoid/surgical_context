@@ -1,6 +1,6 @@
-import * as path from 'path';
+import * as path from 'node:path';
 import * as vscode from 'vscode';
-import { execFile } from 'child_process';
+import { execFile } from 'node:child_process';
 import { promisify } from 'util';
 
 const execFileAsync = promisify(execFile);

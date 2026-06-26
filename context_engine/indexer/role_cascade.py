@@ -592,9 +592,7 @@ RARE_ROLES = frozenset(
 
 def _l1_surface_owner(row: FanProfile) -> bool:
     return (
-        row.api_fan_out > _EPS
-        or (row.is_class and row.has_documentation)
-        or row.reexport_in > _EPS
+        row.api_fan_out > _EPS or (row.is_class and row.has_documentation) or row.reexport_in > _EPS
     )
 
 
@@ -663,7 +661,9 @@ def assign_l1(row: FanProfile) -> str:
     surface_owner = _l1_surface_owner(row)
     is_polymorphic_factory = _l1_is_polymorphic_factory(row)
     for bucket in (
-        lambda: _l1_noise(row, surface_owner=surface_owner, is_polymorphic_factory=is_polymorphic_factory),
+        lambda: _l1_noise(
+            row, surface_owner=surface_owner, is_polymorphic_factory=is_polymorphic_factory
+        ),
         lambda: _l1_routing_wrap(row),
         lambda: _l1_state_types_core(row),
         lambda: _l1_state_types_surface(row),

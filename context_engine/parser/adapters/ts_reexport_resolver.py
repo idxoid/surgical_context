@@ -79,9 +79,7 @@ class TsReexportResolver:
         if name_node is None:
             return
         original = self._adapter._node_text(name_node)
-        export_name = (
-            self._adapter._node_text(alias_node) if alias_node is not None else original
-        )
+        export_name = self._adapter._node_text(alias_node) if alias_node is not None else original
         if original == "default":
             return
         export_qn = f"{target_module}.{original}"

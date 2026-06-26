@@ -36,6 +36,7 @@ from typing import Any
 import lancedb
 
 from context_engine.axis.role_resolver import ROLE_EVIDENCE_MAP
+from context_engine.database.lancedb_client import DB_PATH
 
 _SCAN_CACHE_ENABLED = os.getenv("LANCEDB_WORKSPACE_SCAN_CACHE", "true").strip().lower() in {
     "1",
@@ -371,7 +372,7 @@ def _subset_scan_matrix(matrix, kept_idx: list[int]):
 def scan_workspace_rows(
     workspace_id: str,
     *,
-    lance_db_path: str = "./data/lancedb",
+    lance_db_path: str = DB_PATH,
     lance: Any | None = None,
     include_tests: bool = False,
     with_vector: bool = True,
@@ -492,7 +493,7 @@ def find_symbols_by_roles(
     *,
     query_text: str | None = None,
     limit: int = 25,
-    lance_db_path: str = "./data/lancedb",
+    lance_db_path: str = DB_PATH,
     embed_fn=None,
     include_tests: bool = False,
     prescanned: WorkspaceScan | None = None,
@@ -535,7 +536,7 @@ def find_symbols_by_role(
     *,
     query_text: str | None = None,
     limit: int = 25,
-    lance_db_path: str = "./data/lancedb",
+    lance_db_path: str = DB_PATH,
     embed_fn=None,
     include_tests: bool = False,
 ) -> list[RoleCandidate]:
@@ -577,7 +578,7 @@ def find_seeds_by_vector(
     *,
     embed_fn,
     limit: int = 12,
-    lance_db_path: str = "./data/lancedb",
+    lance_db_path: str = DB_PATH,
     include_tests: bool = False,
     impact_mode: bool = False,
     prescanned: WorkspaceScan | None = None,
@@ -862,7 +863,7 @@ def find_seeds_by_doc_anchor(
     *,
     embed_fn,
     limit: int = 12,
-    lance_db_path: str = "./data/lancedb",
+    lance_db_path: str = DB_PATH,
     include_tests: bool = False,
     impact_mode: bool = False,
     prescanned: WorkspaceScan | None = None,

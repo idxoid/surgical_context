@@ -745,7 +745,9 @@ def _semantic_hits_for_states(
             limit=5,
             threshold=SIMILARITY_THRESHOLD,
         )
-    return [_semantic_hits_for_row(state, lance, workspace_id=workspace_id) for state in semantic_states]
+    return [
+        _semantic_hits_for_row(state, lance, workspace_id=workspace_id) for state in semantic_states
+    ]
 
 
 def _apply_semantic_hits(state: dict, hits: list[dict]) -> list[str]:

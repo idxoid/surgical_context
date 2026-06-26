@@ -503,7 +503,9 @@ def _smoke_paths(args: argparse.Namespace) -> tuple[Path, Path]:
     return project_path, docs_path
 
 
-def _validate_smoke_workspace_id(project_path: Path, workspace_id: str, args: argparse.Namespace) -> None:
+def _validate_smoke_workspace_id(
+    project_path: Path, workspace_id: str, args: argparse.Namespace
+) -> None:
     if not args.workspace_id.strip():
         return
     from context_engine.workspace import assert_workspace_repo_matches_project_root

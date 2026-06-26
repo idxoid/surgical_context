@@ -100,7 +100,7 @@ def apply_dirty_overlay_to_bundles(
     for bundle in bundles:
         seed = _patch(bundle.seed)
         related = tuple(_patch(sym) for sym in bundle.related)
-        if seed is bundle.seed and related is bundle.related:
+        if seed == bundle.seed and related == bundle.related:
             patched.append(bundle)
         else:
             patched.append(replace(bundle, seed=seed, related=related))

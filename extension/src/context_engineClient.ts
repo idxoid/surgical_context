@@ -1,5 +1,5 @@
 import * as vscode from 'vscode';
-import { createHash } from 'crypto';
+import { createHash } from 'node:crypto';
 import { SSECallbacks, parseSSEStream } from './utils';
 import { resolveWorkspaceId } from './workspaceIdentity';
 

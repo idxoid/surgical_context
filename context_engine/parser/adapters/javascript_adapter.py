@@ -137,6 +137,32 @@ class JavaScriptAdapter(TreeSitterAdapter):
     _http_path_from_call_argument = TypeScriptAdapter._http_path_from_call_argument
     _http_handler_uid_from_call = TypeScriptAdapter._http_handler_uid_from_call
     _uid_for_symbol_name = TypeScriptAdapter._uid_for_symbol_name
+    _decorated_node_from_decorator = TypeScriptAdapter._decorated_node_from_decorator
+    _append_http_endpoint_fact = TypeScriptAdapter._append_http_endpoint_fact
+    _collect_controller_prefixes = TypeScriptAdapter._collect_controller_prefixes
+    _collect_route_decorator_endpoints = TypeScriptAdapter._collect_route_decorator_endpoints
+    _collect_call_http_endpoints = TypeScriptAdapter._collect_call_http_endpoints
+    _try_http_route_register_call = TypeScriptAdapter._try_http_route_register_call
+    _try_http_client_member_call = TypeScriptAdapter._try_http_client_member_call
+    _try_http_client_identifier_call = TypeScriptAdapter._try_http_client_identifier_call
+    _REFLECT_DEFINE_METHODS = TypeScriptAdapter._REFLECT_DEFINE_METHODS
+    _REFLECT_READ_METHODS = TypeScriptAdapter._REFLECT_READ_METHODS
+    _REFLECTOR_DISTINCT_METHODS = TypeScriptAdapter._REFLECTOR_DISTINCT_METHODS
+    _REFLECTOR_GENERIC_METHODS = TypeScriptAdapter._REFLECTOR_GENERIC_METHODS
+    _METADATA_DEFINE_HELPERS = TypeScriptAdapter._METADATA_DEFINE_HELPERS
+    _METADATA_READ_HELPERS = TypeScriptAdapter._METADATA_READ_HELPERS
+    _append_metadata_bridge_fact = TypeScriptAdapter._append_metadata_bridge_fact
+    _metadata_bridge_call_kind = TypeScriptAdapter._metadata_bridge_call_kind
+    _try_extract_metadata_bridge_from_call = (
+        TypeScriptAdapter._try_extract_metadata_bridge_from_call
+    )
+    _resolve_metadata_key = TypeScriptAdapter._resolve_metadata_key
+    _try_append_proxy_binding = TypeScriptAdapter._try_append_proxy_binding
+    _resolve_proxy_target_arg = TypeScriptAdapter._resolve_proxy_target_arg
+    _resolve_proxy_target_node = TypeScriptAdapter._resolve_proxy_target_node
+    _resolve_new_callee = TypeScriptAdapter._resolve_new_callee
+    _resolve_type_name = TypeScriptAdapter._resolve_type_name
+    _is_top_level_variable_declarator = TypeScriptAdapter._is_top_level_variable_declarator
 
     @classmethod
     def _decoratable_sibling_after(cls, parent, deco):
@@ -626,16 +652,14 @@ class JavaScriptAdapter(TreeSitterAdapter):
         method_node = named_children[-1]
         receiver_text = source_code[receiver_node.start_byte : receiver_node.end_byte]
         call_name = source_code[method_node.start_byte : method_node.end_byte]
-        rel_type, tier, confidence, _, callee_uid, skip_call, callee_qn = (
-            ts._classify_member_call(
-                receiver_text,
-                call_name,
-                parent=parent,
-                import_bindings=import_bindings,
-                by_name=by_name,
-                scope_graph=scope_graph,
-                at_byte=call_at_byte,
-            )
+        rel_type, tier, confidence, _, callee_uid, skip_call, callee_qn = ts._classify_member_call(
+            receiver_text,
+            call_name,
+            parent=parent,
+            import_bindings=import_bindings,
+            by_name=by_name,
+            scope_graph=scope_graph,
+            at_byte=call_at_byte,
         )
         resolved = self._resolve_method_uid(
             parent,
@@ -811,10 +835,12 @@ class JavaScriptAdapter(TreeSitterAdapter):
             tree.root_node,
         )
 
-        by_name, symbol_uids, import_bindings, scope_graph, ts = self._javascript_call_index_context(
-            source_code,
-            file_path,
-            tree=tree,
+        by_name, symbol_uids, import_bindings, scope_graph, ts = (
+            self._javascript_call_index_context(
+                source_code,
+                file_path,
+                tree=tree,
+            )
         )
 
         calls = []

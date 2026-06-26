@@ -14,6 +14,8 @@ from context_engine.indexer.external_boundary import (
 )
 from context_engine.parser.import_scan import split_python_from_import
 
+_IMPORT_LINE_PREFIX = "import "
+
 
 @dataclass(frozen=True)
 class ExternalCallLink:
@@ -60,14 +62,14 @@ def _module_root(module: str) -> str:
 
 
 def _module_from_import_line(stripped: str) -> str:
-    if stripped.startswith("import "):
+    if stripped.startswith(_IMPORT_LINE_PREFIX):
         match = re.search(r"\bfrom\s+['\"]([^'\"]+)['\"]", stripped)
         if match:
             return match.group(1).strip()
         side_effect = re.match(r"import\s+['\"]([^'\"]+)['\"]", stripped)
         if side_effect:
             return side_effect.group(1).strip()
-        return stripped[7:].split(",")[0].strip().split(" as ")[0].strip()
+        return stripped[len(_IMPORT_LINE_PREFIX) :].split(",")[0].strip().split(" as ")[0].strip()
     if stripped.startswith("from "):
         parts = stripped[5:].split(" import ", 1)
         if len(parts) == 2:

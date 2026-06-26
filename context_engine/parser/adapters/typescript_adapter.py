@@ -431,9 +431,7 @@ class TypeScriptAdapter(TreeSitterAdapter):
         }
     )
 
-    def _apply_behavioral_shape_flags(
-        self, symbol: SymbolMetadata, shape: dict[str, bool]
-    ) -> None:
+    def _apply_behavioral_shape_flags(self, symbol: SymbolMetadata, shape: dict[str, bool]) -> None:
         if shape.get("mapping"):
             symbol.returns_mapping = True
         if shape.get("sequence"):
@@ -684,11 +682,7 @@ class TypeScriptAdapter(TreeSitterAdapter):
         if fn is None or fn.type != "member_expression":
             return False
         obj = fn.child_by_field_name("object")
-        return (
-            obj is not None
-            and obj.type == "identifier"
-            and cls._node_text(obj) == loop_var
-        )
+        return obj is not None and obj.type == "identifier" and cls._node_text(obj) == loop_var
 
     @classmethod
     def _for_body_calls_on(cls, body, loop_var: str) -> bool:
@@ -1916,27 +1910,48 @@ class TypeScriptAdapter(TreeSitterAdapter):
             }
         )
 
+    def _metadata_bridge_reflect_kind(
+        self, head: str, callee: str
+    ) -> tuple[str, str, bool, int] | None:
+        if head != "Reflect":
+            return None
+        if callee in self._REFLECT_DEFINE_METHODS:
+            return "define", f"Reflect.{callee}", False, 0
+        if callee in self._REFLECT_READ_METHODS:
+            return "read", f"Reflect.{callee}", False, 0
+        return None
+
+    def _metadata_bridge_reflector_kind(self, callee: str) -> tuple[str, str, bool, int] | None:
+        if callee in self._REFLECTOR_DISTINCT_METHODS:
+            return "read", f"reflector.{callee}", False, 0
+        if callee in self._REFLECTOR_GENERIC_METHODS:
+            return "read", f"reflector.{callee}", True, 0
+        if callee in self._METADATA_READ_HELPERS:
+            return "read", callee, True, 2
+        return None
+
+    def _metadata_bridge_member_expression_kind(self, func) -> tuple[str, str, bool, int] | None:
+        path = self._member_expression_path(func)
+        if len(path) < 2:
+            return None
+        head, callee = path[0], path[-1]
+        kind = self._metadata_bridge_reflect_kind(head, callee)
+        if kind is not None:
+            return kind
+        return self._metadata_bridge_reflector_kind(callee)
+
+    def _metadata_bridge_define_helper_kind(self, func) -> tuple[str, str, bool, int] | None:
+        if func.type != "identifier":
+            return None
+        name = self._node_text(func)
+        if name not in self._METADATA_DEFINE_HELPERS:
+            return None
+        return "define", name, False, 0
+
     def _metadata_bridge_call_kind(self, func) -> tuple[str, str, bool, int] | None:
         if func.type == "member_expression":
-            path = self._member_expression_path(func)
-            if len(path) < 2:
-                return None
-            head, callee = path[0], path[-1]
-            if head == "Reflect" and callee in self._REFLECT_DEFINE_METHODS:
-                return "define", f"Reflect.{callee}", False, 0
-            if head == "Reflect" and callee in self._REFLECT_READ_METHODS:
-                return "read", f"Reflect.{callee}", False, 0
-            if callee in self._REFLECTOR_DISTINCT_METHODS:
-                return "read", f"reflector.{callee}", False, 0
-            if callee in self._REFLECTOR_GENERIC_METHODS:
-                return "read", f"reflector.{callee}", True, 0
-            if callee in self._METADATA_READ_HELPERS:
-                return "read", callee, True, 2
-            return None
-        if func.type == "identifier" and self._node_text(func) in self._METADATA_DEFINE_HELPERS:
-            name = self._node_text(func)
-            return "define", name, False, 0
-        return None
+            return self._metadata_bridge_member_expression_kind(func)
+        return self._metadata_bridge_define_helper_kind(func)
 
     def _try_extract_metadata_bridge_from_call(
         self,
@@ -1957,9 +1972,7 @@ class TypeScriptAdapter(TreeSitterAdapter):
             return
         role, via, require_constant_key, key_arg_index = kind
         key_arg = self._nth_positional_argument(node, key_arg_index)
-        key_qn, key_name, is_constant = self._resolve_metadata_key(
-            key_arg, import_bindings, module
-        )
+        key_qn, key_name, is_constant = self._resolve_metadata_key(key_arg, import_bindings, module)
         if not key_qn:
             return
         if require_constant_key and not is_constant:
@@ -2617,7 +2630,10 @@ class TypeScriptAdapter(TreeSitterAdapter):
         )
 
     def _is_nested_callable_boundary(self, node, fn) -> bool:
-        return node.type in ("method_definition", "function_declaration", "arrow_function") and node is not fn
+        return (
+            node.type in ("method_definition", "function_declaration", "arrow_function")
+            and node is not fn
+        )
 
     def _skip_this_member_in_call_or_assign_lhs(self, node) -> bool:
         parent = node.parent
@@ -3796,9 +3812,7 @@ class TypeScriptAdapter(TreeSitterAdapter):
         if receiver_text in self._STANDARD_JS_GLOBALS:
             return "", "", 0.0, "", None, True, ""
         if receiver_text == "this":
-            return self._classify_this_receiver_call(
-                method_name, parent=parent, by_name=by_name
-            )
+            return self._classify_this_receiver_call(method_name, parent=parent, by_name=by_name)
         if receiver_text in import_bindings:
             return "CALLS_IMPORTED", "imported", 0.9, "ts-scope-v1", None, False, ""
         recv_binding = scope_graph.resolve_name(receiver_text, at_byte)

@@ -1,6 +1,6 @@
 const esbuild = require('esbuild');
-const fs = require('fs');
-const path = require('path');
+const fs = require('node:fs');
+const path = require('node:path');
 
 const watch = process.argv.includes('--watch');
 const production = process.argv.includes('--production');
@@ -37,6 +37,8 @@ function rewriteImmutableVarExports(mediaDir) {
     'SETTINGS_FORM_FIELD_KEYS',
     'MainSurface',
     'DashboardPanel',
+    'IMPACT_KIND_EXPLAINERS',
+    'DEFAULT_CALLS_EDGE_LABEL',
   ];
   for (const fileName of fs.readdirSync(mediaDir)) {
     if (!fileName.endsWith('.js')) {

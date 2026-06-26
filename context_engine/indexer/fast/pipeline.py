@@ -2025,9 +2025,7 @@ def _run_fast_changed_files_pipeline(
     stats["timings_sec"]["type_refs"] = round(time.perf_counter() - t_stage, 3)
 
     t_stage = time.perf_counter()
-    alias_count, alias_uids = _symbol_alias_phase(
-        diffs, db, workspace_id, reporter, project_path
-    )
+    alias_count, alias_uids = _symbol_alias_phase(diffs, db, workspace_id, reporter, project_path)
     stats["symbol_aliases_linked"] = alias_count
     stats["timings_sec"]["symbol_aliases"] = round(time.perf_counter() - t_stage, 3)
     degree_seeds |= alias_uids
@@ -2043,9 +2041,7 @@ def _run_fast_changed_files_pipeline(
     stats["timings_sec"]["instantiations"] = round(time.perf_counter() - t_stage, 3)
 
     t_stage = time.perf_counter()
-    stats["decorators_linked"] = _decorator_phase(
-        diffs, db, workspace_id, reporter, project_path
-    )
+    stats["decorators_linked"] = _decorator_phase(diffs, db, workspace_id, reporter, project_path)
     stats["timings_sec"]["decorators"] = round(time.perf_counter() - t_stage, 3)
 
     t_stage = time.perf_counter()
@@ -2065,9 +2061,7 @@ def _run_fast_changed_files_pipeline(
     stats["timings_sec"]["http_endpoints"] = round(time.perf_counter() - t_stage, 3)
 
     t_stage = time.perf_counter()
-    stats["injections_linked"] = _injection_phase(
-        diffs, db, workspace_id, reporter, project_path
-    )
+    stats["injections_linked"] = _injection_phase(diffs, db, workspace_id, reporter, project_path)
     stats["timings_sec"]["injections"] = round(time.perf_counter() - t_stage, 3)
 
     t_stage = time.perf_counter()
@@ -2103,9 +2097,7 @@ def _run_fast_changed_files_pipeline(
             project_path,
             stats,
         )
-        stats["timings_sec"]["registry_class_inheritance"] = round(
-            time.perf_counter() - t_stage, 3
-        )
+        stats["timings_sec"]["registry_class_inheritance"] = round(time.perf_counter() - t_stage, 3)
 
     if skip_affects:
         reporter.stage_start("affects", total=0)

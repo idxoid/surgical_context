@@ -113,9 +113,7 @@ class TreeSitterAdapter(LanguageAdapter):
         name = _node_text(name_node)
         content = _node_text(node)
         qualified_name = qualified_name_for(node, source_code, file_path)
-        raw_signature, signature_status = signature_from_node(
-            node, source_code, self.language_name
-        )
+        raw_signature, signature_status = signature_from_node(node, source_code, self.language_name)
         signature = normalize_signature(raw_signature or "", self.language_name)
         return SymbolMetadata(
             uid=compute_uid(qualified_name, raw_signature, self.language_name),
@@ -169,9 +167,7 @@ class TreeSitterAdapter(LanguageAdapter):
 
     def _flatten_ts_query_captures(self, query: str, root_node) -> list[tuple]:
         captures: list[tuple] = []
-        for _match_id, captures_dict in iter_ts_query_matches(
-            self.language, query, root_node
-        ):
+        for _match_id, captures_dict in iter_ts_query_matches(self.language, query, root_node):
             for tag, nodes in captures_dict.items():
                 for node in nodes:
                     captures.append((node, tag))
@@ -188,9 +184,7 @@ class TreeSitterAdapter(LanguageAdapter):
         if tag in ("func.def", "class.def"):
             return self._declaration_symbol_from_capture(node, tag, source_code, file_path)
         if tag.startswith("var."):
-            return self._variable_symbol_from_capture(
-                node, tag, var_names, source_code, file_path
-            )
+            return self._variable_symbol_from_capture(node, tag, var_names, source_code, file_path)
         return None
 
     def extract_symbols(

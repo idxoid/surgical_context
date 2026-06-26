@@ -155,9 +155,7 @@ class TsScopeGraph:
         if node.type in _CALLABLE_TYPES:
             self._register_function_params(node, node_text)
         self._walk_catch_clause(node, node_text)
-        self._walk_variable_declarations(
-            node, import_bindings, node_text, normalize_require
-        )
+        self._walk_variable_declarations(node, import_bindings, node_text, normalize_require)
 
         for child in node.children:
             if child.is_named:

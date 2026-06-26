@@ -20,6 +20,8 @@ from context_engine.parser.uid import (
     signature_from_node,
 )
 
+_INIT_PY = "__init__.py"
+
 # Language/stdlib decorators that are machinery, never a meaningful DECORATED_BY
 # target — skip them so we don't attempt no-op edges. Anything else (framework
 # or in-repo decorators) is kept and resolved structurally.
@@ -531,11 +533,7 @@ class PythonAdapter(TreeSitterAdapter):
         if fn is None or fn.type != "attribute":
             return False
         obj = fn.child_by_field_name("object")
-        return (
-            obj is not None
-            and obj.type == "identifier"
-            and _node_text(obj) == loop_var
-        )
+        return obj is not None and obj.type == "identifier" and _node_text(obj) == loop_var
 
     @classmethod
     def _for_body_calls_on(cls, body, loop_var: str) -> bool:
@@ -773,10 +771,10 @@ class PythonAdapter(TreeSitterAdapter):
                 resolved = root.resolve()
             except OSError:
                 continue
-            if (resolved / top / "__init__.py").exists() or (resolved / f"{top}.py").exists():
+            if (resolved / top / _INIT_PY).exists() or (resolved / f"{top}.py").exists():
                 return True
             src_root = resolved / "src"
-            if (src_root / top / "__init__.py").exists() or (src_root / f"{top}.py").exists():
+            if (src_root / top / _INIT_PY).exists() or (src_root / f"{top}.py").exists():
                 return True
         return False
 
@@ -835,7 +833,9 @@ class PythonAdapter(TreeSitterAdapter):
             if node.type != "class_definition":
                 continue
             edges.extend(
-                self._inheritance_edges_for_class(node, source_code=source_code, file_path=file_path)
+                self._inheritance_edges_for_class(
+                    node, source_code=source_code, file_path=file_path
+                )
             )
         return edges
 
@@ -1294,7 +1294,10 @@ class PythonAdapter(TreeSitterAdapter):
         non_http_decorators: frozenset[str],
         emit,
     ) -> None:
-        from context_engine.indexer.http_endpoint import HTTP_ROUTE_REGISTER_CALLEES, normalize_http_method
+        from context_engine.indexer.http_endpoint import (
+            HTTP_ROUTE_REGISTER_CALLEES,
+            normalize_http_method,
+        )
 
         callable_name = self._decorator_callable_name(deco)
         base = callable_name.rsplit(".", 1)[-1] if callable_name else ""
@@ -2088,7 +2091,11 @@ class PythonAdapter(TreeSitterAdapter):
         emit,
     ) -> None:
         fn = node.child_by_field_name("function")
-        if fn is None or fn.type != "identifier" or _node_text(fn) not in ("isinstance", "issubclass"):
+        if (
+            fn is None
+            or fn.type != "identifier"
+            or _node_text(fn) not in ("isinstance", "issubclass")
+        ):
             return
         args = node.child_by_field_name("arguments")
         referrer = self._enclosing_def_node(node)
@@ -3754,15 +3761,18 @@ class PythonAdapter(TreeSitterAdapter):
         if right is None or right.type != "call":
             return None
         callee = right.child_by_field_name("function")
-        return self._call_result_type(
-            callee,
-            enclosing_class=cname,
-            import_bindings=import_bindings,
-            module=module,
-            method_returns=method_returns,
-            function_returns=function_returns,
-            allow_bare_constructor=method_name == "__init__",
-        ) or None
+        return (
+            self._call_result_type(
+                callee,
+                enclosing_class=cname,
+                import_bindings=import_bindings,
+                module=module,
+                method_returns=method_returns,
+                function_returns=function_returns,
+                allow_bare_constructor=method_name == "__init__",
+            )
+            or None
+        )
 
     @staticmethod
     def _self_attr_name_from_assignment(assign) -> str | None:

@@ -121,7 +121,9 @@ def _index_file_symbol_delta(
     )
 
 
-def _maybe_delete_for_file(db: Neo4jClient, method_name: str, file_path: str, workspace_id: str) -> None:
+def _maybe_delete_for_file(
+    db: Neo4jClient, method_name: str, file_path: str, workspace_id: str
+) -> None:
     delete_fn = getattr(db, method_name, None)
     if callable(delete_fn):
         delete_fn(file_path, workspace_id=workspace_id)
@@ -455,7 +457,9 @@ def _index_file_finalize(
     if not skip_affects and include_axis_facts:
         from context_engine.indexer.fast.pipeline import run_axis_incremental_finalize
 
-        project_root = getattr(extractor, "project_root", None) or str(Path(file_path).resolve().parent)
+        project_root = getattr(extractor, "project_root", None) or str(
+            Path(file_path).resolve().parent
+        )
         run_axis_incremental_finalize(
             db,
             lance,
