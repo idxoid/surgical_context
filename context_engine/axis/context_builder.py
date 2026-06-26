@@ -51,6 +51,8 @@ _CLASS_DEF_PREFIX = "class "
 # legacy ``AxisGraphHit``.
 _Hit = namedtuple("_Hit", "uid name file_path depth step")
 
+_PayloadRow = dict[str, Any]
+
 
 @dataclass(frozen=True)
 class ContextSymbol:
@@ -70,9 +72,11 @@ class ContextSymbol:
     edge_type: str = ""
     relevance_score: float = 0.0
     utility_score: float = 0.0
+    start_line: int = 0
+    end_line: int = 0
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        payload = {
             "uid": self.uid,
             "name": self.name,
             "file_path": self.file_path,
@@ -87,6 +91,11 @@ class ContextSymbol:
             "relevance_score": self.relevance_score,
             "utility_score": self.utility_score,
         }
+        if self.start_line > 0:
+            payload["start_line"] = self.start_line
+        if self.end_line >= self.start_line > 0:
+            payload["end_line"] = self.end_line
+        return payload
 
 
 _CALLER_KINDS = frozenset(
@@ -150,7 +159,7 @@ def _symbol_payload_columns(table) -> list[str]:
     columns = ["uid", "code", "workspace_id"]
     try:
         schema_names = set(table.schema.names)
-        for optional in ("qualified_name", "name", "file_path"):
+        for optional in ("qualified_name", "name", "file_path", "start_line", "end_line"):
             if optional in schema_names:
                 columns.append(optional)
     except Exception:
@@ -211,8 +220,8 @@ def _payloads_from_pylist_fallback(
     arrow,
     workspace_id: str,
     uids: set[str],
-) -> dict[str, dict[str, str | None]]:
-    out: dict[str, dict[str, str | None]] = {}
+) -> dict[str, _PayloadRow]:
+    out: dict[str, _PayloadRow] = {}
     for row in arrow.to_pylist():
         uid = str(row.get("uid") or "")
         if row.get("workspace_id") == workspace_id and uid in uids:
@@ -221,6 +230,8 @@ def _payloads_from_pylist_fallback(
                 "qualified_name": row.get("qualified_name") or "",
                 "name": row.get("name") or "",
                 "file_path": row.get("file_path") or "",
+                "start_line": row.get("start_line") or 0,
+                "end_line": row.get("end_line") or 0,
             }
     return out
 
@@ -236,7 +247,7 @@ def _payloads_from_arrow_table(
     arrow,
     workspace_id: str,
     uids: set[str],
-) -> dict[str, dict[str, str | None]]:
+) -> dict[str, _PayloadRow]:
     try:
         row_uids = arrow["uid"].to_pylist()
         codes = arrow["code"].to_pylist()
@@ -248,15 +259,19 @@ def _payloads_from_arrow_table(
     qualified_names = _arrow_column_pylist(arrow, "qualified_name", row_count)
     names = _arrow_column_pylist(arrow, "name", row_count)
     file_paths = _arrow_column_pylist(arrow, "file_path", row_count)
+    start_lines = _arrow_column_pylist(arrow, "start_line", row_count)
+    end_lines = _arrow_column_pylist(arrow, "end_line", row_count)
 
-    out: dict[str, dict[str, str | None]] = {}
-    for uid_raw, code, row_workspace_id, qualified_name, name, file_path in zip(
+    out: dict[str, _PayloadRow] = {}
+    for uid_raw, code, row_workspace_id, qualified_name, name, file_path, start_line, end_line in zip(
         row_uids,
         codes,
         workspace_ids,
         qualified_names,
         names,
         file_paths,
+        start_lines,
+        end_lines,
         strict=False,
     ):
         if row_workspace_id != workspace_id:
@@ -268,6 +283,8 @@ def _payloads_from_arrow_table(
                 "qualified_name": str(qualified_name or ""),
                 "name": str(name or ""),
                 "file_path": str(file_path or ""),
+                "start_line": _int_payload_value(start_line),
+                "end_line": _int_payload_value(end_line),
             }
     return out
 
@@ -276,7 +293,7 @@ def _fetch_symbol_payloads(
     lance,
     workspace_id: str,
     uids: set[str],
-) -> dict[str, dict[str, str | None]]:
+) -> dict[str, _PayloadRow]:
     """Pull ``code`` + lightweight render metadata for a set of uids.
 
     Lance does not give us a clean WHERE-by-list across heterogeneous
@@ -325,16 +342,80 @@ def _read_symbol_code_from_file(
     return "\n".join(lines[start_line - 1 : end_line])
 
 
-def _missing_symbol_uids(uids: set[str], payloads: dict[str, dict[str, str | None]]) -> list[str]:
+def _missing_symbol_uids(uids: set[str], payloads: dict[str, _PayloadRow]) -> list[str]:
     return [uid for uid in uids if not str((payloads.get(uid) or {}).get("code") or "").strip()]
+
+
+def _int_payload_value(value: Any) -> int:
+    try:
+        return int(value or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _merge_payload_span(row: _PayloadRow | None, span: dict[str, Any]) -> _PayloadRow:
+    out: _PayloadRow = dict(row or {})
+    name = str(span.get("name") or "")
+    file_path = str(span.get("file_path") or "")
+    if name and not out.get("name"):
+        out["name"] = name
+    if file_path and not out.get("file_path"):
+        out["file_path"] = file_path
+    start_line = _int_payload_value(span.get("start_line"))
+    end_line = _int_payload_value(span.get("end_line"))
+    if start_line > 0:
+        out["start_line"] = start_line
+    if end_line >= start_line > 0:
+        out["end_line"] = end_line
+    return out
+
+
+def _payload_span(uid: str, row: _PayloadRow | None) -> dict[str, Any] | None:
+    if not row:
+        return None
+    start_line = _int_payload_value(row.get("start_line"))
+    end_line = _int_payload_value(row.get("end_line"))
+    if start_line <= 0 or end_line < start_line:
+        return None
+    return {
+        "uid": uid,
+        "name": str(row.get("name") or ""),
+        "file_path": str(row.get("file_path") or ""),
+        "start_line": start_line,
+        "end_line": end_line,
+    }
+
+
+def _merge_symbol_spans(
+    db,
+    workspace_id: str,
+    uids: set[str],
+    payloads: dict[str, _PayloadRow],
+) -> dict[str, _PayloadRow]:
+    if not uids or db is None:
+        return payloads
+
+    get_spans = getattr(db, "get_symbol_spans_by_uids", None)
+    if not callable(get_spans):
+        return payloads
+
+    spans = get_spans(list(uids), workspace_id=workspace_id)
+    if not spans:
+        return payloads
+
+    out = dict(payloads)
+    for uid, span in spans.items():
+        if uid in uids:
+            out[uid] = _merge_payload_span(out.get(uid), span)
+    return out
 
 
 def _hydrate_payload_from_span(
     span: dict,
     *,
     workspace_root,
-    existing: dict[str, str | None] | None,
-) -> dict[str, str | None] | None:
+    existing: _PayloadRow | None,
+) -> _PayloadRow | None:
     code = _read_symbol_code_from_file(
         str(span.get("file_path") or ""),
         int(span.get("start_line") or 0),
@@ -343,7 +424,7 @@ def _hydrate_payload_from_span(
     )
     if not code.strip():
         return None
-    row = dict(existing or {})
+    row = _merge_payload_span(existing, span)
     row.setdefault("name", str(span.get("name") or ""))
     row.setdefault("file_path", str(span.get("file_path") or ""))
     row["code"] = code
@@ -354,8 +435,8 @@ def _hydrate_missing_symbol_code(
     db,
     workspace_id: str,
     uids: set[str],
-    payloads: dict[str, dict[str, str | None]],
-) -> dict[str, dict[str, str | None]]:
+    payloads: dict[str, _PayloadRow],
+) -> dict[str, _PayloadRow]:
     """Fill empty Lance payloads from on-disk source using Neo4j line spans."""
     if not uids or db is None:
         return payloads
@@ -371,7 +452,14 @@ def _hydrate_missing_symbol_code(
     from context_engine.workspace_paths import registered_workspace_root
 
     workspace_root = registered_workspace_root(db, workspace_id)
-    spans = get_spans(missing, workspace_id=workspace_id)
+    spans = {
+        uid: span
+        for uid in missing
+        if (span := _payload_span(uid, payloads.get(uid))) is not None
+    }
+    still_missing_span = [uid for uid in missing if uid not in spans]
+    if still_missing_span:
+        spans.update(get_spans(still_missing_span, workspace_id=workspace_id) or {})
     if not spans:
         return payloads
 
@@ -1860,8 +1948,9 @@ def _resolve_context_payloads(
     *,
     overlay: Any | None,
     user_id: str,
-) -> dict[str, dict[str, str | None]]:
+) -> dict[str, _PayloadRow]:
     payload_by_uid = _fetch_symbol_payloads(lance, workspace_id, uids_to_fetch)
+    payload_by_uid = _merge_symbol_spans(db, workspace_id, uids_to_fetch, payload_by_uid)
     if overlay is not None:
         from context_engine.axis.overlay_context import merge_saved_overlay_payloads
 
@@ -1881,7 +1970,7 @@ def _resolve_context_payloads(
 
 def _context_symbol_from_hit(
     hit: _Hit,
-    payload_by_uid: dict[str, dict[str, str | None]],
+    payload_by_uid: dict[str, _PayloadRow],
 ) -> ContextSymbol:
     payload = payload_by_uid.get(hit.uid, {})
     return ContextSymbol(
@@ -1893,13 +1982,15 @@ def _context_symbol_from_hit(
         expansion_step=hit.step,
         code=payload.get("code"),
         qualified_name=str(payload.get("qualified_name") or ""),
+        start_line=_int_payload_value(payload.get("start_line")),
+        end_line=_int_payload_value(payload.get("end_line")),
     )
 
 
 def _context_bundle_for_candidate(
     cand: RoleCandidate,
     hits: list[_Hit],
-    payload_by_uid: dict[str, dict[str, str | None]],
+    payload_by_uid: dict[str, _PayloadRow],
     *,
     utility_score_fn: Callable[[RoleCandidate], float] | None,
 ) -> ContextBundle:
@@ -1918,6 +2009,8 @@ def _context_bundle_for_candidate(
         edge_type=cand.edge_type,
         relevance_score=cand.score,
         utility_score=cand.utility_score if cand.utility_score is not None else cand.score,
+        start_line=_int_payload_value(seed_payload.get("start_line")),
+        end_line=_int_payload_value(seed_payload.get("end_line")),
     )
     related = tuple(_context_symbol_from_hit(h, payload_by_uid) for h in hits)
     return ContextBundle(

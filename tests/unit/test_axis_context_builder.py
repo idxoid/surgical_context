@@ -48,9 +48,25 @@ class _Driver:
 
 
 class _FakeDB:
-    def __init__(self, session_records: list[list[dict]]):
+    def __init__(
+        self,
+        session_records: list[list[dict]],
+        *,
+        spans: dict[str, dict[str, int | str]] | None = None,
+    ):
         self._session = _Session(session_records)
         self.driver = _Driver(self._session)
+        self._spans = spans or {}
+        self.span_calls: list[tuple[list[str], str]] = []
+
+    def get_symbol_spans_by_uids(
+        self,
+        uids: list[str],
+        *,
+        workspace_id: str,
+    ) -> dict[str, dict[str, int | str]]:
+        self.span_calls.append((list(uids), workspace_id))
+        return {uid: self._spans[uid] for uid in uids if uid in self._spans}
 
 
 class _FakeLanceTable:
@@ -150,6 +166,54 @@ def test_seed_carries_code_and_zero_depth():
     assert bundle.seed.distance_from_seed == 0
     assert bundle.seed.expansion_step is None
     assert bundle.related == ()
+
+
+def test_symbol_ranges_thread_from_graph_spans():
+    candidate = _make_candidate("u:seed", "registry")
+    helper_path = axis_test_file_path("helper")
+    db = _FakeDB(
+        [
+            [
+                _hit_record(
+                    "u:seed",
+                    "u:helper",
+                    "helper",
+                    helper_path,
+                    "binding_structure_expansion",
+                    1,
+                )
+            ],
+            [],
+        ],
+        spans={
+            "u:seed": {
+                "name": "registry",
+                "file_path": candidate.file_path,
+                "start_line": 12,
+                "end_line": 14,
+            },
+            "u:helper": {
+                "name": "helper",
+                "file_path": helper_path,
+                "start_line": 37,
+                "end_line": 40,
+            },
+        },
+    )
+    lance = _FakeLance(
+        [
+            _lance_row("u:seed", "code-of-seed"),
+            _lance_row("u:helper", "code-of-helper"),
+        ]
+    )
+
+    [bundle] = build_context_for_candidates([candidate], workspace_id=WORKSPACE, db=db, lance=lance)
+
+    assert bundle.seed.start_line == 12
+    assert bundle.seed.end_line == 14
+    assert bundle.related[0].start_line == 37
+    assert bundle.related[0].end_line == 40
+    assert bundle.to_dict()["related"][0]["start_line"] == 37
 
 
 def test_flat_impact_candidate_preserves_directional_metadata_and_utility():

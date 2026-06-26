@@ -19,7 +19,15 @@ from context_engine.axis.pipeline import AxisRetrievalResult
 from context_engine.axis.prompt_provider import axis_bundles_to_prompt_context
 
 
-def _sym(uid: str, name: str, *, depth: int, code: str) -> ContextSymbol:
+def _sym(
+    uid: str,
+    name: str,
+    *,
+    depth: int,
+    code: str,
+    start_line: int = 0,
+    end_line: int = 0,
+) -> ContextSymbol:
     return ContextSymbol(
         uid=uid,
         name=name,
@@ -28,6 +36,8 @@ def _sym(uid: str, name: str, *, depth: int, code: str) -> ContextSymbol:
         distance_from_seed=depth,
         expansion_step=None if depth == 0 else "binding_structure_expansion",
         code=code,
+        start_line=start_line,
+        end_line=end_line,
     )
 
 
@@ -153,6 +163,39 @@ def test_adapter_promotes_top_seed_and_dedupes():
     uids = [s.uid for s in ctx.graph_context]
     assert uids.count("u:handler") == 1
     assert "u:app" not in uids
+
+
+def test_adapter_serializes_ranges_for_inspector_links():
+    bundle = ContextBundle(
+        role="routing_surface",
+        seed=_sym(
+            "u:app",
+            "app",
+            depth=0,
+            code="app = FastAPI()",
+            start_line=5,
+            end_line=5,
+        ),
+        related=(
+            _sym(
+                "u:handler",
+                "handler",
+                depth=1,
+                code="def handler(): ...",
+                start_line=37,
+                end_line=42,
+            ),
+        ),
+    )
+
+    ctx = axis_bundles_to_prompt_context([bundle], workspace_id="ws")
+
+    assert ctx is not None
+    assert ctx.primary_source.range == [5, 5]
+    assert ctx.graph_context[0].range == [37, 42]
+    serialized = ctx.to_dict()
+    assert serialized["primary_source"]["range"] == [5, 5]
+    assert serialized["graph_context"][0]["range"] == [37, 42]
 
 
 def test_adapter_returns_none_on_empty():

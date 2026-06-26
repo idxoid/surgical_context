@@ -79,6 +79,8 @@ class AxisContextSymbolResponse(BaseModel):
     distance_from_seed: int
     expansion_step: str | None
     code: str | None
+    start_line: int | None = None
+    end_line: int | None = None
 
 
 class AxisContextBundleResponse(BaseModel):

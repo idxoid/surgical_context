@@ -39,11 +39,17 @@ def _to_symbol_context(
     blended_score: float = 0.0,
     render_mode: str = "full",
 ) -> SymbolContext:
+    line_range = (
+        [sym.start_line, sym.end_line]
+        if sym.start_line > 0 and sym.end_line >= sym.start_line
+        else []
+    )
     return SymbolContext(
         symbol=sym.name,
         file_path=sym.file_path,
         relation=relation,
         uid=sym.uid,
+        range=line_range,
         kind=sym.kind,
         edge_type=sym.edge_type,
         direction=sym.direction,
