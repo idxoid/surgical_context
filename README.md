@@ -44,6 +44,7 @@ the engine-first development line.
 
 **APIs & Infrastructure:**
 - **[spec_context_engine_api.md](docs/spec_context_engine_api.md)** — FastAPI endpoints
+- **[mcp_server/README.md](mcp_server/README.md)** — MCP stdio server for LLM chat hosts
 - **[spec_storage.md](docs/spec_storage.md)** — current Neo4j/LanceDB/SQLite storage behavior
 - **[spec_storage_connectors.md](docs/spec_storage_connectors.md)** — planned Graph/Vector/History provider connector layer
 - **[spec_language_adapter.md](docs/spec_language_adapter.md)** — plugin architecture (ADR-005)
@@ -75,6 +76,39 @@ Recent hardening added request-scoped Neo4j client views over one shared driver,
 The local setup and smoke-test path live in **[local_development.md](docs/local_development.md)** and `scripts/local_dev.py`. The benchmark has workspace mappings for 13 repositories across Python and TypeScript/JavaScript, including the dogfood repo; runs still require those workspaces to be pre-indexed. The most important open gaps are engine-side: lifting recall on hard real-repo cases, improving precision on broad/doc-heavy paths, calibrating DocAnchor confidence/type, and carrying richer axis ranking/pruning/doc evidence into the active `PromptContext` rather than leaving serializer fields at defaults. The VS Code frontend still needs request-selection persistence and accessibility polish, but that is secondary to the engine work. Tenant-level API graph publication/linking, alternate database connectors, an LLM proxy gateway, RBAC, and service splitting remain future Team/Enterprise horizons. See **[road_map.md](docs/road_map.md)** for the canonical backlog.
 
 **Related experiments (external repos, not submodules):** [context-deduplicator](https://github.com/idxoid/context-deduplicator) and [marginal-utility-selector](https://github.com/idxoid/marginal-utility-selector) were early standalone prototypes. Production retrieval now lives in `context_engine/axis/`, with the shared prompt contract in `context_engine/context_types.py`.
+
+---
+
+## MCP Server
+
+The `mcp_server/` package exposes Surgical Context retrieval over the Model
+Context Protocol (MCP) stdio transport for chat hosts such as Claude Code,
+Codex, Cursor, and Claude Desktop. It is an in-process adapter over
+`context_engine.axis.pipeline.run_axis_retrieval`, so MCP calls use the same
+axis read path as `/ask/axis` and the `QA/axis_benchmark` harness.
+
+The server returns **context, not final answers**: the host LLM asks for code
+or impact data, receives ranked graph-expanded context, and reasons over that
+context itself. The main tools are:
+
+| Tool | Purpose |
+|---|---|
+| `ask_code` | Natural-language question → ranked code bundles. |
+| `impact` | Downstream blast radius for a symbol change. |
+| `list_workspaces`, `list_files` | Discover indexed repos and files. |
+| `find_definition`, `file_outline`, `read_symbol` | Precise locate/read/navigation primitives. |
+| `callers`, `callees`, `path` | Graph navigation across calls and other coupling edges. |
+| `set_overlay`, `clear_overlay` | Check uncommitted buffer changes without writing to the index. |
+| `batch` | Run several read/navigation operations in one MCP round trip. |
+
+Prerequisites are the same as the local engine path: Neo4j and LanceDB must be
+available, and the target repository must be indexed under `axis_python_v1`.
+The dogfood workspace is `qa_repo/surgical_context@main`; the MCP config passes
+that base id via `SURGICAL_CONTEXT_WORKSPACE`, and the server appends the
+`+axis_python_v1` suffix automatically.
+
+See **[mcp_server/README.md](mcp_server/README.md)** for install commands,
+Claude Code/Codex wiring, smoke tests, and current limitations.
 
 ---
 
