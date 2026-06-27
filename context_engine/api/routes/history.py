@@ -105,20 +105,25 @@ def _save_optional_surface_snapshots(
     workspace_id: str,
     user_id: str,
 ) -> None:
-    snapshot_kwargs = {
-        "req": req,
-        "workspace_id": workspace_id,
-        "user_id": user_id,
-    }
     if req.inspector_snapshot:
         main.history_provider.save_inspector_snapshot(
             assistant_message_id,
-            _surface_snapshot_payload(req.inspector_snapshot, **snapshot_kwargs),
+            _surface_snapshot_payload(
+                req.inspector_snapshot,
+                req=req,
+                workspace_id=workspace_id,
+                user_id=user_id,
+            ),
         )
     if req.impact_snapshot:
         main.history_provider.save_impact_snapshot(
             assistant_message_id,
-            _surface_snapshot_payload(req.impact_snapshot, **snapshot_kwargs),
+            _surface_snapshot_payload(
+                req.impact_snapshot,
+                req=req,
+                workspace_id=workspace_id,
+                user_id=user_id,
+            ),
         )
 
 

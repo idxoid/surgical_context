@@ -155,7 +155,6 @@ class JavaScriptAdapter(TreeSitterAdapter):
     _resolve_proxy_target_node = TypeScriptAdapter._resolve_proxy_target_node
     _resolve_new_callee = TypeScriptAdapter._resolve_new_callee
     _resolve_type_name = TypeScriptAdapter._resolve_type_name
-    _is_top_level_variable_declarator = TypeScriptAdapter._is_top_level_variable_declarator
 
     @classmethod
     def _decoratable_sibling_after(cls, parent, deco):
