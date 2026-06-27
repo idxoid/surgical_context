@@ -13,6 +13,7 @@ import os
 import threading
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any, cast
 
 # Load the repo .env (NEO4J_*, model creds) before any heavy import — exactly
 # what context_engine/main.py does for the server.
@@ -372,8 +373,11 @@ class AxisEngine:
     """
 
     def __init__(self) -> None:
-        self._db = None
-        self._lance = None
+        # Typed Any: opened lazily by _ensure_db/_ensure; mypy can't narrow the
+        # None→client transition across the helper call, and the read path is
+        # duck-typed over the Neo4j/Lance handles anyway.
+        self._db: Any = None
+        self._lance: Any = None
         self._overlay = None
         self._lock = threading.Lock()
 
@@ -769,8 +773,10 @@ class AxisEngine:
         and have opened the Neo4j handle (the lock is non-reentrant)."""
         path = file_path.strip() if isinstance(file_path, str) and file_path.strip() else None
         if path:
-            return self._db.get_symbol_uid_by_name_in_file(name, path, workspace_id)
-        return self._db.get_symbol_uid_by_name(name, workspace_id)
+            return cast(
+                "str | None", self._db.get_symbol_uid_by_name_in_file(name, path, workspace_id)
+            )
+        return cast("str | None", self._db.get_symbol_uid_by_name(name, workspace_id))
 
     def set_overlay(
         self, file_path: str, content: str, workspace_id: str, *, dirty: bool = True
@@ -863,7 +869,7 @@ class AxisEngine:
         with self._lock:
             self._ensure_lance()
             if kind == "doc":
-                return self._lance.search(query, limit, workspace_id=workspace_id)
+                return cast("list[dict]", self._lance.search(query, limit, workspace_id=workspace_id))
 
             from context_engine.axis.role_retrieval import find_seeds_by_vector
             from context_engine.database.lancedb_client import DB_PATH
@@ -915,7 +921,7 @@ class AxisEngine:
                 workspace_id,
                 [uid],
                 edges=EdgeProfile.CALLS,
-                direction=direction,
+                direction=cast(Any, direction),
                 max_hops=max_hops,
                 limit=limit,
             )
