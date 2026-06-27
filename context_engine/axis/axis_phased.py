@@ -42,6 +42,7 @@ from context_engine.axis.role_retrieval import RoleCandidate
 # arbitrary seeds.
 _DISCOVERY_AXES = frozenset({Axis.REGISTRY, Axis.STRUCTURAL, Axis.COMPOSITION})
 
+
 def _kinds_from_prescanned_rows(prescanned, uids: set[str]) -> dict[str, set[str]]:
     return {
         str(r.get("uid") or ""): set(r.get("_kinds") or set())

@@ -419,9 +419,7 @@ def _prepare_class_inheritance_pass(
     if not project_path:
         project_path = current_project_root()
 
-    parsed_bases_by_uid = {
-        r["class_uid"]: list(r.get("parsed_base_names") or []) for r in rows
-    }
+    parsed_bases_by_uid = {r["class_uid"]: list(r.get("parsed_base_names") or []) for r in rows}
     name_by_uid = _class_short_names(rows)
     depends_on_names_by_class = _depends_on_names_by_class(rows, name_by_uid)
     alias_targets, needed_local_qns = _alias_local_qns_by_class(
@@ -539,9 +537,7 @@ def propagate_error_model_via_inheritance(
     Both back ``error_surface``. Returns the number of class rows
     updated.
     """
-    ctx = _prepare_class_inheritance_pass(
-        db, lance, workspace_id, project_path=project_path
-    )
+    ctx = _prepare_class_inheritance_pass(db, lance, workspace_id, project_path=project_path)
     if ctx is None:
         return 0
 
@@ -628,9 +624,7 @@ def propagate_registry_class_via_inheritance(
     project_path: str | None = None,
 ) -> int:
     """Run the propagation pass. Returns the number of class rows updated."""
-    ctx = _prepare_class_inheritance_pass(
-        db, lance, workspace_id, project_path=project_path
-    )
+    ctx = _prepare_class_inheritance_pass(db, lance, workspace_id, project_path=project_path)
     if ctx is None:
         return 0
 

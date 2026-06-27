@@ -831,9 +831,7 @@ class PythonAdapter(TreeSitterAdapter):
         for node in self._iter_nodes(tree.root_node):
             if node.type != "class_definition":
                 continue
-            edges.extend(
-                self._inheritance_edges_for_class(node, file_path=file_path)
-            )
+            edges.extend(self._inheritance_edges_for_class(node, file_path=file_path))
         return edges
 
     def extract_proxy_bindings(self, source_code: str, file_path: str, *, tree=None) -> list[dict]:
@@ -2992,9 +2990,7 @@ class PythonAdapter(TreeSitterAdapter):
             return wrapped
         return ""
 
-    def _positional_identifier_arguments(
-        self, call_node, *, limit: int = 8
-    ) -> list[str]:
+    def _positional_identifier_arguments(self, call_node, *, limit: int = 8) -> list[str]:
         """Leading positional arguments that are bare identifiers (for DI-style hints)."""
         arg_list = call_node.child_by_field_name("arguments")
         if arg_list is None:

@@ -749,9 +749,7 @@ class AxisEngine:
         with self._lock:
             self._ensure_db()
             with self._db.driver.session() as session:
-                rows = session.run(
-                    query, ws=workspace_id, prefix=prefix, limit=int(limit)
-                ).data()
+                rows = session.run(query, ws=workspace_id, prefix=prefix, limit=int(limit)).data()
         return [
             FileEntry(path=str(r["path"]), symbols=int(r.get("n") or 0))
             for r in rows

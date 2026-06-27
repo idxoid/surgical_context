@@ -263,7 +263,16 @@ def _payloads_from_arrow_table(
     end_lines = _arrow_column_pylist(arrow, "end_line", row_count)
 
     out: dict[str, _PayloadRow] = {}
-    for uid_raw, code, row_workspace_id, qualified_name, name, file_path, start_line, end_line in zip(
+    for (
+        uid_raw,
+        code,
+        row_workspace_id,
+        qualified_name,
+        name,
+        file_path,
+        start_line,
+        end_line,
+    ) in zip(
         row_uids,
         codes,
         workspace_ids,
@@ -453,9 +462,7 @@ def _hydrate_missing_symbol_code(
 
     workspace_root = registered_workspace_root(db, workspace_id)
     spans = {
-        uid: span
-        for uid in missing
-        if (span := _payload_span(uid, payloads.get(uid))) is not None
+        uid: span for uid in missing if (span := _payload_span(uid, payloads.get(uid))) is not None
     }
     still_missing_span = [uid for uid in missing if uid not in spans]
     if still_missing_span:

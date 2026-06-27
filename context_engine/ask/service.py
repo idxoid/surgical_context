@@ -333,9 +333,7 @@ class AskService:
     @staticmethod
     def mark_l3_response_cache_hit(ctx: PromptContext, trace: RequestTrace) -> None:
         if hasattr(ctx, "budget"):
-            ctx.budget["cache_hits"] = sorted(
-                {*ctx.budget.get("cache_hits", []), "l3_response"}
-            )
+            ctx.budget["cache_hits"] = sorted({*ctx.budget.get("cache_hits", []), "l3_response"})
         trace.model_route = {
             **trace.model_route,
             "cached": True,

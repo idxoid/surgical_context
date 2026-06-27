@@ -341,6 +341,7 @@ def _adjacency_from_lance_rows(rows: list[dict]) -> _Adjacency:
     adj.in_ = in_adj
     return adj
 
+
 def call_fan_in(
     db, workspace_id: str, uids, *, edges, exclude_tests: bool = False
 ) -> dict[str, int]:

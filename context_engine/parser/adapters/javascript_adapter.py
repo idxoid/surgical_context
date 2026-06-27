@@ -363,7 +363,9 @@ class JavaScriptAdapter(TreeSitterAdapter):
         )
 
     def extract_hooks(self, source_code: str, file_path: str, *, tree=None) -> list[dict]:
-        return self._delegate_typescript_extractor("extract_hooks", source_code, file_path, tree=tree)
+        return self._delegate_typescript_extractor(
+            "extract_hooks", source_code, file_path, tree=tree
+        )
 
     def extract_metadata_bridges(
         self, source_code: str, file_path: str, *, tree=None

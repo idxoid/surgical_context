@@ -150,15 +150,16 @@ def investigate(
     if r.blast:
         prefix = _common_dir_prefix([b["file_path"] for b in r.blast if b.get("file_path")])
         out.append(
-            "\n## Blast surface — downstream dependents of the top seeds "
-            "(deduped, not shown above)"
+            "\n## Blast surface — downstream dependents of the top seeds (deduped, not shown above)"
         )
         if prefix:
             out.append(f"_paths relative to {prefix}_")
         for b in r.blast:
             fp = b.get("file_path") or ""
-            rel = fp[len(prefix):] if prefix and fp.startswith(prefix) else fp
-            out.append(f"- {b.get('name')} — {rel} (←{b.get('seed')}, d{b.get('depth')}, {b.get('kind')})")
+            rel = fp[len(prefix) :] if prefix and fp.startswith(prefix) else fp
+            out.append(
+                f"- {b.get('name')} — {rel} (←{b.get('seed')}, d{b.get('depth')}, {b.get('kind')})"
+            )
     out.append(
         "\n---\n_one planned pipeline (intent → context → blast) in 1 round-trip. "
         "Follow up only for a specific missing body._"
@@ -271,7 +272,7 @@ def list_files(
         lines.append(f"_paths relative to {prefix}_")
     lines.append("")
     for r in rows:
-        rel = r.path[len(prefix):] if prefix and r.path.startswith(prefix) else r.path
+        rel = r.path[len(prefix) :] if prefix and r.path.startswith(prefix) else r.path
         lines.append(f"- {rel}" + (f"  ({r.symbols} symbols)" if with_counts else ""))
     return "\n".join(lines) + "\n"
 
