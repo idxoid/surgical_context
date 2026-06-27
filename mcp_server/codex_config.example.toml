@@ -1,0 +1,36 @@
+# Project-scoped Codex config for the surgical_context MCP server.
+#
+# Codex layers config: /etc/codex/config.toml, then $CODEX_HOME/config.toml
+# (default ~/.codex/config.toml, the USER layer), then — only if the user layer
+# marks the project root `trusted` — the PROJECT layer at <repo>/.codex/config.toml
+# (this file), from the project root down to the cwd.
+#
+# Two steps to wire it up:
+#
+#   1. USER layer (~/.codex/config.toml) — trust this repo so the project layer
+#      below is loaded at all:
+#
+#          [projects."/home/idxoid/surgical_context"]
+#          trust_level = "trusted"
+#
+#   2. PROJECT layer — copy this file to <repo>/.codex/config.toml (adjust the
+#      absolute paths if the repo moved). Keeping the server block here, scoped
+#      to the repo, keeps it out of the global config and out of unrelated repos.
+#
+# (Equivalently, you can skip the project layer and paste the [mcp_servers.*]
+# blocks straight into ~/.codex/config.toml — same effect, just not scoped.)
+
+[mcp_servers.surgical-context]
+command = "/home/idxoid/surgical_context/.venv/bin/python"
+args = ["-m", "surgical_context_mcp"]
+# The first ask_code/search_code call pulls the SentenceTransformer (one-time
+# cold start); give tool calls headroom so Codex doesn't time the first one out.
+tool_timeout_sec = 120
+
+[mcp_servers.surgical-context.env]
+# Makes both context_engine (repo root) and surgical_context_mcp (this folder)
+# importable without an editable install.
+PYTHONPATH = "/home/idxoid/surgical_context:/home/idxoid/surgical_context/mcp_server"
+# Client-facing base workspace id; the +axis_python_v1 index suffix is added
+# automatically. On this box the repos are indexed under the qa_repo tenant.
+SURGICAL_CONTEXT_WORKSPACE = "qa_repo/surgical_context@main"

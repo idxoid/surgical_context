@@ -143,6 +143,34 @@ added automatically.
 Restart Claude Code, then ask it something about the code — it should call
 `ask_code`.
 
+## Wire into Codex (project-scoped)
+
+Codex layers config: `$CODEX_HOME/config.toml` (the user layer, default
+`~/.codex/config.toml`), then — only when the user layer marks the project root
+`trusted` — the **project layer** at `<repo>/.codex/config.toml`. So scope the
+server to this repo in two steps:
+
+1. In `~/.codex/config.toml`, trust the repo so its project layer loads:
+
+   ```toml
+   [projects."/home/idxoid/surgical_context"]
+   trust_level = "trusted"
+   ```
+
+2. Copy `codex_config.example.toml` to `<repo>/.codex/config.toml` (adjust the
+   absolute paths if the repo moved). It carries the `[mcp_servers.surgical-context]`
+   block — same `command`/`args`/`PYTHONPATH`/`SURGICAL_CONTEXT_WORKSPACE` as the
+   Claude wiring, plus a `tool_timeout_sec` cushion for the first call's embedding
+   cold-start.
+
+(Or skip the project layer and paste the `[mcp_servers.*]` blocks straight into
+`~/.codex/config.toml` — same effect, just not scoped to the repo.)
+
+The server also ships **MCP `instructions`** (set on the `FastMCP` constructor in
+`server.py`) — a server-level orientation, sent to the host at initialize, on
+what the toolset is and which tool to reach for; it complements the per-tool
+docstrings/`outputSchema`.
+
 ## Smoke test (without a chat host)
 
 ```bash

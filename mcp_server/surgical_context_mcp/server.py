@@ -26,7 +26,43 @@ from surgical_context_mcp import schemas
 from surgical_context_mcp.config import resolve_workspace_id
 from surgical_context_mcp.engine import AxisEngine, _common_dir_prefix
 
-mcp = FastMCP("surgical-context")
+SERVER_INSTRUCTIONS = """\
+surgical_context exposes a code repository's **axis retrieval** graph: ask in
+natural language or navigate by name, and get back ranked, graph-expanded code
+*context* (not an answer) for you to reason over — the way `/graphify query`
+feeds a budgeted block into the calling model. Retrieval is LLM-free.
+
+Every tool returns BOTH a markdown render (read this) and a structured JSON
+payload (`structuredContent`, per the tool's `outputSchema`) with stable symbol
+`uid` IDs, machine-readable scores, and provenance — parse the fields when you
+need to chain calls or sort/filter programmatically.
+
+CHOOSING A TOOL — round-trips dominate cost (each call re-bills the whole
+conversation as cache), so prefer one rich call over many granular drips:
+  - Can you NAME the target? Use the cheap, precise primitives:
+      find_definition / search_code  → locate a symbol
+      read_symbol                    → its exact source
+      file_outline                   → a file's symbol map
+      callers / callees / path       → call edges & how two symbols connect
+      impact                         → downstream blast radius (structural)
+      explain / docs_for             → a concept card / its documentation
+  - Can you NOT name it ("how does X work", "where is Y handled")? Use the
+    semantic retrievers: ask_code (cross-file code bundles) or investigate
+    (intent → context → blast surface, one planned round-trip).
+  - Several known lookups at once? Wrap them in `batch` (one round-trip, code
+    de-duplicated) instead of issuing them separately.
+ask_code is the HEAVY tool (returns many bodies) — reach for it only when the
+cheap tools can't, and use render="names" for a census without code.
+
+WORKSPACE: tools default to SURGICAL_CONTEXT_WORKSPACE; pass workspace=<base id>
+(see list_workspaces) to target another indexed repo. Start at list_workspaces →
+list_files → file_outline → read_symbol when exploring an unfamiliar repo.
+
+UNCOMMITTED EDITS: push a dirty buffer with set_overlay(path, content) so
+impact/ask_code reflect a change you haven't committed; clear_overlay when done.
+"""
+
+mcp = FastMCP("surgical-context", instructions=SERVER_INSTRUCTIONS)
 _engine = AxisEngine()
 
 
