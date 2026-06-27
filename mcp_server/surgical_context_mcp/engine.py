@@ -65,6 +65,18 @@ class FileEntry:
 
 
 @dataclass
+class InvestigateResult:
+    question: str
+    workspace_id: str
+    depth: str
+    intent: list[tuple[str, float]] = field(default_factory=list)
+    candidate_count: int = 0
+    files: list[str] = field(default_factory=list)
+    context_text: str = ""
+    blast: list[dict] = field(default_factory=list)
+
+
+@dataclass
 class SymbolSource:
     """Exact on-disk source of one symbol — the deterministic read ``ask_code``
     can't guarantee (it budget-trims). ``found=False`` when the name/path miss."""
@@ -503,6 +515,87 @@ class AxisEngine:
             candidate_count=len(result.candidates_for_context),
             files=files,
             text=text,
+        )
+
+    def investigate(
+        self,
+        question: str,
+        workspace_id: str,
+        *,
+        depth: str = "full",
+        token_budget: int = 4000,
+        max_blast: int = 30,
+    ) -> InvestigateResult:
+        """One-call planned pipeline run server-side (one host round-trip): intent
+        → ranked code context (``run_axis_retrieval``) → downstream blast surface
+        of the top seeds (``build_impact_surface``), de-duplicated against the
+        context. ``depth="full"`` = code bundles + impact on top 5 seeds (self-
+        contained first shot); ``depth="lean"`` = names-only context + impact on
+        top 3 (cheaper). Replaces dripping many granular calls — the internal
+        steps are free of host-context replay."""
+        from context_engine.axis.impact_surface import build_impact_surface
+        from context_engine.axis.pipeline import AxisRetrievalConfig, run_axis_retrieval
+
+        lean = depth == "lean"
+        k = 3 if lean else 5
+        with self._lock:
+            self._ensure()
+            result = run_axis_retrieval(
+                question,
+                workspace_id=workspace_id,
+                db=self._db,
+                lance=self._lance,
+                config=AxisRetrievalConfig(
+                    with_context=True,
+                    intent_budget=not lean,
+                    base_token_budget=token_budget,
+                    hook_transparency=True,
+                ),
+            )
+            files, context_text = _render_bundles(result, names_only=lean)
+            ctx_uids = {s.uid for b in result.bundles for s in b.all_symbols()}
+            blast: list[dict] = []
+            seen: set[str] = set()
+            for c in result.candidates_for_context[:k]:
+                try:
+                    surface = build_impact_surface(
+                        db=self._db,
+                        symbol_uid=c.uid,
+                        symbol_name=c.name,
+                        file_path=c.file_path or "",
+                        workspace_id=workspace_id,
+                        max_depth=2,
+                    )
+                except Exception:
+                    continue
+                for row in surface.get("affected_symbols", []):
+                    uid = row.get("uid")
+                    if not uid or uid in ctx_uids or uid in seen:
+                        continue
+                    seen.add(uid)
+                    blast.append(
+                        {
+                            "seed": c.name,
+                            "name": row.get("name"),
+                            "file_path": row.get("file_path"),
+                            "depth": row.get("depth"),
+                            "kind": row.get("kind"),
+                        }
+                    )
+                    if len(blast) >= max_blast:
+                        break
+                if len(blast) >= max_blast:
+                    break
+
+        return InvestigateResult(
+            question=question,
+            workspace_id=workspace_id,
+            depth=depth,
+            intent=[(m.role, m.similarity) for m in result.intent],
+            candidate_count=len(result.candidates_for_context),
+            files=files,
+            context_text=context_text,
+            blast=blast,
         )
 
     def impact(

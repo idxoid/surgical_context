@@ -106,6 +106,67 @@ def ask_code(
 
 
 @mcp.tool()
+def investigate(
+    question: str,
+    depth: str = "full",
+    token_budget: int = 4000,
+    workspace: str | None = None,
+) -> str:
+    """One-call deep retrieval — a planned pipeline run server-side in ONE
+    round-trip: intent → ranked code context → downstream blast surface of the
+    top seeds, de-duplicated.
+
+    Use this for diagnosis / "how does X work" / "what breaks if I change X"
+    INSTEAD of dripping many granular calls: each host round-trip re-bills the
+    whole context, so one planned call is far cheaper than N drilldowns. The
+    pipeline's internal steps run in the server (no host-context replay).
+
+    depth="full" (default) = code bundles + impact on the top 5 seeds — a
+    self-contained first shot. depth="lean" = names-only context + impact on the
+    top 3 (cheaper; may need one follow-up read_symbol).
+    """
+    if depth not in ("full", "lean"):
+        return f"Unknown depth '{depth}'. Use 'full' (code + blast) or 'lean' (names + blast)."
+
+    workspace_id = resolve_workspace_id(workspace)
+    r = _engine.investigate(question, workspace_id, depth=depth, token_budget=token_budget)
+    roles = ", ".join(f"{x}({s:.2f})" for x, s in r.intent)
+    if not r.context_text and not r.blast:
+        return (
+            f"No context found for: {question!r}\n"
+            f"workspace: {workspace_id}\n"
+            f"intent: {roles or '(none above threshold)'}\n"
+            "The repo may not be indexed under axis_python_v1, or nothing matched."
+        )
+
+    out = [
+        f"# Investigation: {question}",
+        f"workspace: {workspace_id} · intent: {roles} · "
+        f"{r.candidate_count} candidates · {len(r.files)} files · depth={depth}",
+        "",
+        "## Context (ranked code)",
+        r.context_text or "(no context bundles)",
+    ]
+    if r.blast:
+        prefix = _common_dir_prefix([b["file_path"] for b in r.blast if b.get("file_path")])
+        out.append(
+            "\n## Blast surface — downstream dependents of the top seeds "
+            "(deduped, not shown above)"
+        )
+        if prefix:
+            out.append(f"_paths relative to {prefix}_")
+        for b in r.blast:
+            fp = b.get("file_path") or ""
+            rel = fp[len(prefix):] if prefix and fp.startswith(prefix) else fp
+            out.append(f"- {b.get('name')} — {rel} (←{b.get('seed')}, d{b.get('depth')}, {b.get('kind')})")
+    out.append(
+        "\n---\n_one planned pipeline (intent → context → blast) in 1 round-trip. "
+        "Follow up only for a specific missing body._"
+    )
+    return "\n".join(out)
+
+
+@mcp.tool()
 def impact(
     symbol: str,
     file_path: str | None = None,
