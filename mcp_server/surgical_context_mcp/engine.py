@@ -18,6 +18,7 @@ from typing import Any, cast
 # Load the repo .env (NEO4J_*, model creds) before any heavy import — exactly
 # what context_engine/main.py does for the server.
 from context_engine.env_loader import load_repo_dotenv
+from surgical_context_mcp.config import DEFAULT_TOKEN_BUDGET
 
 load_repo_dotenv()
 
@@ -135,7 +136,9 @@ class FileOutline:
     requested_path: str
     workspace_id: str
     found: bool = False
+    ambiguous: bool = False
     file_path: str = ""
+    candidate_files: list[str] = field(default_factory=list)
     rows: list[OutlineRow] = field(default_factory=list)
 
 
@@ -483,7 +486,7 @@ class AxisEngine:
         question: str,
         workspace_id: str,
         *,
-        token_budget: int = 6000,
+        token_budget: int = DEFAULT_TOKEN_BUDGET,
         top_roles: int = 3,
         per_role_limit: int = 7,
         with_context: bool = True,
@@ -556,7 +559,7 @@ class AxisEngine:
         workspace_id: str,
         *,
         depth: str = "full",
-        token_budget: int = 4000,
+        token_budget: int = DEFAULT_TOKEN_BUDGET,
         max_blast: int = 30,
     ) -> InvestigateResult:
         """One-call planned pipeline run server-side (one host round-trip): intent
@@ -1012,10 +1015,38 @@ class AxisEngine:
         with self._lock:
             self._ensure_db()
             with self._db.driver.session() as session:
+                matches = session.run(
+                    """
+                    MATCH (f:File {workspace_id: $ws})
+                    WHERE f.path = $path OR f.path ENDS WITH $path OR f.path ENDS WITH $suffix
+                    RETURN DISTINCT f.path AS file_path
+                    ORDER BY file_path
+                    LIMIT 50
+                    """,
+                    ws=workspace_id,
+                    path=path,
+                    suffix=suffix,
+                ).data()
+                candidate_files = [str(r.get("file_path") or "") for r in matches if r.get("file_path")]
+                if not candidate_files:
+                    return FileOutline(
+                        requested_path=file_path,
+                        workspace_id=workspace_id,
+                        found=False,
+                    )
+                if len(candidate_files) > 1:
+                    return FileOutline(
+                        requested_path=file_path,
+                        workspace_id=workspace_id,
+                        found=False,
+                        ambiguous=True,
+                        candidate_files=candidate_files,
+                    )
+                exact_path = candidate_files[0]
                 rows = session.run(
                     """
                     MATCH (f:File {workspace_id: $ws})-[c:CONTAINS]->(s:Symbol)
-                    WHERE f.path = $path OR f.path ENDS WITH $path OR f.path ENDS WITH $suffix
+                    WHERE f.path = $path
                     RETURN f.path AS file_path, s.name AS name,
                            coalesce(s.kind, '') AS kind,
                            coalesce(c.start_line, s.range[0], 0) AS start_line
@@ -1023,8 +1054,7 @@ class AxisEngine:
                     LIMIT $limit
                     """,
                     ws=workspace_id,
-                    path=path,
-                    suffix=suffix,
+                    path=exact_path,
                     limit=int(limit),
                 ).data()
         if not rows:
@@ -1073,11 +1103,17 @@ class AxisEngine:
             cypher = (
                 "MATCH (a:Symbol {uid: $ua}), (b:Symbol {uid: $ub}) "
                 f"MATCH p = shortestPath((a)-[*..{hops}]-(b)) "
+                "WHERE all(n IN nodes(p) WHERE n:Symbol) "
+                "AND all(rel IN relationships(p) "
+                "        WHERE coalesce(rel.workspace_id, $workspace_id) = $workspace_id) "
+                "AND all(n IN nodes(p) WHERE EXISTS { "
+                "        MATCH (:File {workspace_id: $workspace_id})-[:CONTAINS]->(n) "
+                "    }) "
                 "RETURN [n IN nodes(p) | coalesce(n.name, n.uid)] AS names, "
                 "[r IN relationships(p) | type(r)] AS rels"
             )
             with self._db.driver.session() as session:
-                rec = session.run(cypher, ua=uid_a, ub=uid_b).single()
+                rec = session.run(cypher, ua=uid_a, ub=uid_b, workspace_id=workspace_id).single()
         if not rec:
             return PathResult(
                 symbol_a=symbol_a,

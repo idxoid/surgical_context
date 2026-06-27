@@ -19,6 +19,7 @@ from context_engine.index_profile import AXIS_PYTHON_V1_PROFILE, resolve_index_p
 # box the repos are indexed under the ``qa_repo`` tenant (benchmark checkouts);
 # a production index may use ``local`` or another tenant. Override via the env.
 DEFAULT_BASE_WORKSPACE = os.getenv("SURGICAL_CONTEXT_WORKSPACE", "qa_repo/surgical_context@main")
+DEFAULT_TOKEN_BUDGET = 4000
 
 
 def resolve_workspace_id(base: str | None = None) -> str:

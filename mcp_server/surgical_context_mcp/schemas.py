@@ -242,7 +242,9 @@ class FindDefinitionOutput(_Base):
 class FileOutlineOutput(_Base):
     requested_path: str
     found: bool = False
+    ambiguous: bool = False
     file_path: str | None = None
+    candidate_files: list[str] = Field(default_factory=list)
     symbols: list[OutlineItem] = Field(default_factory=list)
 
 

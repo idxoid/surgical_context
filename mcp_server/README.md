@@ -61,7 +61,9 @@ section are graph + filesystem.
   `name` with file:line (go-to-definition, incl. collisions). Disambiguate
   before `read_symbol`/`callers`.
 - **`file_outline(file_path, limit=400, workspace=None)`** — symbol map of one
-  file (name, kind, start line; no bodies).
+  file (name, kind, start line; no bodies). If a short suffix such as
+  `__init__.py` matches several indexed files, the tool returns an ambiguity
+  response with candidate paths instead of mixing symbols from different files.
 - **`path(symbol_a, symbol_b, file_a=None, file_b=None, max_hops=6, workspace=None)`**
   — shortest connecting path across ALL edge types (calls, inheritance, API,
   type refs…); surfaces indirect coupling `callers`/`callees` miss.
@@ -214,6 +216,9 @@ PYTHONPATH=..:. ../.venv/bin/python -c \
   Persisting an edit still goes through the normal save (HTTP `/overlay`) → git
   commit (post-commit `graphify`/index) path; there is no `reindex_file` tool
   (redundant with that flow).
+- **Bounds**: MCP tools clamp user-facing integer knobs before they reach Neo4j
+  or LanceDB (`token_budget`, `limit`, `top_roles`, `max_hops`). `batch` accepts
+  at most 20 sub-operations, and `set_overlay` rejects buffers over 1 MB.
 - **Concept explain**: `explain` is symbol-centric (resolve → connections +
   docs). Free-text concepts resolve to the nearest symbol by embedding, which
   can be approximate (flagged "nearest match"); a true abstract-concept graph

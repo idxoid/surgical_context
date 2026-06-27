@@ -23,8 +23,27 @@ from mcp.types import CallToolResult, TextContent
 from pydantic import BaseModel
 
 from surgical_context_mcp import schemas
-from surgical_context_mcp.config import resolve_workspace_id
+from surgical_context_mcp.config import DEFAULT_TOKEN_BUDGET, resolve_workspace_id
 from surgical_context_mcp.engine import AxisEngine, _common_dir_prefix
+
+MIN_TOKEN_BUDGET = 400
+MAX_TOKEN_BUDGET = 32_000
+DEFAULT_SEARCH_LIMIT = 10
+MAX_SEARCH_LIMIT = 50
+DEFAULT_NEIGHBOUR_LIMIT = 50
+MAX_NEIGHBOUR_LIMIT = 200
+DEFAULT_FIND_DEFINITION_LIMIT = 20
+MAX_FIND_DEFINITION_LIMIT = 200
+DEFAULT_FILE_OUTLINE_LIMIT = 400
+MAX_FILE_OUTLINE_LIMIT = 1_000
+DEFAULT_DOCS_LIMIT = 20
+MAX_DOCS_LIMIT = 100
+DEFAULT_LIST_FILES_LIMIT = 400
+MAX_LIST_FILES_LIMIT = 2_000
+DEFAULT_TOP_ROLES = 5
+MAX_TOP_ROLES = 20
+MAX_BATCH_OPS = 20
+MAX_OVERLAY_BYTES = 1_000_000
 
 SERVER_INSTRUCTIONS = """\
 surgical_context exposes a code repository's **axis retrieval** graph: ask in
@@ -99,10 +118,16 @@ def _intent_str(roles: list[schemas.IntentRole]) -> str:
     return ", ".join(f"{r.role}({r.score:.2f})" for r in roles)
 
 
+def _bounded_int(value: object, *, default: int, minimum: int, maximum: int) -> int:
+    if type(value) is not int:
+        return default
+    return max(minimum, min(value, maximum))
+
+
 @mcp.tool(structured_output=True)
 def ask_code(
     question: str,
-    token_budget: int = 4000,
+    token_budget: int = DEFAULT_TOKEN_BUDGET,
     workspace: str | None = None,
     roles: list[str] | None = None,
     render: str = "full",
@@ -139,6 +164,12 @@ def ask_code(
             files touch X" without paying for bodies.
     """
     workspace_id = resolve_workspace_id(workspace)
+    token_budget = _bounded_int(
+        token_budget,
+        default=DEFAULT_TOKEN_BUDGET,
+        minimum=MIN_TOKEN_BUDGET,
+        maximum=MAX_TOKEN_BUDGET,
+    )
 
     if render not in ("full", "names"):
         md = f"Unknown render '{render}'. Use 'full' (code) or 'names' (census)."
@@ -241,7 +272,7 @@ def ask_code(
 def investigate(
     question: str,
     depth: str = "full",
-    token_budget: int = 4000,
+    token_budget: int = DEFAULT_TOKEN_BUDGET,
     workspace: str | None = None,
 ) -> schemas.InvestigateOutput:
     """One-call deep retrieval — a planned pipeline run server-side in ONE
@@ -258,6 +289,12 @@ def investigate(
     top 3 (cheaper; may need one follow-up read_symbol).
     """
     workspace_id = resolve_workspace_id(workspace)
+    token_budget = _bounded_int(
+        token_budget,
+        default=DEFAULT_TOKEN_BUDGET,
+        minimum=MIN_TOKEN_BUDGET,
+        maximum=MAX_TOKEN_BUDGET,
+    )
     if depth not in ("full", "lean"):
         md = f"Unknown depth '{depth}'. Use 'full' (code + blast) or 'lean' (names + blast)."
         return _result(
@@ -475,7 +512,7 @@ def list_files(
     workspace: str | None = None,
     path_prefix: str | None = None,
     with_counts: bool = False,
-    limit: int = 400,
+    limit: int = DEFAULT_LIST_FILES_LIMIT,
 ) -> schemas.ListFilesOutput:
     """List indexed files of a workspace — the navigation entry point:
     list_workspaces → **list_files** → file_outline(path) → read_symbol(name).
@@ -491,6 +528,12 @@ def list_files(
         limit: max files returned (default 400).
     """
     workspace_id = resolve_workspace_id(workspace)
+    limit = _bounded_int(
+        limit,
+        default=DEFAULT_LIST_FILES_LIMIT,
+        minimum=1,
+        maximum=MAX_LIST_FILES_LIMIT,
+    )
     rows = _engine.list_files(
         workspace_id, path_prefix=path_prefix, with_counts=with_counts, limit=limit
     )
@@ -532,13 +575,21 @@ def list_files(
 
 
 @mcp.tool(structured_output=True)
-def classify_intent(question: str, top_roles: int = 5) -> schemas.ClassifyIntentOutput:
+def classify_intent(
+    question: str, top_roles: int = DEFAULT_TOP_ROLES
+) -> schemas.ClassifyIntentOutput:
     """Preview which structural roles the embedding intent-classifier maps a
     question to (cosine of question vs role descriptions), WITHOUT running
     retrieval. Cheap (embedding only — no graph). Use it to decide whether to
     override ``ask_code(roles=[...])``: see the auto-picked roles + similarity,
     then refine. Closes the loop list_roles → classify_intent → ask_code.
     """
+    top_roles = _bounded_int(
+        top_roles,
+        default=DEFAULT_TOP_ROLES,
+        minimum=1,
+        maximum=MAX_TOP_ROLES,
+    )
     matches = _engine.classify_intent(question, top_roles=top_roles)
     if not matches:
         md = (
@@ -671,7 +722,7 @@ def read_symbol(
 @mcp.tool(structured_output=True)
 def search_code(
     query: str,
-    limit: int = 10,
+    limit: int = DEFAULT_SEARCH_LIMIT,
     kind: str = "symbol",
     workspace: str | None = None,
 ) -> schemas.SearchCodeOutput:
@@ -687,6 +738,12 @@ def search_code(
         workspace: Optional base workspace id; defaults to SURGICAL_CONTEXT_WORKSPACE.
     """
     workspace_id = resolve_workspace_id(workspace)
+    limit = _bounded_int(
+        limit,
+        default=DEFAULT_SEARCH_LIMIT,
+        minimum=1,
+        maximum=MAX_SEARCH_LIMIT,
+    )
     if kind not in ("symbol", "doc"):
         md = f"Unknown kind '{kind}'. Use 'symbol' or 'doc'."
         return _result(
@@ -756,7 +813,7 @@ def callers(
     symbol: str,
     file_path: str | None = None,
     max_hops: int = 1,
-    limit: int = 50,
+    limit: int = DEFAULT_NEIGHBOUR_LIMIT,
     workspace: str | None = None,
 ) -> schemas.NeighboursOutput:
     """Who calls ``symbol`` — incoming CALLS edges (reverse walk). Cheaper and
@@ -778,7 +835,7 @@ def callees(
     symbol: str,
     file_path: str | None = None,
     max_hops: int = 1,
-    limit: int = 50,
+    limit: int = DEFAULT_NEIGHBOUR_LIMIT,
     workspace: str | None = None,
 ) -> schemas.NeighboursOutput:
     """What ``symbol`` calls — outgoing CALLS edges (forward walk). The
@@ -806,6 +863,12 @@ def _format_neighbours(
     workspace_id = resolve_workspace_id(workspace)
     direction = "reverse" if which == "callers" else "forward"
     depth = max_hops if isinstance(max_hops, int) and 1 <= max_hops <= 4 else 1
+    limit = _bounded_int(
+        limit,
+        default=DEFAULT_NEIGHBOUR_LIMIT,
+        minimum=1,
+        maximum=MAX_NEIGHBOUR_LIMIT,
+    )
     r = _engine.call_neighbours(
         symbol, workspace_id, direction=direction, file_path=file_path, max_hops=depth, limit=limit
     )
@@ -863,7 +926,7 @@ def _format_neighbours(
 
 @mcp.tool(structured_output=True)
 def find_definition(
-    name: str, limit: int = 20, workspace: str | None = None
+    name: str, limit: int = DEFAULT_FIND_DEFINITION_LIMIT, workspace: str | None = None
 ) -> schemas.FindDefinitionOutput:
     """Locate where a name is defined: every symbol called ``name`` with its
     file and start line (go-to-definition, including collisions/overloads).
@@ -876,6 +939,12 @@ def find_definition(
         workspace: Optional base workspace id; defaults to SURGICAL_CONTEXT_WORKSPACE.
     """
     workspace_id = resolve_workspace_id(workspace)
+    limit = _bounded_int(
+        limit,
+        default=DEFAULT_FIND_DEFINITION_LIMIT,
+        minimum=1,
+        maximum=MAX_FIND_DEFINITION_LIMIT,
+    )
     hits = _engine.find_definition(name, workspace_id, limit=limit)
     if not hits:
         md = f"No definition of '{name}' in the index (workspace: {workspace_id})."
@@ -918,7 +987,7 @@ def find_definition(
 
 @mcp.tool(structured_output=True)
 def file_outline(
-    file_path: str, limit: int = 400, workspace: str | None = None
+    file_path: str, limit: int = DEFAULT_FILE_OUTLINE_LIMIT, workspace: str | None = None
 ) -> schemas.FileOutlineOutput:
     """Symbol map of one file: every defined symbol with kind and start line,
     top-to-bottom (no code). Use it to understand a file's structure before
@@ -930,7 +999,33 @@ def file_outline(
         workspace: Optional base workspace id; defaults to SURGICAL_CONTEXT_WORKSPACE.
     """
     workspace_id = resolve_workspace_id(workspace)
+    limit = _bounded_int(
+        limit,
+        default=DEFAULT_FILE_OUTLINE_LIMIT,
+        minimum=1,
+        maximum=MAX_FILE_OUTLINE_LIMIT,
+    )
     r = _engine.file_outline(file_path, workspace_id, limit=limit)
+    if r.ambiguous:
+        md = (
+            f"File path '{file_path}' is ambiguous in {workspace_id}. "
+            "Pass a longer suffix or an exact indexed path.\n\n"
+            + "\n".join(f"- {path}" for path in r.candidate_files)
+            + "\n"
+        )
+        return _result(
+            md,
+            schemas.FileOutlineOutput(
+                tool="file_outline",
+                ok=False,
+                found=False,
+                ambiguous=True,
+                workspace=workspace_id,
+                markdown=md,
+                requested_path=file_path,
+                candidate_files=r.candidate_files,
+            ),
+        )
     if not r.found:
         md = (
             f"No indexed file matching '{file_path}' (workspace: {workspace_id}). "
@@ -1044,7 +1139,7 @@ def path(
 def docs_for(
     symbol: str,
     file_path: str | None = None,
-    limit: int = 20,
+    limit: int = DEFAULT_DOCS_LIMIT,
     workspace: str | None = None,
 ) -> schemas.DocsForOutput:
     """Documentation anchored to ``symbol`` via DocAnchor COVERS edges: which
@@ -1059,6 +1154,12 @@ def docs_for(
         workspace: Optional base workspace id; defaults to SURGICAL_CONTEXT_WORKSPACE.
     """
     workspace_id = resolve_workspace_id(workspace)
+    limit = _bounded_int(
+        limit,
+        default=DEFAULT_DOCS_LIMIT,
+        minimum=1,
+        maximum=MAX_DOCS_LIMIT,
+    )
     r = _engine.docs_for(symbol, workspace_id, file_path=file_path, limit=limit)
     if not r.found:
         hint = f" in {file_path}" if file_path else ""
@@ -1141,6 +1242,22 @@ def set_overlay(
         workspace: Optional base workspace id; defaults to SURGICAL_CONTEXT_WORKSPACE.
     """
     workspace_id = resolve_workspace_id(workspace)
+    overlay_bytes = len(content.encode("utf-8"))
+    if overlay_bytes > MAX_OVERLAY_BYTES:
+        md = (
+            f"Overlay for {file_path} is too large "
+            f"({overlay_bytes} bytes; max {MAX_OVERLAY_BYTES})."
+        )
+        return _result(
+            md,
+            schemas.SetOverlayOutput(
+                tool="set_overlay",
+                ok=False,
+                workspace=workspace_id,
+                markdown=md,
+                file_path=file_path,
+            ),
+        )
     symbols = _engine.set_overlay(file_path, content, workspace_id)
     head = (
         f"# Overlay set: {file_path}\nworkspace: {workspace_id} · {len(symbols)} symbols parsed\n"
@@ -1353,6 +1470,9 @@ def batch(ops: list[dict]) -> schemas.BatchOutput:
             "batch: pass a non-empty list of ops, e.g. "
             '[{"tool": "read_symbol", "name": "create_app"}].'
         )
+        return _result(md, schemas.BatchOutput(tool="batch", ok=False, markdown=md))
+    if len(ops) > MAX_BATCH_OPS:
+        md = f"batch: at most {MAX_BATCH_OPS} ops per call (got {len(ops)})."
         return _result(md, schemas.BatchOutput(tool="batch", ok=False, markdown=md))
 
     seen: dict[str, bool] = {}
