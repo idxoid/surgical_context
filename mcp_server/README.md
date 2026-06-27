@@ -12,7 +12,7 @@ pipeline directly.
 
 ## Tools
 
-- **`ask_code(question, token_budget=6000, workspace=None, roles=None, render="full")`**
+- **`ask_code(question, token_budget=4000, workspace=None, roles=None, render="full")`**
   — natural-language question → ranked, graph-expanded code bundles for the host
   model to reason over. Returns *context, not an answer* (LLM-free retrieval).
   `roles=[...]` overrides the embedding intent-classifier (see `list_roles`).
@@ -20,21 +20,32 @@ pipeline directly.
   no code) with eviction disabled, so far more coupling symbols/files surface per
   token (~−40% tokens, ~30% more symbols on coupling questions) — use it to map
   structure/blast surface, `"full"` to read code.
+- **`investigate(question, depth="full", token_budget=4000, workspace=None)`**
+  — one planned retrieval round-trip: intent → ranked context → downstream
+  blast surface of the top seeds. Use `depth="lean"` for a cheaper names-only
+  context plus a smaller blast pass.
 - **`impact(symbol, file_path=None, max_depth=3, workspace=None)`** — downstream
   blast radius of a change to `symbol` (reverse callers, structural
-  API/inheritance, AFFECTS closure). Committed index surface only (no overlay).
+  API/inheritance, AFFECTS closure). The committed index is authoritative;
+  dirty buffers pushed through `set_overlay` add degraded overlay rows and can
+  resolve brand-new overlay-only symbols.
 - **`list_workspaces()`** — indexed repos you can target via `workspace=`.
 - **`list_files(workspace=None, path_prefix=None, with_counts=False, limit=400)`**
   — indexed files of a workspace; the navigation entry point
   (`list_workspaces → list_files → file_outline → read_symbol`). The only way to
   enumerate a NON-local workspace the host's Glob can't see; for the local repo
   the host's Glob is usually cheaper.
+- **`list_roles()`** / **`classify_intent(question, top_roles=5)`** — inspect
+  the structural role vocabulary and preview the intent classifier before
+  overriding `ask_code(roles=[...])`.
 
 ### Navigation & read tools (P0/P1)
 
 Thin, mostly Neo4j-only wrappers over the same read path — precise locate/read/
-navigate primitives the budget-trimmed `ask_code` can't guarantee. Only
-`search_code` pulls the embedding model; everything else is graph + filesystem.
+navigate primitives the budget-trimmed `ask_code` can't guarantee. `search_code`
+pulls the embedding model; `explain` does too only when an exact symbol-name
+lookup misses and it falls back to vector search. The other tools in this
+section are graph + filesystem.
 
 - **`read_symbol(name, file_path=None, workspace=None)`** — exact, untrimmed
   on-disk source of one symbol (resolve uid → Neo4j line span → sandboxed disk
@@ -187,6 +198,11 @@ PYTHONPATH=..:. ../.venv/bin/python -c \
   indexed repo via `workspace=` (discover with `list_workspaces`). Auto-resolve
   from the chat's cwd (graphify's `graphify-out/`-detect analog) is still TODO.
 - **Python-only** (`axis_python_v1` is `language_scope="python"`).
+- **Embedding cold-start** applies to `ask_code`, `investigate`,
+  `classify_intent`, `search_code`, and `explain` when exact resolution misses.
+  Pure graph/navigation calls (`list_workspaces`, `list_files`, `read_symbol`,
+  `callers`, `callees`, `impact`, `find_definition`, `file_outline`, `path`,
+  `docs_for`) stay on the Neo4j/filesystem path.
 - **Docs** (`search_code(kind="doc")`, `docs_for`) need the docstring/anchor
   pass (fast-pipeline Stage 7 `ingest_symbol_docstrings` → `DocAnchor`-`COVERS`
   edges over in-code docstrings / out-of-function doc comments). A workspace

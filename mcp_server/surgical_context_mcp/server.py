@@ -1284,8 +1284,9 @@ def explain(
 
 _FENCE = re.compile(r"```[^\n]*\n(.*?)```", re.DOTALL)
 
-# Read/nav tools safe to batch. Excludes ask_code (already one rich call),
-# overlay mutations, and trivial list_* tools.
+# Read/nav tools safe to batch. Excludes ask_code/investigate (already rich
+# calls), overlay mutations, list_workspaces/list_roles, and explain (can pull a
+# broad concept card); list_files is included as the navigation entry point.
 _BATCHABLE = {
     "list_files": list_files,
     "read_symbol": read_symbol,
@@ -1338,8 +1339,9 @@ def batch(ops: list[dict]) -> schemas.BatchOutput:
 
     ``ops``: list of ``{"tool": <name>, ...args}``. Supported tools:
     read_symbol, callers, callees, impact, file_outline, find_definition,
-    search_code, docs_for, path, classify_intent. (ask_code is already one rich
-    call; overlay mutations and list_* are excluded.)
+    search_code, docs_for, path, classify_intent, list_files. (ask_code and
+    investigate are already rich calls; overlay mutations, list_workspaces, and
+    list_roles are excluded.)
 
     Example:
         [{"tool": "read_symbol", "name": "create_app"},
