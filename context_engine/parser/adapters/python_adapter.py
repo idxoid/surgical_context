@@ -3154,7 +3154,7 @@ class PythonAdapter(TreeSitterAdapter):
         method_returns,
         function_returns,
         module: str,
-    ) -> tuple[str, str, str, float, str, str | None, str | None] | None:
+    ) -> tuple[str, str, str, str, float, str | None, str | None] | None:
         func_node = node.child_by_field_name("function")
         if func_node is None:
             return None
