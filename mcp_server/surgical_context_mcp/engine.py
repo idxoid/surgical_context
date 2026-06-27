@@ -36,6 +36,7 @@ class AskResult:
     candidate_count: int = 0
     files: list[str] = field(default_factory=list)
     text: str = ""
+    symbols: list[dict] = field(default_factory=list)
 
 
 @dataclass
@@ -75,6 +76,7 @@ class InvestigateResult:
     files: list[str] = field(default_factory=list)
     context_text: str = ""
     blast: list[dict] = field(default_factory=list)
+    symbols: list[dict] = field(default_factory=list)
 
 
 @dataclass
@@ -333,8 +335,30 @@ def _append_bundle_symbol_lines(
     parts.append("")
 
 
-def _render_bundles(result, *, names_only: bool = False) -> tuple[list[str], str]:
-    """Flatten ``result.bundles`` into a deduped, prompt-ready markdown block.
+def _context_symbol_row(sym) -> dict:
+    """Lean, machine-readable row for one context symbol — stable ``uid`` ID,
+    role/kind, depth + ``expansion_step`` provenance, and relevance/utility
+    scores. Drops the code body (it already rides in the markdown render) in
+    favour of a ``has_code`` flag so ``structuredContent`` stays compact."""
+    return {
+        "uid": sym.uid,
+        "name": sym.name,
+        "file_path": sym.file_path or "",
+        "role": sym.role or "",
+        "kind": sym.kind or "",
+        "depth": sym.distance_from_seed,
+        "expansion_step": sym.expansion_step,
+        "relevance_score": round(float(sym.relevance_score), 4),
+        "utility_score": round(float(sym.utility_score), 4),
+        "has_code": bool(sym.code),
+        "start_line": sym.start_line or None,
+        "end_line": sym.end_line or None,
+    }
+
+
+def _render_bundles(result, *, names_only: bool = False) -> tuple[list[dict], list[str], str]:
+    """Flatten ``result.bundles`` into a deduped, prompt-ready markdown block
+    plus the matching machine-readable symbol rows.
 
     Dedupes by uid (highest-rank / shallowest occurrence wins), preserving the
     candidate-rank, seed-before-related order — the same content the benchmark
@@ -346,11 +370,15 @@ def _render_bundles(result, *, names_only: bool = False) -> tuple[list[str], str
     code) — a census view: many coupling symbols fit per token. Pair it with
     ``intent_budget=False`` upstream so the token-credit packer doesn't evict
     expanded neighbours before they reach here.
+
+    Returns ``(rows, files, markdown)`` — ``rows`` is the structured payload
+    (see ``_context_symbol_row``), in the same deduped order as the markdown.
     """
     if not result.bundles:
-        return [], ""
+        return [], [], ""
 
     syms, files = _collect_deduped_bundle_symbols(result)
+    rows = [_context_symbol_row(s) for s in syms]
     prefix = _common_dir_prefix(files)
     parts: list[str] = []
     if prefix:
@@ -360,7 +388,7 @@ def _render_bundles(result, *, names_only: bool = False) -> tuple[list[str], str
     for sym in syms:
         _append_bundle_symbol_lines(parts, sym, prefix=prefix, names_only=names_only)
 
-    return files, "\n".join(parts).rstrip() + "\n"
+    return rows, files, "\n".join(parts).rstrip() + "\n"
 
 
 class AxisEngine:
@@ -511,7 +539,7 @@ class AxisEngine:
             )
 
         intent = [(m.role, m.similarity) for m in result.intent]
-        files, text = _render_bundles(result, names_only=names_only)
+        rows, files, text = _render_bundles(result, names_only=names_only)
         return AskResult(
             question=question,
             workspace_id=workspace_id,
@@ -519,6 +547,7 @@ class AxisEngine:
             candidate_count=len(result.candidates_for_context),
             files=files,
             text=text,
+            symbols=rows,
         )
 
     def investigate(
@@ -556,7 +585,7 @@ class AxisEngine:
                     hook_transparency=True,
                 ),
             )
-            files, context_text = _render_bundles(result, names_only=lean)
+            rows, files, context_text = _render_bundles(result, names_only=lean)
             ctx_uids = {s.uid for b in result.bundles for s in b.all_symbols()}
             blast: list[dict] = []
             seen: set[str] = set()
@@ -600,6 +629,7 @@ class AxisEngine:
             files=files,
             context_text=context_text,
             blast=blast,
+            symbols=rows,
         )
 
     def impact(
