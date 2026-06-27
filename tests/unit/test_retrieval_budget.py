@@ -27,12 +27,10 @@ def test_mode_role_selects_impact():
 
 
 def test_profile_shapes():
-    # max_walk_seeds caps only the WALK (active seeds); both profiles use the
-    # same walk budget and differ in render granularity — architecture keeps
-    # the core full (hybrid), impact is all-signatures for max breadth.
-    assert ARCHITECTURE.max_walk_seeds >= 1
-    # simple "how does X" questions need fewer walks than impact analysis.
-    assert ARCHITECTURE.max_walk_seeds <= IMPACT.max_walk_seeds
+    # Candidate caps live on AxisRetrievalConfig. Budget profiles only shape
+    # prompt packing/rendering so they cannot silently change retrieval recall.
+    assert not hasattr(ARCHITECTURE, "max_walk_seeds")
+    assert not hasattr(IMPACT, "max_walk_seeds")
     assert ARCHITECTURE.render_mode == "hybrid"
     assert IMPACT.render_mode == "impact_tiered"
     assert IMPACT.per_transaction_share < ARCHITECTURE.per_transaction_share
