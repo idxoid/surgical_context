@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass, field
+from typing import cast
 
 from context_engine.axis.container_kind import ContainerKindMatch
 from context_engine.axis.query_plan import AxisQueryRequest, AxisRequirement, TraversalMode
@@ -687,7 +688,7 @@ def _parse_container_kind_json_raw(raw: str | list[dict[str, object]]) -> list[o
 
 def _parse_container_kind_evidence_bits(item: dict[str, object]) -> tuple[tuple[str, str], ...]:
     evidence_bits: list[tuple[str, str]] = []
-    for pair in item.get("evidence_bits") or []:
+    for pair in cast("list", item.get("evidence_bits") or []):
         if (
             isinstance(pair, (list, tuple))
             and len(pair) == 2

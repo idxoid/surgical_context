@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, ClassVar, cast
 
 from context_engine.axis.schema import AxisExtraction, AxisFact, AxisName
 from context_engine.parser.uid import (
@@ -27,6 +27,10 @@ class TypeScriptAxisExtractor:
 
     Emits AST-visible bits only; framework roles stay in the axis compiler.
     """
+
+    # Per-class cache of node-type -> handler-method name, built lazily; declared
+    # without a default so getattr(cls, ..., None) returns None until first build.
+    _CACHED_AXIS_NODE_HANDLER_MAP: ClassVar[dict[str, str]]
 
     _CLASS_TYPES = frozenset({"class_declaration", "abstract_class_declaration"})
     _CALLABLE_TYPES = frozenset(

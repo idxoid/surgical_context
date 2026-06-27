@@ -29,6 +29,7 @@ import json
 import os
 import sys
 import time
+from collections.abc import Collection
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -224,7 +225,7 @@ def _clear_derived_edges_for_diffs(
 
 
 def _rebuild_affects_for_uids(
-    uids: list[str],
+    uids: Collection[str],
     db: Neo4jClient,
     workspace_id: str,
     reporter: ProgressReporter,
@@ -236,7 +237,7 @@ def _rebuild_affects_for_uids(
     from context_engine.indexer.affects import AFFECTSIndexer
 
     reporter.stage_start("affects", total=len(uids))
-    AFFECTSIndexer(db).rebuild_affects(uids, workspace_id=workspace_id)
+    AFFECTSIndexer(db).rebuild_affects(list(uids), workspace_id=workspace_id)
     reporter.stage_end("affects")
     return len(uids)
 
@@ -1817,7 +1818,7 @@ def _finish_tombstone_only(
     workspace_id: str,
     project_path: str,
     tombstoned_paths: list[str],
-    tombstone_uids: set[str],
+    tombstone_uids: Collection[str],
     skip_affects: bool,
     reporter: ProgressReporter,
 ) -> dict:
@@ -1847,7 +1848,7 @@ def _finish_unchanged_files(
     project_path: str,
     files: list[str],
     tombstoned_paths: list[str],
-    tombstone_uids: set[str],
+    tombstone_uids: Collection[str],
     skip_affects: bool,
     reporter: ProgressReporter,
 ) -> dict:

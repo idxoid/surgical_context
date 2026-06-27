@@ -349,7 +349,7 @@ def _alias_local_qns_by_class(
     parsed_bases_by_uid: dict[str, list[str]],
     depends_on_names_by_class: dict[str, set[str]],
     package: str | None,
-    project_path: str,
+    project_path: str | None,
     workspace_id: str,
 ) -> tuple[dict[str, list[str]], set[str]]:
     needed_local_qns: set[str] = set()
