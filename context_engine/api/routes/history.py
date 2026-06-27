@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import cast
+
 from fastapi import APIRouter, HTTPException, Request
 
 from context_engine.api.routes.deps import (
@@ -75,7 +77,7 @@ def _ensure_history_conversation_id(
     }
 
     if not conversation_id:
-        return main.history_provider.create_conversation(**create_kwargs)
+        return cast("str", main.history_provider.create_conversation(**create_kwargs))
 
     conversation = main.history_provider.get_conversation(conversation_id)
     if conversation:
@@ -86,9 +88,12 @@ def _ensure_history_conversation_id(
         )
         return conversation_id
 
-    return main.history_provider.create_conversation(
-        conversation_id=conversation_id,
-        **create_kwargs,
+    return cast(
+        "str",
+        main.history_provider.create_conversation(
+            conversation_id=conversation_id,
+            **create_kwargs,
+        ),
     )
 
 

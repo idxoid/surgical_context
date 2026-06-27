@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 from context_engine.axis.schema import AxisExtraction, AxisFact, AxisName
 from context_engine.parser.uid import (
@@ -65,7 +65,7 @@ class TypeScriptAxisExtractor:
     def _axis_node_handler_map(cls) -> dict[str, str]:
         cached = getattr(cls, "_CACHED_AXIS_NODE_HANDLER_MAP", None)
         if cached is not None:
-            return cached
+            return cast("dict[str, str]", cached)
         handlers: dict[str, str] = {
             "import_statement": "import",
             "variable_declarator": "_emit_variable_declarator_facts",

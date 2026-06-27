@@ -1,6 +1,7 @@
 import re
 import time
 from pathlib import Path
+from typing import cast
 
 from context_engine.database.lancedb_client import LanceDBClient
 from context_engine.database.neo4j_client import Neo4jClient
@@ -707,34 +708,22 @@ def _append_chunk_link_outputs(
 
 def _search_symbols_by_vector(lance, vector, *, workspace_id: str) -> list[dict]:
     try:
-        return lance.search_symbols_by_vector(
-            vector,
-            limit=5,
-            threshold=SIMILARITY_THRESHOLD,
-            workspace_id=workspace_id,
+        rows = lance.search_symbols_by_vector(
+            vector, limit=5, threshold=SIMILARITY_THRESHOLD, workspace_id=workspace_id
         )
     except TypeError:
-        return lance.search_symbols_by_vector(
-            vector,
-            limit=5,
-            threshold=SIMILARITY_THRESHOLD,
-        )
+        rows = lance.search_symbols_by_vector(vector, limit=5, threshold=SIMILARITY_THRESHOLD)
+    return cast("list[dict]", rows)
 
 
 def _search_symbols_by_text(lance, chunk_text: str, *, workspace_id: str) -> list[dict]:
     try:
-        return lance.search_symbols(
-            chunk_text,
-            limit=5,
-            threshold=SIMILARITY_THRESHOLD,
-            workspace_id=workspace_id,
+        rows = lance.search_symbols(
+            chunk_text, limit=5, threshold=SIMILARITY_THRESHOLD, workspace_id=workspace_id
         )
     except TypeError:
-        return lance.search_symbols(
-            chunk_text,
-            limit=5,
-            threshold=SIMILARITY_THRESHOLD,
-        )
+        rows = lance.search_symbols(chunk_text, limit=5, threshold=SIMILARITY_THRESHOLD)
+    return cast("list[dict]", rows)
 
 
 def _semantic_hits_for_row(state: dict, lance, *, workspace_id: str) -> list[dict]:

@@ -31,7 +31,7 @@ import json
 import os
 from collections import defaultdict
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, cast
 
 import lancedb
 
@@ -747,7 +747,7 @@ def _search_doc_anchor_rows(lance, qv_arr, workspace_id: str, limit: int) -> lis
     if not callable(search_docs):
         return []
     try:
-        return search_docs(qv_arr, workspace_id=workspace_id, limit=limit)
+        return cast("list[dict]", search_docs(qv_arr, workspace_id=workspace_id, limit=limit))
     except Exception:
         return []
 

@@ -355,7 +355,10 @@ class JavaScriptAdapter(TreeSitterAdapter):
         from context_engine.parser.adapters.typescript_adapter import TypeScriptAdapter
 
         method = getattr(TypeScriptAdapter, method_name)
-        return method(cast(TypeScriptAdapter, self), source_code, file_path, tree=tree)
+        return cast(
+            "list[dict]",
+            method(cast(TypeScriptAdapter, self), source_code, file_path, tree=tree),
+        )
 
     def extract_proxy_bindings(self, source_code: str, file_path: str, *, tree=None) -> list[dict]:
         return self._delegate_typescript_extractor(

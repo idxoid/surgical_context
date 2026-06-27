@@ -238,7 +238,7 @@ def _payloads_from_pylist_fallback(
 
 def _arrow_column_pylist(arrow, column: str, length: int) -> list:
     try:
-        return arrow[column].to_pylist()
+        return cast("list", arrow[column].to_pylist())
     except Exception:
         return [""] * length
 
@@ -1429,7 +1429,7 @@ def _credit_optimistic_value(st: _BundleStatic, bundle: ContextBundle, cost: int
     optimistic_gain += st.structural_bridge * st.tier_weight
     if not bundle.passive:
         optimistic_gain += 0.05
-    return optimistic_gain / max(1, cost)
+    return float(optimistic_gain / max(1, cost))
 
 
 def _build_initial_credit_heap(

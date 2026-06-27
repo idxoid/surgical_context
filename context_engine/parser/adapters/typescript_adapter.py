@@ -3950,7 +3950,7 @@ class TypeScriptAdapter(TreeSitterAdapter):
         if node.type in ("method_definition", "function_declaration", "arrow_function"):
             if node is not owner:
                 return False
-        return node.type == "lexical_declaration"
+        return bool(node.type == "lexical_declaration")
 
     def _typed_local_from_declarator(
         self,

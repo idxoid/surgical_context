@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Annotated, Any
+from typing import Annotated, Any, cast
 
 from fastapi import APIRouter, HTTPException, Query, Request
 
@@ -87,7 +87,9 @@ def _safe_sandbox_path(
     if not requested_path:
         return None
     try:
-        return main._sandbox_path(requested_path, workspace_id=base_workspace_id, db=db)
+        return cast(
+            "str | None", main._sandbox_path(requested_path, workspace_id=base_workspace_id, db=db)
+        )
     except Exception:
         return None
 
