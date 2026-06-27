@@ -869,7 +869,9 @@ class AxisEngine:
         with self._lock:
             self._ensure_lance()
             if kind == "doc":
-                return cast("list[dict]", self._lance.search(query, limit, workspace_id=workspace_id))
+                return cast(
+                    "list[dict]", self._lance.search(query, limit, workspace_id=workspace_id)
+                )
 
             from context_engine.axis.role_retrieval import find_seeds_by_vector
             from context_engine.database.lancedb_client import DB_PATH
