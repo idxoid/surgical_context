@@ -32,9 +32,13 @@ def connect_neo4j_driver(
     aura_username = aura_username or os.getenv("NEO4JAURA_USERNAME")
     aura_password = aura_password or os.getenv("NEO4JAURA_PASSWORD")
     aura_instance_name = aura_instance_name or os.getenv("NEO4J_INSTANCENAME")
-    resolved_local_uri = local_uri if local_uri is not None else os.getenv("NEO4J_URI", "bolt://localhost:7687")
+    resolved_local_uri = (
+        local_uri if local_uri is not None else os.getenv("NEO4J_URI", "bolt://localhost:7687")
+    )
     resolved_local_user = local_user if local_user is not None else os.getenv("NEO4J_USER", "neo4j")
-    resolved_local_password = local_password if local_password is not None else os.getenv("NEO4J_PASSWORD", "")
+    resolved_local_password = (
+        local_password if local_password is not None else os.getenv("NEO4J_PASSWORD", "")
+    )
     local_only = _env_truthy("NEO4J_LOCAL_ONLY")
 
     if not local_only and aura_username and aura_password and aura_instance_name:
