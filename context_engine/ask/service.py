@@ -22,6 +22,7 @@ from context_engine.api.schemas import (
     AxisContextBundleResponse,
     AxisContextSymbolResponse,
     AxisIntentMatchResponse,
+    AxisStageWarningResponse,
     IntentRequest,
     IntentResponse,
 )
@@ -706,13 +707,20 @@ class AskService:
             )
             for bundle in result.bundles
         ]
+        stage_warnings_payload = [
+            AxisStageWarningResponse(**warning) for warning in result.stage_warnings
+        ]
 
         logger.info(
-            "trace_id=%s endpoint=/ask/axis status=ok roles=%d candidates=%d bundles=%d",
+            (
+                "trace_id=%s endpoint=/ask/axis status=ok roles=%d candidates=%d "
+                "bundles=%d stage_warnings=%d"
+            ),
             trace.trace_id,
             len(intent_payload),
             sum(len(v) for v in candidates_by_role.values()),
             len(bundles_payload),
+            len(stage_warnings_payload),
         )
         return AskAxisResponse(
             question=req.question,
@@ -721,4 +729,5 @@ class AskService:
             intent_matches=intent_payload,
             candidates_by_role=candidates_by_role,
             context_bundles=bundles_payload,
+            stage_warnings=stage_warnings_payload,
         )

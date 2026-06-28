@@ -114,6 +114,7 @@ class RequestTrace:
     stage_timings_ms: dict[str, float] = field(default_factory=dict)
     token_counts: dict[str, int] = field(default_factory=dict)
     model_route: dict[str, Any] = field(default_factory=dict)
+    stage_warnings: list[dict[str, Any]] = field(default_factory=list)
     estimated_cost_usd: float = 0.0
     cost_basis: str = "not_configured"
 
@@ -160,6 +161,25 @@ class RequestTrace:
     def total_latency_ms(self) -> float:
         return round(sum(self.stage_timings_ms.values()), 3)
 
+    def warn_stage(self, warning: dict[str, Any]) -> None:
+        payload = {
+            "stage": str(warning.get("stage") or ""),
+            "code": str(warning.get("code") or ""),
+            "severity": str(warning.get("severity") or "warning"),
+            "message": str(warning.get("message") or ""),
+            "error_type": str(warning.get("error_type") or ""),
+            "source": str(warning.get("source") or "axis"),
+            "details": dict(warning.get("details") or {}),
+        }
+        self.stage_warnings.append(payload)
+        _log_structured(
+            "context_engine.stage_warning",
+            trace_id=self.trace_id,
+            endpoint=self.endpoint,
+            workspace_id=self.workspace_id,
+            **payload,
+        )
+
     def latency_slo(self, target_ms: float | None = None) -> dict[str, Any]:
         target = target_ms if target_ms is not None else request_latency_slo_ms()
         latency = self.total_latency_ms
@@ -178,6 +198,7 @@ class RequestTrace:
             "context_pipeline_version": context_pipeline_version,
             "latency_slo": self.latency_slo(),
             "stage_timings_ms": dict(self.stage_timings_ms),
+            "stage_warnings": list(self.stage_warnings),
             "token_counts": dict(self.token_counts),
             "model_route": dict(self.model_route),
             "estimated_cost_usd": self.estimated_cost_usd,
@@ -257,6 +278,7 @@ class MetricsRegistry:
             total_latency_ms=trace.total_latency_ms,
             latency_slo=latency_slo,
             stage_timings_ms=dict(trace.stage_timings_ms),
+            stage_warnings=list(trace.stage_warnings),
             token_counts=dict(trace.token_counts),
             model_route=dict(trace.model_route),
             estimated_cost_usd=trace.estimated_cost_usd,

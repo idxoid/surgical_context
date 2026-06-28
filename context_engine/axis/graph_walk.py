@@ -38,6 +38,8 @@ from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from typing import Literal
 
+from context_engine.axis.stage_warnings import record_stage_warning
+
 # ---------------------------------------------------------------------------
 # Edge profiles — named relationship whitelists.
 # ---------------------------------------------------------------------------
@@ -322,7 +324,18 @@ def _run_walk_neighbours_cypher(
                 limit=limit,
             )
             return _neighbours_from_cypher_records(records)
-    except Exception:
+    except Exception as exc:
+        record_stage_warning(
+            "graph_walk",
+            "graph_walk_cypher_failed",
+            "Graph neighbour walk failed; returning an empty neighbour set.",
+            error=exc,
+            details={
+                "workspace_id": workspace_id,
+                "seed_count": len(seeds),
+                "limit": limit,
+            },
+        )
         return []
 
 
@@ -420,7 +433,18 @@ def _run_walk_neighbours_grouped_cypher(
                 limit_per_seed=limit_per_seed,
             )
             return _grouped_neighbours_from_cypher_records(records)
-    except Exception:
+    except Exception as exc:
+        record_stage_warning(
+            "graph_walk",
+            "graph_walk_grouped_cypher_failed",
+            "Grouped graph neighbour walk failed; returning empty per-seed neighbours.",
+            error=exc,
+            details={
+                "workspace_id": workspace_id,
+                "seed_count": len(seeds),
+                "limit_per_seed": limit_per_seed,
+            },
+        )
         return {}
 
 
@@ -465,18 +489,28 @@ def walk_neighbours(
 
     edge_types = tuple(edges)
     if graph_walk_inproc.should_use(workspace_id):
-        inproc_rows = graph_walk_inproc.walk_neighbours(
-            db,
-            workspace_id,
-            seed_uids,
-            edges=edge_types,
-            direction=direction,
-            max_hops=max_hops,
-            anchor=anchor,
-            exclude_tests=exclude_tests,
-            class_targets_only=class_targets_only,
-            limit=limit,
-        )
+        try:
+            inproc_rows = graph_walk_inproc.walk_neighbours(
+                db,
+                workspace_id,
+                seed_uids,
+                edges=edge_types,
+                direction=direction,
+                max_hops=max_hops,
+                anchor=anchor,
+                exclude_tests=exclude_tests,
+                class_targets_only=class_targets_only,
+                limit=limit,
+            )
+        except Exception as exc:
+            record_stage_warning(
+                "graph_walk",
+                "graph_walk_inproc_failed",
+                "In-process graph walk failed; falling back to Neo4j traversal.",
+                error=exc,
+                details={"workspace_id": workspace_id, "seed_count": len(seed_uids)},
+            )
+            inproc_rows = []
         if inproc_rows:
             return inproc_rows
         # A materialized partition can lag Neo4j after an incremental edge
@@ -535,9 +569,18 @@ def call_fan_in(
     if not targets:
         return {}
     if graph_walk_inproc.should_use(workspace_id):
-        return graph_walk_inproc.call_fan_in(
-            db, workspace_id, targets, edges=edges, exclude_tests=exclude_tests
-        )
+        try:
+            return graph_walk_inproc.call_fan_in(
+                db, workspace_id, targets, edges=edges, exclude_tests=exclude_tests
+            )
+        except Exception as exc:
+            record_stage_warning(
+                "graph_walk",
+                "graph_walk_inproc_fan_in_failed",
+                "In-process fan-in lookup failed; falling back to Neo4j.",
+                error=exc,
+                details={"workspace_id": workspace_id, "uid_count": len(targets)},
+            )
     rel = _safe_rel_pattern(edges)
     where = ["coalesce(r.workspace_id, $workspace_id) = $workspace_id"]
     if exclude_tests:
@@ -558,7 +601,14 @@ def call_fan_in(
                 uid = str(rec.get("uid") or "")
                 if uid:
                     out[uid] = int(rec.get("fanin") or 0)
-    except Exception:
+    except Exception as exc:
+        record_stage_warning(
+            "graph_walk",
+            "graph_walk_fan_in_cypher_failed",
+            "Fan-in lookup failed; returning empty fan-in counts.",
+            error=exc,
+            details={"workspace_id": workspace_id, "uid_count": len(targets)},
+        )
         return {}
     return out
 
@@ -591,15 +641,24 @@ def walk_neighbours_grouped(
     from context_engine.axis import graph_walk_inproc
 
     if graph_walk_inproc.should_use(workspace_id):
-        return graph_walk_inproc.walk_neighbours_grouped(
-            db,
-            workspace_id,
-            seed_uids,
-            edges=edges,
-            direction=direction,
-            max_hops=max_hops,
-            limit_per_seed=limit_per_seed,
-        )
+        try:
+            return graph_walk_inproc.walk_neighbours_grouped(
+                db,
+                workspace_id,
+                seed_uids,
+                edges=edges,
+                direction=direction,
+                max_hops=max_hops,
+                limit_per_seed=limit_per_seed,
+            )
+        except Exception as exc:
+            record_stage_warning(
+                "graph_walk",
+                "graph_walk_inproc_grouped_failed",
+                "In-process grouped graph walk failed; falling back to Neo4j traversal.",
+                error=exc,
+                details={"workspace_id": workspace_id, "seed_count": len(seed_uids)},
+            )
     seeds = [u for u in seed_uids if u]
     if not seeds:
         return {}

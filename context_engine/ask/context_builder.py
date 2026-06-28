@@ -326,6 +326,16 @@ class AskContextBuilder:
             ),
         }
         ctx.budget["intent_profile"] = profile.name
+        if result.stage_warnings:
+            ctx.budget["stage_warnings"] = list(result.stage_warnings)
+            ctx.budget["warnings"] = self.append_context_warning(
+                ctx.budget.get("warnings"),
+                {
+                    "code": "axis_stage_degraded",
+                    "severity": "warning",
+                    "message": "Axis retrieval degraded; see stage_warnings.",
+                },
+            )
         return ctx
 
     @staticmethod

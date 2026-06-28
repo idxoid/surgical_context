@@ -100,6 +100,33 @@ def test_context_from_axis_builds_prompt_context(monkeypatch):
     assert ctx.tier_tokens["cross_refs"] > 0
 
 
+def test_context_from_axis_carries_stage_warnings(monkeypatch):
+    result = _result([_bundle()])
+    result.stage_warnings = [
+        {
+            "stage": "graph_walk",
+            "code": "graph_walk_cypher_failed",
+            "severity": "warning",
+            "message": "Graph walk failed.",
+            "error_type": "RuntimeError",
+            "source": "axis",
+            "details": {"seed_count": 1},
+        }
+    ]
+    _patch_pipeline(monkeypatch, result)
+
+    ctx = context_engine_main._context_from_axis(
+        "how does routing work",
+        db=object(),
+        trace_id="t1",
+        **_axis_ids(),
+    )
+
+    assert ctx is not None
+    assert ctx.budget["stage_warnings"] == result.stage_warnings
+    assert ctx.budget["warnings"][0]["code"] == "axis_stage_degraded"
+
+
 def test_context_from_axis_returns_none_when_no_bundles(monkeypatch):
     # Empty pipeline -> adapter returns None -> provider falls through.
     _patch_pipeline(monkeypatch, _result([]))

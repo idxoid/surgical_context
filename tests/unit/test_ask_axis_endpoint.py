@@ -150,6 +150,7 @@ def test_ask_axis_returns_well_formed_payload(patch_axis_pipeline):
     assert resp.question == "how does routing work"
     assert resp.workspace_id == "test-workspace"
     assert resp.user == "test-user"
+    assert isinstance(resp.stage_warnings, list)
     assert len(resp.intent_matches) == 1
     assert resp.intent_matches[0].role == "routing_surface"
     assert list(resp.candidates_by_role) == ["routing_surface"]

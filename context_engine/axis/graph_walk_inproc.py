@@ -31,6 +31,7 @@ from dataclasses import dataclass, field
 from context_engine.axis.adjacency_bridges import load_external_maps
 from context_engine.axis.edge_json import decode_edge_uid_map
 from context_engine.axis.graph_walk import Direction, Neighbour
+from context_engine.axis.stage_warnings import record_stage_warning
 from context_engine.axis.test_file_filter import is_test_path
 
 
@@ -167,12 +168,26 @@ def _attach_external_maps(adj: _Adjacency, db, workspace_id: str) -> None:
         if loaded is not None:
             adj.sym_to_ext, adj.ext_to_sym = loaded
             return
-    except Exception:
+    except Exception as exc:
+        record_stage_warning(
+            "graph_walk_inproc",
+            "external_maps_lance_failed",
+            "Lance external bridge map load failed; falling back to Neo4j bridge maps.",
+            error=exc,
+            details={"workspace_id": workspace_id},
+        )
         pass
     try:
         with db.driver.session() as session:
             adj.sym_to_ext, adj.ext_to_sym = load_external_maps(session, workspace_id)
-    except Exception:
+    except Exception as exc:
+        record_stage_warning(
+            "graph_walk_inproc",
+            "external_maps_neo4j_failed",
+            "Neo4j external bridge map load failed; continuing without bridge maps.",
+            error=exc,
+            details={"workspace_id": workspace_id},
+        )
         pass
 
 
@@ -240,7 +255,14 @@ def _load_adjacency_from_neo4j(db, workspace_id: str) -> _Adjacency:
             _load_neo4j_symbol_meta(session, workspace_id, adj)
             _load_neo4j_symbol_edges(session, workspace_id, out_adj, in_adj)
             adj.sym_to_ext, adj.ext_to_sym = load_external_maps(session, workspace_id)
-    except Exception:
+    except Exception as exc:
+        record_stage_warning(
+            "graph_walk_inproc",
+            "adjacency_neo4j_failed",
+            "Neo4j adjacency load failed; in-process graph walks will use an empty snapshot.",
+            error=exc,
+            details={"workspace_id": workspace_id},
+        )
         pass
     adj.out = {u: dict(d) for u, d in out_adj.items()}
     adj.in_ = {u: dict(d) for u, d in in_adj.items()}
@@ -308,7 +330,14 @@ def _load_adjacency_from_lance(workspace_id: str, *, neo_db=None) -> _Adjacency 
                     for _, row in df.iterrows()
                     if row.get("workspace_id") == workspace_id
                 ]
-    except Exception:
+    except Exception as exc:
+        record_stage_warning(
+            "graph_walk_inproc",
+            "adjacency_lance_failed",
+            "Lance adjacency load failed; falling back to Neo4j adjacency.",
+            error=exc,
+            details={"workspace_id": workspace_id},
+        )
         return None
     if not rows:
         # Empty means "no materialization for this workspace"; let Neo4j answer.

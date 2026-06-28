@@ -18,6 +18,7 @@ from context_engine.axis import pipeline as axis_pipeline
 from context_engine.axis.context_builder import ContextBundle, ContextSymbol
 from context_engine.axis.intent_classifier import IntentMatch
 from context_engine.axis.role_retrieval import RoleCandidate, WorkspaceScan
+from context_engine.observability.metrics import RequestTrace
 
 
 def _cand(uid: str, path: str, *, score: float = 0.8) -> RoleCandidate:
@@ -134,6 +135,16 @@ def test_result_layers_are_populated(stub_stages):
     # No per-role cap -> the whole role pool feeds context.
     assert [c.uid for c in result.candidates_for_context] == ["a", "b", "c"]
     assert [b.seed.uid for b in result.bundles] == ["a", "b", "c"]
+
+
+def test_degraded_graph_walks_surface_stage_warnings(stub_stages):
+    trace = RequestTrace(trace_id="trace-axis", endpoint="/ask/axis", workspace_id="ws")
+
+    result = _run(trace=trace)
+
+    warning_codes = {warning["code"] for warning in result.stage_warnings}
+    assert "graph_walk_cypher_failed" in warning_codes
+    assert trace.stage_warnings == result.stage_warnings
 
 
 def test_with_context_false_skips_bundles(stub_stages):

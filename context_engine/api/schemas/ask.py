@@ -89,6 +89,16 @@ class AxisContextBundleResponse(BaseModel):
     related: list[AxisContextSymbolResponse]
 
 
+class AxisStageWarningResponse(BaseModel):
+    stage: str
+    code: str
+    severity: str = "warning"
+    message: str
+    error_type: str = ""
+    source: str = "axis"
+    details: dict[str, Any] = Field(default_factory=dict)
+
+
 class AskAxisResponse(BaseModel):
     """Axis-pipeline response. The endpoint does not call an LLM —
     callers can plug ``context_bundles`` into their own prompt.
@@ -100,6 +110,7 @@ class AskAxisResponse(BaseModel):
     intent_matches: list[AxisIntentMatchResponse]
     candidates_by_role: dict[str, list[AxisCandidateResponse]]
     context_bundles: list[AxisContextBundleResponse]
+    stage_warnings: list[AxisStageWarningResponse] = Field(default_factory=list)
 
 
 class IntentRequest(BaseModel):

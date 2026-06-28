@@ -59,6 +59,7 @@ from context_engine.axis.intent_classifier import IntentMatch
 from context_engine.axis.proximity import proximity_boost
 from context_engine.axis.retrieval_budget import ARCHITECTURE, budget_for_intent
 from context_engine.axis.role_retrieval import RoleCandidate
+from context_engine.axis.stage_warnings import collect_stage_warnings, stage_warning_dicts
 
 # Question-shape pseudo-roles: modes, not retrieval roles. They drive the
 # blast-radius / call-chain passes and are excluded from the pools that
@@ -98,6 +99,7 @@ class AxisRetrievalResult:
     candidates_for_context: list[RoleCandidate]
     bundles: list[ContextBundle] = field(default_factory=list)
     render_mode: str = "full"
+    stage_warnings: list[dict[str, Any]] = field(default_factory=list)
 
 
 # Synthetic anchor for a symbol that lives only in the editor overlay (typed
@@ -1026,7 +1028,43 @@ class AxisRetrievalConfig:
     intent_override: list[IntentMatch] | None = None
 
 
+def _attach_stage_warnings_to_trace(
+    trace: Any | None,
+    warnings: list[dict[str, Any]],
+) -> None:
+    if trace is None or not warnings:
+        return
+    warn_stage = getattr(trace, "warn_stage", None)
+    if not callable(warn_stage):
+        return
+    for warning in warnings:
+        warn_stage(warning)
+
+
 def run_axis_retrieval(
+    question: str,
+    *,
+    workspace_id: str,
+    db: Any,
+    lance: Any,
+    config: AxisRetrievalConfig | None = None,
+) -> AxisRetrievalResult:
+    cfg = config or AxisRetrievalConfig()
+    with collect_stage_warnings() as warning_bucket:
+        result = _run_axis_retrieval_impl(
+            question,
+            workspace_id=workspace_id,
+            db=db,
+            lance=lance,
+            config=cfg,
+        )
+    warnings = stage_warning_dicts(warning_bucket)
+    result.stage_warnings = warnings
+    _attach_stage_warnings_to_trace(cfg.trace, warnings)
+    return result
+
+
+def _run_axis_retrieval_impl(
     question: str,
     *,
     workspace_id: str,

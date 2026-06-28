@@ -11,7 +11,9 @@ from context_engine.axis.graph_walk import (
     call_fan_in,
     cap_by_file,
     walk_neighbours,
+    walk_neighbours_grouped,
 )
+from context_engine.axis.stage_warnings import collect_stage_warnings, stage_warning_dicts
 from tests.unit.axis_helpers import (
     AXIS_TEST_WORKSPACE,
     BAD_MAX_HOPS,
@@ -63,7 +65,36 @@ def test_walk_driver_error_returns_empty():
 
     db = FakeNeo4jDB()
     db.driver = Neo4jDriver(_BoomSession([]))
-    assert walk_neighbours(db, AXIS_TEST_WORKSPACE, ["u:s"], edges=EdgeProfile.AFFECTS) == []
+    with collect_stage_warnings() as warnings:
+        assert walk_neighbours(db, AXIS_TEST_WORKSPACE, ["u:s"], edges=EdgeProfile.AFFECTS) == []
+
+    payload = stage_warning_dicts(warnings)
+    assert payload[0]["code"] == "graph_walk_cypher_failed"
+    assert payload[0]["error_type"] == "RuntimeError"
+    assert payload[0]["details"]["seed_count"] == 1
+
+
+def test_grouped_walk_driver_error_returns_warning():
+    class _BoomSession(Neo4jSession):
+        def run(self, query, **params):
+            raise RuntimeError("boom")
+
+    db = FakeNeo4jDB()
+    db.driver = Neo4jDriver(_BoomSession([]))
+
+    with collect_stage_warnings() as warnings:
+        assert (
+            walk_neighbours_grouped(
+                db,
+                AXIS_TEST_WORKSPACE,
+                ["u:s"],
+                edges=EdgeProfile.AFFECTS,
+            )
+            == {}
+        )
+
+    payload = stage_warning_dicts(warnings)
+    assert payload[0]["code"] == "graph_walk_grouped_cypher_failed"
 
 
 def test_empty_inproc_walk_falls_back_to_neo4j(monkeypatch):
@@ -278,4 +309,8 @@ def test_call_fan_in_driver_error_returns_empty():
 
     db = FakeNeo4jDB()
     db.driver = Neo4jDriver(_BoomSession([]))
-    assert call_fan_in(db, AXIS_TEST_WORKSPACE, ["u:a"]) == {}
+    with collect_stage_warnings() as warnings:
+        assert call_fan_in(db, AXIS_TEST_WORKSPACE, ["u:a"]) == {}
+
+    payload = stage_warning_dicts(warnings)
+    assert payload[0]["code"] == "graph_walk_fan_in_cypher_failed"

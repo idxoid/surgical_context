@@ -39,10 +39,26 @@ def test_metrics_registry_record_trace_emits_request_summary(caplog):
     trace.stage_timings_ms = {"context": 1.25, "llm": 2.5}
     trace.token_counts = {"context": 42}
     trace.model_route = {"provider": "ollama", "model": "llama3"}
+    trace.warn_stage(
+        {
+            "stage": "graph_walk",
+            "code": "graph_walk_cypher_failed",
+            "message": "Graph walk failed.",
+            "error_type": "RuntimeError",
+            "details": {"seed_count": 1},
+        }
+    )
 
     registry.record_trace(trace, status="ok")
 
     events = _json_messages(caplog.records)
+    warning_event = next(
+        event for event in events if event["event"] == "context_engine.stage_warning"
+    )
+    assert warning_event["trace_id"] == "trace-2"
+    assert warning_event["code"] == "graph_walk_cypher_failed"
+    assert warning_event["details"] == {"seed_count": 1}
+
     request_event = next(event for event in events if event["event"] == "context_engine.request")
     assert request_event["trace_id"] == "trace-2"
     assert request_event["status"] == "ok"
@@ -50,6 +66,7 @@ def test_metrics_registry_record_trace_emits_request_summary(caplog):
     assert request_event["latency_slo"]["status"] == "met"
     assert request_event["latency_slo"]["target_ms"] == pytest.approx(200.0)
     assert request_event["stage_timings_ms"] == {"context": 1.25, "llm": 2.5}
+    assert request_event["stage_warnings"][0]["code"] == "graph_walk_cypher_failed"
     assert request_event["token_counts"] == {"context": 42}
     assert request_event["model_route"]["provider"] == "ollama"
 
