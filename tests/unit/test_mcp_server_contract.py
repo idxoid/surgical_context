@@ -72,9 +72,7 @@ class _PathDb:
     def get_symbol_uid_by_name(self, name: str, _workspace_id: str) -> str:
         return f"uid-{name}"
 
-    def get_symbol_uid_by_name_in_file(
-        self, name: str, _path: str, _workspace_id: str
-    ) -> str:
+    def get_symbol_uid_by_name_in_file(self, name: str, _path: str, _workspace_id: str) -> str:
         return f"uid-{name}"
 
     def result_for(self, _cypher: str, _params: dict[str, Any]) -> _Result:

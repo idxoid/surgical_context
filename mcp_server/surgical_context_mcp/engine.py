@@ -1027,7 +1027,9 @@ class AxisEngine:
                     path=path,
                     suffix=suffix,
                 ).data()
-                candidate_files = [str(r.get("file_path") or "") for r in matches if r.get("file_path")]
+                candidate_files = [
+                    str(r.get("file_path") or "") for r in matches if r.get("file_path")
+                ]
                 if not candidate_files:
                     return FileOutline(
                         requested_path=file_path,
