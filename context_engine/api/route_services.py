@@ -204,9 +204,7 @@ class RouteServices:
     # ------------------------------------------------------------------ #
     # Ask service delegates
     # ------------------------------------------------------------------ #
-    def _index_manifest_fields(
-        self, db: Any, workspace_id: str
-    ) -> tuple[str | None, int | None]:
+    def _index_manifest_fields(self, db: Any, workspace_id: str) -> tuple[str | None, int | None]:
         return self.ask_service.index_manifest_fields(db, workspace_id)
 
     def _attach_index_manifest(self, ctx: PromptContext, db: Any, workspace_id: str) -> None:
@@ -311,9 +309,7 @@ class RouteServices:
     def _index_file_now(self, file_path: str, base_workspace_id: str, user_id: str) -> int:
         return self.indexing_service.index_file_now(file_path, base_workspace_id, user_id)
 
-    def _enqueue_index_file(
-        self, file_path: str, workspace_id: str, user_id: str
-    ) -> EnqueueResult:
+    def _enqueue_index_file(self, file_path: str, workspace_id: str, user_id: str) -> EnqueueResult:
         self.indexing_service.attach_queue(self.index_queue)
         return self.indexing_service.enqueue_index_file(file_path, workspace_id, user_id)
 
@@ -331,9 +327,7 @@ class RouteServices:
     def _process_index_batch(self, items: list[IndexWorkItem]) -> None:
         self.indexing_service.process_index_batch(items)
 
-    def _track_git_delta_target(
-        self, workspace_id: str, project_path: str, user_id: str
-    ) -> None:
+    def _track_git_delta_target(self, workspace_id: str, project_path: str, user_id: str) -> None:
         self.indexing_service.track_git_delta_target(workspace_id, project_path, user_id)
 
     def _apply_git_head_delta_for_workspace(
