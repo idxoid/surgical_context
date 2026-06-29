@@ -113,10 +113,12 @@ def patch_axis_pipeline(monkeypatch):
         def __exit__(self, *a):
             return False
 
-    monkeypatch.setattr(context_engine_main, "db_session", lambda **_: _NoopCtx())
-    monkeypatch.setattr(context_engine_main, "_resolve_request_user", lambda *a, **k: "test-user")
+    monkeypatch.setattr(context_engine_main.route_services, "db_session", lambda **_: _NoopCtx())
     monkeypatch.setattr(
-        context_engine_main,
+        context_engine_main.route_services, "_resolve_request_user", lambda *a, **k: "test-user"
+    )
+    monkeypatch.setattr(
+        context_engine_main.route_services,
         "_resolve_workspace",
         lambda *a, **k: "test-workspace",
     )

@@ -13,7 +13,7 @@ from context_engine.api.routes.deps import (
     TraceIdHeader,
     UserIdHeader,
     WorkspaceHeader,
-    require_main,
+    require_services,
 )
 from context_engine.api.schemas import (
     AskAxisRequest,
@@ -39,7 +39,7 @@ def ask(
     request: Request = None,
 ):
     """Ask about a symbol (with multi-user audit logging)."""
-    main = require_main(request)
+    main = require_services(request)
     user_id = main._resolve_request_user(x_user_id, authorization)
     workspace_id = main._resolve_workspace(x_workspace, authorization)
     trace = main._start_trace("/ask", x_trace_id, workspace_id)
@@ -74,7 +74,7 @@ def ask_axis(
     request: Request = None,
 ):
     """Axis-pipeline answer: intent → roles → ranked candidates → context."""
-    main = require_main(request)
+    main = require_services(request)
     user_id = main._resolve_request_user(x_user_id, authorization)
     base_workspace_id = main._resolve_workspace(x_workspace, authorization)
     trace = main._start_trace("/ask/axis", x_trace_id, base_workspace_id)
@@ -115,7 +115,7 @@ def intent(
     Embedding cosine of the question against role descriptions — no graph, no
     retrieval. The cheap path for an editor "intent" panel.
     """
-    main = require_main(request)
+    main = require_services(request)
     main._resolve_request_user(x_user_id, authorization)
     base_workspace_id = main._resolve_workspace(x_workspace, authorization)
     trace = main._start_trace("/intent", x_trace_id, base_workspace_id)
@@ -146,7 +146,7 @@ def ask_stream(
     request: Request = None,
 ):
     """Streaming version of /ask endpoint (SSE)."""
-    main = require_main(request)
+    main = require_services(request)
     user_id = main._resolve_request_user(x_user_id, authorization)
     workspace_id = main._resolve_workspace(x_workspace, authorization)
     trace = main._start_trace("/ask/stream", x_trace_id, workspace_id)

@@ -6,10 +6,10 @@ import asyncio
 import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from typing import Any
 
 from fastapi import FastAPI
 
+from context_engine.api.route_services import RouteServices
 from context_engine.api.routes import (
     ask,
     auth,
@@ -30,10 +30,12 @@ from context_engine.database.provider import close_database_provider
 logger = logging.getLogger(__name__)
 
 
-def create_app(state: SidecarState, *, main_module: Any) -> FastAPI:
-    main_deps = MainRouteDeps(main=main_module, state=state)
+def create_app(state: SidecarState, services: RouteServices | None = None) -> FastAPI:
+    if services is None:
+        services = RouteServices(state)
+    main_deps = MainRouteDeps(services=services, state=state)
     indexing_deps = IndexingRouteDeps(
-        main=main_module,
+        services=services,
         state=state,
         indexing=state.indexing_service,
     )

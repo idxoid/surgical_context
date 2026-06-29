@@ -35,9 +35,9 @@ router = APIRouter(tags=["indexing"])
 
 @dataclass(frozen=True)
 class IndexingRouteDeps:
-    """Late-bound bridge to ``context_engine.main`` for test monkeypatching."""
+    """Per-app service bundle for the indexing routes (resolved from ``Request``)."""
 
-    main: Any
+    services: Any
     state: SidecarState
     indexing: IndexingService
 
@@ -70,7 +70,7 @@ def index(
     request: Request = None,
 ):
     deps = _require_deps(request)
-    main = deps.main
+    main = deps.services
     user_id = main._resolve_request_user(x_user_id, authorization)
     workspace = main._resolve_workspace_context(x_workspace, authorization)
     workspace_id = workspace.id
@@ -140,7 +140,7 @@ def index_file_endpoint(
     request: Request = None,
 ):
     deps = _require_deps(request)
-    main = deps.main
+    main = deps.services
     user_id = main._resolve_request_user(x_user_id, authorization)
     workspace_id = main._resolve_workspace(x_workspace, authorization)
     with main.db_session(user_id=user_id) as db:
@@ -202,7 +202,7 @@ def index_files_endpoint(
     request: Request = None,
 ):
     deps = _require_deps(request)
-    main = deps.main
+    main = deps.services
     user_id = main._resolve_request_user(x_user_id, authorization)
     workspace_id = main._resolve_workspace(x_workspace, authorization)
     queue_snapshot = main.index_queue.snapshot()["pending"]
@@ -311,7 +311,7 @@ def index_git_delta_endpoint(
     from context_engine.workspace_paths import registered_workspace_root
 
     deps = _require_deps(request)
-    main = deps.main
+    main = deps.services
     user_id = main._resolve_request_user(x_user_id, authorization)
     workspace = main._resolve_workspace_context(x_workspace, authorization)
     workspace_id = workspace.id
@@ -346,7 +346,7 @@ def index_git_delta_status(
     request: Request = None,
 ):
     deps = _require_deps(request)
-    deps.main._resolve_request_user(x_user_id, authorization)
+    deps.services._resolve_request_user(x_user_id, authorization)
     return {"status": "ok", "poller": deps.state.git_delta_poller.snapshot()}
 
 
@@ -357,8 +357,8 @@ def index_queue_status(
     request: Request = None,
 ):
     deps = _require_deps(request)
-    deps.main._resolve_request_user(x_user_id, authorization)
-    return {"status": "ok", "queue": deps.main.index_queue.snapshot()}
+    deps.services._resolve_request_user(x_user_id, authorization)
+    return {"status": "ok", "queue": deps.services.index_queue.snapshot()}
 
 
 @router.get("/index/stats", response_model=IndexStatsResponse)
@@ -370,7 +370,7 @@ def index_stats(
 ):
     """Return live catalog counts for the dashboard's active workspace."""
     deps = _require_deps(request)
-    main = deps.main
+    main = deps.services
     user_id = main._resolve_request_user(x_user_id, authorization)
     base_workspace_id = main._resolve_workspace(x_workspace, authorization)
     index_workspace_id = main.effective_index_workspace_id(base_workspace_id)
@@ -403,7 +403,7 @@ def index_manifest_endpoint(
 ):
     """Return the latest index manifest stored on the Workspace node (Neo4j)."""
     deps = _require_deps(request)
-    main = deps.main
+    main = deps.services
     user_id = main._resolve_request_user(x_user_id, authorization)
     base_workspace_id = main._resolve_workspace(x_workspace, authorization)
     index_workspace_id = main.effective_index_workspace_id(base_workspace_id)
@@ -433,7 +433,7 @@ def index_docs_endpoint(
     request: Request = None,
 ):
     deps = _require_deps(request)
-    main = deps.main
+    main = deps.services
     user_id = main._resolve_request_user(x_user_id, authorization)
     base_workspace_id = main._resolve_workspace(x_workspace, authorization)
     index_workspace_id = main.effective_index_workspace_id(base_workspace_id)

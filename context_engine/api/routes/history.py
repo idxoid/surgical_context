@@ -10,7 +10,7 @@ from context_engine.api.routes.deps import (
     AuthHeader,
     UserIdHeader,
     WorkspaceHeader,
-    require_main,
+    require_services,
 )
 from context_engine.api.schemas import (
     HistoryAskRecordRequest,
@@ -142,7 +142,7 @@ def record_history_ask(
     request: Request = None,
 ):
     """Persist a sanitized ask/request snapshot for local dialog history."""
-    main = require_main(request)
+    main = require_services(request)
     user_id = main._resolve_request_user(x_user_id, authorization)
     workspace_id = main._resolve_workspace(x_workspace, authorization)
     if not main._history_enabled():
@@ -230,7 +230,7 @@ def history_conversations(
     request: Request = None,
 ):
     """List local history conversations for the current workspace and user."""
-    main = require_main(request)
+    main = require_services(request)
     user_id = main._resolve_request_user(x_user_id, authorization)
     workspace_id = main._resolve_workspace(x_workspace, authorization)
     if not main._history_enabled():
@@ -259,7 +259,7 @@ def history_conversation(
     request: Request = None,
 ):
     """Return a sanitized conversation bundle with messages and snapshots."""
-    main = require_main(request)
+    main = require_services(request)
     user_id = main._resolve_request_user(x_user_id, authorization)
     workspace_id = main._resolve_workspace(x_workspace, authorization)
     main._history_conversation_for_scope(
@@ -287,7 +287,7 @@ def history_request_bundle(
     request: Request = None,
 ):
     """Return the snapshots for a selected request in a conversation."""
-    main = require_main(request)
+    main = require_services(request)
     user_id = main._resolve_request_user(x_user_id, authorization)
     workspace_id = main._resolve_workspace(x_workspace, authorization)
     main._history_conversation_for_scope(

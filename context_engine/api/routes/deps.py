@@ -23,7 +23,7 @@ TraceIdHeader = Annotated[str | None, Header()]
 
 @dataclass(frozen=True)
 class MainRouteDeps:
-    main: Any
+    services: Any
     state: SidecarState
 
 
@@ -46,8 +46,8 @@ def route_deps(request: Request | None = None) -> MainRouteDeps:
     return _default_deps
 
 
-def require_main(request: Request | None = None) -> Any:
-    return route_deps(request).main
+def require_services(request: Request | None = None) -> Any:
+    return route_deps(request).services
 
 
 def require_state(request: Request | None = None) -> SidecarState:

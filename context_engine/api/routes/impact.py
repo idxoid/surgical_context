@@ -10,7 +10,7 @@ from context_engine.api.routes.deps import (
     AuthHeader,
     UserIdHeader,
     WorkspaceHeader,
-    require_main,
+    require_services,
 )
 from context_engine.api.schemas import IMPACT_DEPTH_MAX, IMPACT_DEPTH_MIN, ImpactResponse
 
@@ -201,7 +201,7 @@ def impact(
     from context_engine.axis.impact_surface import MAX_IMPACT_SURFACE_DEPTH
     from context_engine.axis.overlay_impact import build_overlay_impact_callers
 
-    main = require_main(request)
+    main = require_services(request)
     user_id = main._resolve_request_user(x_user_id, authorization)
     base_workspace_id = main._resolve_workspace(x_workspace, authorization)
     requested_path = _normalize_requested_path(file_path)

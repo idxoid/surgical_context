@@ -12,7 +12,7 @@ from context_engine.api.routes.deps import (
     TraceIdHeader,
     UserIdHeader,
     WorkspaceHeader,
-    require_main,
+    require_services,
 )
 from context_engine.api.schemas import (
     SearchRequest,
@@ -91,7 +91,7 @@ def _axis_graph_neighbors(
     the search)."""
     from context_engine.axis.graph_walk import EdgeProfile, walk_neighbours
 
-    main = require_main(request)
+    main = require_services(request)
     try:
         with main.db_session(user_id=user_id) as db:
             with db.driver.session() as session:
@@ -142,7 +142,7 @@ def search(
     x_workspace: WorkspaceHeader = None,
     request: Request = None,
 ):
-    main = require_main(request)
+    main = require_services(request)
     main._resolve_request_user(x_user_id, authorization)
     index_workspace_id = main._resolve_index_workspace(x_workspace, authorization)
     return {
@@ -160,7 +160,7 @@ def unified_search(
     request: Request = None,
 ):
     """Blend doc vectors, symbol vectors, and optional graph neighbors into one ranked list."""
-    main = require_main(request)
+    main = require_services(request)
     user_id = main._resolve_request_user(x_user_id, authorization)
     base_workspace_id = main._resolve_workspace(x_workspace, authorization)
     index_workspace_id = main.effective_index_workspace_id(base_workspace_id)

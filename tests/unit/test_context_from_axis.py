@@ -76,7 +76,7 @@ def _axis_ids(base: str = "ws") -> dict[str, str]:
 def test_context_from_axis_builds_prompt_context(monkeypatch):
     _patch_pipeline(monkeypatch, _result([_bundle()]))
 
-    ctx = context_engine_main._context_from_axis(
+    ctx = context_engine_main.route_services._context_from_axis(
         "how does routing work",
         db=object(),
         trace_id="t1",
@@ -115,7 +115,7 @@ def test_context_from_axis_carries_stage_warnings(monkeypatch):
     ]
     _patch_pipeline(monkeypatch, result)
 
-    ctx = context_engine_main._context_from_axis(
+    ctx = context_engine_main.route_services._context_from_axis(
         "how does routing work",
         db=object(),
         trace_id="t1",
@@ -131,7 +131,7 @@ def test_context_from_axis_returns_none_when_no_bundles(monkeypatch):
     # Empty pipeline -> adapter returns None -> provider falls through.
     _patch_pipeline(monkeypatch, _result([]))
 
-    ctx = context_engine_main._context_from_axis(
+    ctx = context_engine_main.route_services._context_from_axis(
         "how does routing work",
         db=object(),
         **_axis_ids(),
@@ -144,7 +144,7 @@ def test_context_from_axis_empty_intent_passes_blank(monkeypatch):
     result.intent = []  # no classified intent
     _patch_pipeline(monkeypatch, result)
 
-    ctx = context_engine_main._context_from_axis(
+    ctx = context_engine_main.route_services._context_from_axis(
         "q",
         db=object(),
         **_axis_ids(),
@@ -166,7 +166,7 @@ def test_context_from_axis_queries_index_workspace(monkeypatch):
     monkeypatch.setattr(_pipeline_mod, "run_axis_retrieval", fake_run)
     monkeypatch.setattr(_lance_mod, "LanceDBClient", lambda **_: object())
 
-    context_engine_main._context_from_axis(
+    context_engine_main.route_services._context_from_axis(
         "q",
         base_workspace_id="local/repo@main",
         index_workspace_id="local/repo@main+axis_python_v1",

@@ -8,7 +8,7 @@ from context_engine.api.routes.deps import (
     AuthHeader,
     UserIdHeader,
     WorkspaceHeader,
-    require_main,
+    require_services,
 )
 from context_engine.api.schemas import ClearOverlayResponse, OverlayRequest, OverlayResponse
 
@@ -23,7 +23,7 @@ def update_overlay(
     x_workspace: WorkspaceHeader = None,
     request: Request = None,
 ):
-    main = require_main(request)
+    main = require_services(request)
     user_id = main._resolve_request_user(x_user_id, authorization)
     workspace_id = main._resolve_workspace(x_workspace, authorization)
     with main.db_session(user_id=user_id) as db:
@@ -47,7 +47,7 @@ def clear_overlay(
     x_workspace: WorkspaceHeader = None,
     request: Request = None,
 ):
-    main = require_main(request)
+    main = require_services(request)
     user_id = main._resolve_request_user(x_user_id, authorization)
     workspace_id = main._resolve_workspace(x_workspace, authorization)
     with main.db_session(user_id=user_id) as db:

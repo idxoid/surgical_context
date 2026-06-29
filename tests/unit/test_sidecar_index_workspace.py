@@ -13,11 +13,14 @@ def axis_profile(monkeypatch):
 
 def test_resolve_index_workspace_applies_profile_suffix(monkeypatch):
     monkeypatch.setattr(
-        context_engine_main,
+        context_engine_main.route_services,
         "_resolve_workspace",
         lambda *a, **k: "local/repo@main",
     )
-    assert context_engine_main._resolve_index_workspace() == "local/repo@main+axis_python_v1"
+    assert (
+        context_engine_main.route_services._resolve_index_workspace()
+        == "local/repo@main+axis_python_v1"
+    )
 
 
 def test_resolve_ask_context_passes_suffixed_workspace_to_axis(monkeypatch):
@@ -42,9 +45,9 @@ def test_resolve_ask_context_passes_suffixed_workspace_to_axis(monkeypatch):
         return sentinel
 
     monkeypatch.setenv("ASK_AXIS_FIRST", "1")
-    monkeypatch.setattr(context_engine_main, "_context_from_axis", fake_axis)
+    monkeypatch.setattr(context_engine_main.route_services, "_context_from_axis", fake_axis)
 
-    context_engine_main._resolve_ask_context(
+    context_engine_main.route_services._resolve_ask_context(
         req=context_engine_main.AskRequest(question="how does routing work"),
         user_id="u",
         workspace_id="local/repo@main",

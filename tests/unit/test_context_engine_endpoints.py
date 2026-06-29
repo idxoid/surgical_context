@@ -199,8 +199,8 @@ def import_main_with_fakes(monkeypatch):
     ):
         return FakeCtx()
 
-    monkeypatch.setattr(main, "_context_from_axis", fake_context_from_axis)
-    monkeypatch.setattr(main, "db_session", fake_db_session)
+    monkeypatch.setattr(main.route_services, "_context_from_axis", fake_context_from_axis)
+    monkeypatch.setattr(main.route_services, "db_session", fake_db_session)
 
     class FakeIndexQueue:
         def __init__(self):
@@ -233,7 +233,7 @@ def import_main_with_fakes(monkeypatch):
                 "last_error": "",
             }
 
-    monkeypatch.setattr(main, "index_queue", FakeIndexQueue())
+    monkeypatch.setattr(main.route_services, "index_queue", FakeIndexQueue())
     return main
 
 
@@ -439,7 +439,7 @@ def test_history_ask_endpoint_persists_selected_request_and_sanitized_snapshots(
 
 def test_history_ask_endpoint_is_quiet_when_history_disabled(monkeypatch):
     main = import_main_with_fakes(monkeypatch)
-    monkeypatch.setattr(main, "history_provider", DisabledHistoryProvider())
+    monkeypatch.setattr(main.route_services, "history_provider", DisabledHistoryProvider())
 
     body = main.record_history_ask(
         main.HistoryAskRecordRequest(
@@ -557,7 +557,7 @@ def test_ask_stream_emits_trace_event_on_l3_cache_hit(monkeypatch):
 
 def test_ask_endpoint_falls_back_when_symbol_is_missing(monkeypatch):
     main = import_main_with_fakes(monkeypatch)
-    monkeypatch.setattr(main, "_context_from_axis", lambda *a, **k: None)
+    monkeypatch.setattr(main.route_services, "_context_from_axis", lambda *a, **k: None)
 
     body = main.ask(main.AskRequest(symbol="missing", question="Where?"))
 
@@ -585,7 +585,7 @@ def test_ask_endpoint_falls_back_when_symbol_is_missing(monkeypatch):
 def test_ask_endpoint_uses_file_fallback_before_workspace(monkeypatch, tmp_path):
     monkeypatch.setenv("TEST_WORKSPACE_ROOT", str(tmp_path))
     main = import_main_with_fakes(monkeypatch)
-    monkeypatch.setattr(main, "_context_from_axis", lambda *a, **k: None)
+    monkeypatch.setattr(main.route_services, "_context_from_axis", lambda *a, **k: None)
     source_file = tmp_path / "checkout.py"
     source_file.write_text("def checkout():\n    return 'ok'\n", encoding="utf-8")
 
@@ -607,7 +607,7 @@ def test_ask_endpoint_uses_file_fallback_before_workspace(monkeypatch, tmp_path)
 
 def test_ask_endpoint_falls_back_to_direct_llm_when_no_context(monkeypatch):
     main = import_main_with_fakes(monkeypatch)
-    monkeypatch.setattr(main, "_context_from_axis", lambda *a, **k: None)
+    monkeypatch.setattr(main.route_services, "_context_from_axis", lambda *a, **k: None)
 
     class EmptyVectorDb:
         def search(self, query, limit=5):
@@ -630,7 +630,7 @@ def test_ask_endpoint_falls_back_to_direct_llm_when_no_context(monkeypatch):
 
 def test_auth_required_rejects_missing_bearer_token(monkeypatch):
     main = import_main_with_fakes(monkeypatch)
-    monkeypatch.setattr(main, "AUTH_REQUIRED", True)
+    monkeypatch.setattr(main.route_services, "AUTH_REQUIRED", True)
 
     with pytest.raises(HTTPException) as exc_info:
         main.ask(main.AskRequest(symbol="process_payment", question="How does this work?"))
@@ -685,7 +685,7 @@ def test_unified_search_includes_axis_graph_neighbors(monkeypatch):
     # The real graph walk needs a live graph; here we mock the axis adapter to
     # assert the wiring (include_graph + symbol -> adapter -> graph:neighbor rows).
     monkeypatch.setattr(
-        main,
+        main.route_services,
         "_axis_graph_neighbors",
         lambda **kw: [
             {
@@ -710,7 +710,7 @@ def test_unified_search_includes_axis_graph_neighbors(monkeypatch):
 
 def test_auth_required_accepts_valid_bearer_token(monkeypatch):
     main = import_main_with_fakes(monkeypatch)
-    monkeypatch.setattr(main, "AUTH_REQUIRED", True)
+    monkeypatch.setattr(main.route_services, "AUTH_REQUIRED", True)
     token = main.user_auth.generate_token("Alice", workspace_id="local/surgical_context@main")
 
     body = main.ask(
@@ -783,9 +783,9 @@ def test_queued_index_registers_root_before_overlay_and_index_file(monkeypatch, 
     def manifest_db_session(user_id="anonymous"):
         yield manifest_db
 
-    monkeypatch.setattr(main, "db_session", manifest_db_session)
+    monkeypatch.setattr(main.route_services, "db_session", manifest_db_session)
     monkeypatch.setattr(
-        main,
+        main.route_services,
         "_enqueue_index_files",
         lambda files, workspace_id, user_id: [
             main.EnqueueResult(
@@ -892,7 +892,7 @@ def test_process_index_batch_skips_unsupported_extensions(monkeypatch, tmp_path)
     metric_calls = []
 
     monkeypatch.setattr(
-        main.default_metrics,
+        main.route_services.default_metrics,
         "increment",
         lambda name, value=1, labels=None: metric_calls.append((name, value, labels)),
     )
@@ -901,7 +901,7 @@ def test_process_index_batch_skips_unsupported_extensions(monkeypatch, tmp_path)
         _raise_index_file_should_not_run,
     )
 
-    main._process_index_batch(
+    main.route_services._process_index_batch(
         [
             main.IndexWorkItem(
                 file_path=str(skipped_file),
@@ -934,7 +934,7 @@ def test_process_index_batch_runs_axis_finalize_after_batch(monkeypatch, tmp_pat
         lambda file_path, **kwargs: True,
     )
     monkeypatch.setattr(
-        main, "vector_db", types.SimpleNamespace(index_profile_name="axis_python_v1")
+        main.route_services, "vector_db", types.SimpleNamespace(index_profile_name="axis_python_v1")
     )
     monkeypatch.setattr(
         "context_engine.indexer.code.hash_file",
@@ -973,7 +973,7 @@ def test_process_index_batch_runs_axis_finalize_after_batch(monkeypatch, tmp_pat
 
     monkeypatch.setattr(main.indexing_service, "db_session", batch_db_session)
 
-    main._process_index_batch(
+    main.route_services._process_index_batch(
         [
             main.IndexWorkItem(
                 file_path=str(source_file),
@@ -999,7 +999,7 @@ def test_ask_rejects_file_path_outside_workspace_root(monkeypatch, tmp_path):
     main = import_main_with_fakes(monkeypatch)
 
     with pytest.raises(HTTPException) as exc_info:
-        main._resolve_ask_context(
+        main.route_services._resolve_ask_context(
             req=main.AskRequest(question="q", file_path=str(outside), token_budget=1000),
             user_id="alice",
             workspace_id="local/surgical_context@main",
@@ -1069,7 +1069,7 @@ def test_impact_endpoint_returns_affected_symbols(monkeypatch):
         }
 
     monkeypatch.setattr(impact_surface, "build_impact_surface", fake_build_impact_surface)
-    monkeypatch.setattr(main, "db_session", impact_db_session)
+    monkeypatch.setattr(main.route_services, "db_session", impact_db_session)
 
     body = main.impact(
         symbol="process_payment",
@@ -1109,7 +1109,7 @@ def test_cloud_status_uses_request_user_for_db_session(monkeypatch):
         seen_session_users.append(user_id)
         yield FakeCloudDb()
 
-    monkeypatch.setattr(main, "db_session", cloud_db_session)
+    monkeypatch.setattr(main.route_services, "db_session", cloud_db_session)
 
     body = main.cloud_status(authorization=bearer_auth(main, "alice"))
 
@@ -1132,7 +1132,7 @@ def test_cloud_status_returns_degraded_payload_when_graph_unavailable(monkeypatc
 
         raise AuthError("The client is unauthorized due to authentication failure.")
 
-    monkeypatch.setattr(main, "db_session", failing_db_session)
+    monkeypatch.setattr(main.route_services, "db_session", failing_db_session)
 
     body = main.cloud_status(authorization=bearer_auth(main, "alice"))
 
@@ -1153,7 +1153,7 @@ def test_audit_actions_endpoint_returns_actions(monkeypatch):
             seen["limit"] = limit
             return [{"user_id": user_id or "alice", "action": "query"}]
 
-    monkeypatch.setattr(main, "audit_log", FakeAuditLog())
+    monkeypatch.setattr(main.route_services, "audit_log", FakeAuditLog())
 
     body = main.audit_actions(limit=1, authorization=bearer_auth(main, "alice"))
 
@@ -1192,7 +1192,7 @@ def test_auth_token_endpoint_returns_token(monkeypatch):
 
 def test_auth_token_requires_bearer_when_auth_required(monkeypatch):
     main = import_main_with_fakes(monkeypatch)
-    monkeypatch.setattr(main, "AUTH_REQUIRED", True)
+    monkeypatch.setattr(main.route_services, "AUTH_REQUIRED", True)
 
     with pytest.raises(HTTPException) as exc_info:
         main.auth_token(user_id="Alice")
@@ -1202,7 +1202,7 @@ def test_auth_token_requires_bearer_when_auth_required(monkeypatch):
 
 def test_auth_token_allows_self_refresh_when_auth_required(monkeypatch):
     main = import_main_with_fakes(monkeypatch)
-    monkeypatch.setattr(main, "AUTH_REQUIRED", True)
+    monkeypatch.setattr(main.route_services, "AUTH_REQUIRED", True)
     token = main.user_auth.generate_token("Alice", workspace_id="local/surgical_context@main")
 
     body = main.auth_token(user_id="Alice", authorization=f"Bearer {token}")
@@ -1213,7 +1213,7 @@ def test_auth_token_allows_self_refresh_when_auth_required(monkeypatch):
 
 def test_auth_token_rejects_cross_user_mint_when_auth_required(monkeypatch):
     main = import_main_with_fakes(monkeypatch)
-    monkeypatch.setattr(main, "AUTH_REQUIRED", True)
+    monkeypatch.setattr(main.route_services, "AUTH_REQUIRED", True)
     token = main.user_auth.generate_token("Alice", workspace_id="local/surgical_context@main")
 
     with pytest.raises(HTTPException) as exc_info:
@@ -1225,7 +1225,7 @@ def test_auth_token_rejects_cross_user_mint_when_auth_required(monkeypatch):
 def test_resolve_request_user_ignores_x_user_id_by_default(monkeypatch):
     main = import_main_with_fakes(monkeypatch)
 
-    user_id = main._resolve_request_user(x_user_id="Alice")
+    user_id = main.route_services._resolve_request_user(x_user_id="Alice")
 
     assert user_id == "anonymous"
 
@@ -1234,7 +1234,7 @@ def test_resolve_request_user_honors_bearer_over_x_user_id(monkeypatch):
     main = import_main_with_fakes(monkeypatch)
     token = main.user_auth.generate_token("carol", workspace_id="local/surgical_context@main")
 
-    user_id = main._resolve_request_user(
+    user_id = main.route_services._resolve_request_user(
         x_user_id="Alice",
         authorization=f"Bearer {token}",
     )
@@ -1245,7 +1245,7 @@ def test_resolve_request_user_honors_bearer_over_x_user_id(monkeypatch):
 def test_resolve_workspace_ignores_spoofed_header_without_token(monkeypatch):
     main = import_main_with_fakes(monkeypatch)
 
-    workspace_id = main._resolve_workspace(x_workspace="local/evil@main")
+    workspace_id = main.route_services._resolve_workspace(x_workspace="local/evil@main")
 
     assert workspace_id == main.DEFAULT_WORKSPACE_ID
 
@@ -1255,7 +1255,7 @@ def test_resolve_workspace_rejects_header_token_mismatch(monkeypatch):
     token = main.user_auth.generate_token("alice", workspace_id="local/surgical_context@main")
 
     with pytest.raises(HTTPException) as exc_info:
-        main._resolve_workspace(
+        main.route_services._resolve_workspace(
             x_workspace="local/evil@main",
             authorization=f"Bearer {token}",
         )
@@ -1296,7 +1296,7 @@ def test_index_rejects_workspace_root_hijack(monkeypatch, tmp_path):
     def manifest_db_session(user_id="anonymous"):
         yield manifest_db
 
-    monkeypatch.setattr(main, "db_session", manifest_db_session)
+    monkeypatch.setattr(main.route_services, "db_session", manifest_db_session)
 
     with pytest.raises(HTTPException) as exc_info:
         main.index(
@@ -1328,7 +1328,7 @@ def test_index_rejects_repo_name_mismatch(monkeypatch, tmp_path):
     def fail_context(*args, **kwargs):
         raise RuntimeError("neo4j://secret-host:7687 connection refused")
 
-    monkeypatch.setattr(main, "_resolve_ask_context", fail_context)
+    monkeypatch.setattr(main.route_services, "_resolve_ask_context", fail_context)
 
     response = main.ask_stream(
         main.AskRequest(symbol="process_payment", question="Fail early"),
@@ -1353,7 +1353,7 @@ def test_index_file_endpoint_redacts_internal_error(monkeypatch, tmp_path):
     def fail_now(*args, **kwargs):
         raise RuntimeError("neo4j://secret-host:7687 write failed")
 
-    monkeypatch.setattr(main, "_index_file_now", fail_now)
+    monkeypatch.setattr(main.route_services, "_index_file_now", fail_now)
 
     with pytest.raises(HTTPException) as exc_info:
         main.index_file_endpoint(main.IndexFileRequest(file_path=str(source_file), queue=False))
@@ -1372,7 +1372,7 @@ def test_index_files_endpoint_redacts_sync_failure(monkeypatch, tmp_path):
     def fail_now(*args, **kwargs):
         raise RuntimeError("lancedb path /secret/data failed")
 
-    monkeypatch.setattr(main, "_index_file_now", fail_now)
+    monkeypatch.setattr(main.route_services, "_index_file_now", fail_now)
 
     body = main.index_files_endpoint(
         main.IndexFilesRequest(file_paths=[str(source_file)], queue=False)

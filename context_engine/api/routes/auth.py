@@ -6,7 +6,12 @@ import logging
 
 from fastapi import APIRouter, HTTPException, Request
 
-from context_engine.api.routes.deps import AuthHeader, UserIdHeader, WorkspaceHeader, require_main
+from context_engine.api.routes.deps import (
+    AuthHeader,
+    UserIdHeader,
+    WorkspaceHeader,
+    require_services,
+)
 from context_engine.api.schemas import (
     AuditActionsResponse,
     AuthTokenResponse,
@@ -42,7 +47,7 @@ def auth_token(
     token for themselves. X-User-Id is never trusted for identity; workspace
     scope is taken from X-Workspace (or DEFAULT_WORKSPACE_ID).
     """
-    main = require_main(request)
+    main = require_services(request)
     workspace_id = main._header_value(x_workspace) or DEFAULT_WORKSPACE_ID
     try:
         main.workspace_resolver.from_header(workspace_id)
@@ -74,7 +79,7 @@ def list_users(
     authorization: AuthHeader = None,
 ):
     """List all active users (requires a valid bearer token)."""
-    main = require_main(request)
+    main = require_services(request)
     main._resolve_request_user(x_user_id, authorization, require_auth=True)
     return {"users": main.user_auth.list_users()}
 
@@ -86,7 +91,7 @@ def cloud_status(
     authorization: AuthHeader = None,
 ):
     """Get cloud (Aura) connection status."""
-    main = require_main(request)
+    main = require_services(request)
     user_id = main._resolve_request_user(x_user_id, authorization)
     try:
         with main.db_session(user_id=user_id) as db:
@@ -129,7 +134,7 @@ def audit_actions(
     request: Request = None,
 ):
     """Get recent audit log entries."""
-    main = require_main(request)
+    main = require_services(request)
     requester = main._resolve_request_user(x_user_id, authorization)
     requested_user = main._canonical_user_id(user_id)
     if requested_user and requested_user != requester:

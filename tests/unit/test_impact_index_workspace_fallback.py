@@ -58,7 +58,7 @@ def test_impact_falls_back_to_axis_namespace_without_index_profile_env(monkeypat
             del workspace_id, db
             return raw_path
 
-    monkeypatch.setattr(impact_routes, "require_main", lambda _request=None: FakeMain())
+    monkeypatch.setattr(impact_routes, "require_services", lambda _request=None: FakeMain())
     monkeypatch.setattr(
         "context_engine.axis.impact_surface.build_impact_surface",
         lambda **kwargs: {
@@ -130,7 +130,7 @@ def test_impact_local_file_anchor_avoids_404_for_unindexed_symbol(monkeypatch, t
             del workspace_id, db
             return str(source)
 
-    monkeypatch.setattr(impact_routes, "require_main", lambda _request=None: FakeMain())
+    monkeypatch.setattr(impact_routes, "require_services", lambda _request=None: FakeMain())
     monkeypatch.setattr(
         "context_engine.axis.overlay_impact.build_overlay_impact_callers",
         lambda *_a, **_k: [],
@@ -192,7 +192,7 @@ def test_impact_still_404_when_symbol_missing_everywhere(monkeypatch):
             del workspace_id, db
             return raw_path
 
-    monkeypatch.setattr(impact_routes, "require_main", lambda _request=None: FakeMain())
+    monkeypatch.setattr(impact_routes, "require_services", lambda _request=None: FakeMain())
 
     with pytest.raises(HTTPException) as exc_info:
         impact_routes.impact(
