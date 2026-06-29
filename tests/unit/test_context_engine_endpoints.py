@@ -616,7 +616,7 @@ def test_ask_endpoint_falls_back_to_direct_llm_when_no_context(monkeypatch):
         def search_symbols(self, query, limit=5, threshold=1.0):
             return []
 
-    monkeypatch.setattr(main, "vector_db", EmptyVectorDb())
+    monkeypatch.setattr(main.ask_context_builder, "vector_db", EmptyVectorDb())
 
     body = main.ask(main.AskRequest(symbol="missing", question="Where?"))
 
@@ -745,7 +745,9 @@ def test_index_file_endpoint_tracks_job(monkeypatch, tmp_path):
 
     fake_extractor.SymbolExtractor = FakeSymbolExtractor
     monkeypatch.setitem(sys.modules, "context_engine.parser.extractor", fake_extractor)
-    monkeypatch.setattr(main, "IndexJobLog", lambda: IndexJobLog(f"{tmp_path}/jobs.sqlite3"))
+    monkeypatch.setattr(
+        main.indexing_service, "job_log_factory", lambda: IndexJobLog(f"{tmp_path}/jobs.sqlite3")
+    )
 
     body = main.index_file_endpoint(main.IndexFileRequest(file_path=str(source_file), queue=False))
 
@@ -827,7 +829,9 @@ def test_queued_index_registers_root_before_overlay_and_index_file(monkeypatch, 
 
     fake_extractor.SymbolExtractor = FakeSymbolExtractor
     monkeypatch.setitem(sys.modules, "context_engine.parser.extractor", fake_extractor)
-    monkeypatch.setattr(main, "IndexJobLog", lambda: IndexJobLog(f"{tmp_path}/jobs.sqlite3"))
+    monkeypatch.setattr(
+        main.indexing_service, "job_log_factory", lambda: IndexJobLog(f"{tmp_path}/jobs.sqlite3")
+    )
 
     file_body = main.index_file_endpoint(
         main.IndexFileRequest(file_path=str(source_file), queue=False)
@@ -967,7 +971,7 @@ def test_process_index_batch_runs_axis_finalize_after_batch(monkeypatch, tmp_pat
     def batch_db_session(user_id="anonymous"):
         yield HashDb()
 
-    monkeypatch.setattr(main, "db_session", batch_db_session)
+    monkeypatch.setattr(main.indexing_service, "db_session", batch_db_session)
 
     main._process_index_batch(
         [

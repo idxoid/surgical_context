@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import os
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -113,6 +114,7 @@ def _process_index_batch_group(
     metrics: MetricsRegistry,
     overlay: InMemoryOverlay,
     vector_db: LanceDBClient,
+    db_session: Callable[..., Any] = db_session,
 ) -> None:
     from context_engine.indexer.code import hash_file, index_file
 
@@ -204,12 +206,18 @@ class IndexingService:
         config: SidecarConfig,
         git_delta_registry: GitDeltaRegistry,
         metrics: MetricsRegistry | None = None,
+        db_session: Callable[..., Any] = db_session,
+        job_log_factory: Callable[[], IndexJobLog] = IndexJobLog,
     ):
         self.overlay = overlay
         self.vector_db = vector_db
         self.config = config
         self.git_delta_registry = git_delta_registry
         self.metrics = metrics if metrics is not None else default_metrics
+        # Injectable so tests can supply fake sessions / job logs without
+        # monkeypatching this module's globals from the entrypoint.
+        self.db_session = db_session
+        self.job_log_factory = job_log_factory
         self._index_queue: IndexBatchQueue | None = None
 
     def attach_queue(self, index_queue: IndexBatchQueue) -> None:
@@ -231,10 +239,10 @@ class IndexingService:
             return 0
 
         index_workspace_id = effective_index_workspace_id(base_workspace_id)
-        job_log = IndexJobLog()
+        job_log = self.job_log_factory()
         file_hash = hash_file(file_path)
         with job_log.track_file_job(file_path, file_hash=file_hash) as tracked_job_id:
-            with db_session(user_id=user_id) as db:
+            with self.db_session(user_id=user_id) as db:
                 extractor = SymbolExtractor()
                 if hasattr(extractor, "project_root"):
                     extractor.project_root = os.path.dirname(file_path)
@@ -303,7 +311,7 @@ class IndexingService:
         for item in items:
             grouped[(item.user_id, item.workspace_id)].append(item)
 
-        job_log = IndexJobLog()
+        job_log = self.job_log_factory()
         extractor = SymbolExtractor()
         for (user_id, base_workspace_id), group in grouped.items():
             _process_index_batch_group(
@@ -316,6 +324,7 @@ class IndexingService:
                 metrics=self.metrics,
                 overlay=self.overlay,
                 vector_db=self.vector_db,
+                db_session=self.db_session,
             )
 
     def track_git_delta_target(
@@ -364,7 +373,7 @@ class IndexingService:
         )
 
     def poll_git_delta_target(self, target: GitDeltaTarget) -> dict[str, Any] | None:
-        with db_session(user_id=target.user_id) as db:
+        with self.db_session(user_id=target.user_id) as db:
             return self.apply_git_head_delta_for_workspace(
                 workspace_id=target.workspace_id,
                 user_id=target.user_id,

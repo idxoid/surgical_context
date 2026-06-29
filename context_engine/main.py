@@ -1,20 +1,12 @@
-"""FastAPI context_engine — install stderr filtering before LanceDB / SentenceTransformer import."""
+"""FastAPI context_engine entrypoint."""
 
-import sys
-from pathlib import Path
+import context_engine.bootstrap as _bootstrap
 
-if __package__ is None:
-    sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-
-from context_engine.env_loader import load_repo_dotenv
-
-load_repo_dotenv()
-
-from context_engine.silence import install as _install_stderr_filter
-
-_install_stderr_filter()
+_bootstrap.apply(caller_file=__file__)
 
 import logging
+import sys
+from pathlib import Path
 from typing import Any, cast
 
 from fastapi import HTTPException
@@ -54,14 +46,13 @@ from context_engine.api.workspace_security import (
 )
 from context_engine.cache.layered import default_cache  # noqa: F401 — route bridge
 from context_engine.context_types import PromptContext
-from context_engine.database.session import db_session
+from context_engine.database.session import db_session  # noqa: F401 — route bridge
 from context_engine.index_profile import effective_index_workspace_id
 from context_engine.indexer.git_delta_poller import GitDeltaTarget
-from context_engine.indexer.job_log import IndexJobLog
 from context_engine.indexer.queue import EnqueueResult, IndexWorkItem
 from context_engine.observability import (
     RequestTrace,
-    default_metrics,
+    default_metrics,  # noqa: F401 — route bridge
     estimate_text_tokens,  # noqa: F401 — route bridge
     new_trace_id,
 )
@@ -116,13 +107,10 @@ ask_service = state.ask_service
 
 
 def _context_from_file(**kwargs):
-    ask_context_builder.vector_db = vector_db
-    ask_context_builder.overlay = overlay
     return ask_context_builder.context_from_file(**kwargs)
 
 
 def _context_from_workspace(*args, **kwargs):
-    ask_context_builder.vector_db = vector_db
     return ask_context_builder.context_from_workspace(*args, **kwargs)
 
 
@@ -131,7 +119,6 @@ def _context_from_direct(*args, **kwargs):
 
 
 def _context_from_axis(*args, **kwargs):
-    ask_context_builder.overlay = overlay
     return ask_context_builder.context_from_axis(*args, **kwargs)
 
 
@@ -256,15 +243,6 @@ def _history_snapshot(
 
 
 def _index_file_now(file_path: str, base_workspace_id: str, user_id: str) -> int:
-    import context_engine.indexer.service as index_service_mod
-
-    index_service_mod.db_session = db_session
-    # Deliberate late-bound injection of main's (test-patchable) IndexJobLog.
-    # It is a class, so the assignment trips mypy's "Cannot assign to a type"
-    # (silenced); ruff B010 rules out the setattr alternative.
-    index_service_mod.IndexJobLog = IndexJobLog  # type: ignore[misc]
-    indexing_service.vector_db = vector_db
-    indexing_service.overlay = overlay
     return indexing_service.index_file_now(file_path, base_workspace_id, user_id)
 
 
@@ -286,12 +264,6 @@ def _summarize_enqueue_results(results: list[EnqueueResult]) -> dict[str, int]:
 
 
 def _process_index_batch(items: list[IndexWorkItem]) -> None:
-    import context_engine.indexer.service as index_service_mod
-
-    index_service_mod.db_session = db_session
-    indexing_service.vector_db = vector_db
-    indexing_service.overlay = overlay
-    indexing_service.metrics = default_metrics
     indexing_service.process_index_batch(items)
 
 

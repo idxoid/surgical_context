@@ -45,10 +45,6 @@ def ask(
     trace = main._start_trace("/ask", x_trace_id, workspace_id)
     status = "ok"
     try:
-        main.ask_service.ai_engine = main.ai_engine
-        main.ask_service.audit_log = main.audit_log
-        main.ask_service.feedback_store = main.feedback_store
-        main.ask_service.default_cache = main.default_cache
         with main.db_session(user_id=user_id) as db:
             return main.ask_service.ask(
                 req,
@@ -84,7 +80,6 @@ def ask_axis(
     trace = main._start_trace("/ask/axis", x_trace_id, base_workspace_id)
     status = "ok"
     try:
-        main.ask_service.overlay = main.overlay
         with main.db_session(user_id=user_id) as db:
             return main.ask_service.ask_axis(
                 req,
@@ -157,10 +152,6 @@ def ask_stream(
     trace = main._start_trace("/ask/stream", x_trace_id, workspace_id)
 
     def response_generator() -> Generator[str, None, None]:
-        main.ask_service.ai_engine = main.ai_engine
-        main.ask_service.audit_log = main.audit_log
-        main.ask_service.feedback_store = main.feedback_store
-        main.ask_service.default_cache = main.default_cache
         with main.db_session(user_id=user_id) as db:
             yield from main.ask_service.ask_stream(
                 req,
