@@ -80,9 +80,9 @@ def index(
     with main.db_session(user_id=user_id) as db:
         main._authorize_workspace_project_root(project_root, workspace=workspace, db=db)
         if req.queue:
-            from context_engine.indexer.code import _collect_files
+            from context_engine.indexer.fast.collector import collect_files
 
-            files = _collect_files(str(project_root))
+            files = collect_files(str(project_root))
             safe_files = [
                 main._sandbox_path(
                     file_path,
@@ -109,10 +109,11 @@ def index(
                 status = "partial_queued"
             return {"status": status, "path": str(project_root), **summary}
 
-        from context_engine.indexer.code import _collect_files, run_indexing
+        from context_engine.indexer.code import run_indexing
+        from context_engine.indexer.fast.collector import collect_files
         from context_engine.retrieval.manifest import register_workspace_project_root
 
-        files = _collect_files(str(project_root))
+        files = collect_files(str(project_root))
         register_workspace_project_root(
             db=db,
             workspace_id=workspace_id,

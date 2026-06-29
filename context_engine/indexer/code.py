@@ -30,47 +30,6 @@ def is_indexable_file(file_path: str) -> bool:
     return ext.lower() in _INDEXED_EXTENSIONS
 
 
-def _load_gitignore(root: str):
-    """Return a pathspec matcher for the nearest .gitignore, or None."""
-    import pathspec
-
-    gitignore = os.path.join(root, ".gitignore")
-    if not os.path.exists(gitignore):
-        gitignore = os.path.join(ROOT, ".gitignore")
-    if not os.path.exists(gitignore):
-        return None
-    with open(gitignore) as f:
-        return pathspec.PathSpec.from_lines("gitwildmatch", f)
-
-
-def _filter_walk_dirs(dirs: list[str], spec, rel_root: str) -> None:
-    if spec:
-        dirs[:] = [d for d in dirs if not spec.match_file(os.path.join(rel_root, d))]
-
-
-def _should_collect_file(name: str, full: str, spec) -> bool:
-    if name.startswith(".") or not is_indexable_file(name):
-        return False
-    if spec and spec.match_file(os.path.relpath(full, ROOT)):
-        return False
-    return True
-
-
-def _collect_files(project_path: str) -> list[str]:
-    spec = _load_gitignore(project_path)
-    files = []
-    for root, dirs, filenames in os.walk(project_path):
-        rel_root = os.path.relpath(root, ROOT)
-        _filter_walk_dirs(dirs, spec, rel_root)
-        for name in filenames:
-            full = os.path.join(root, name)
-            if _should_collect_file(name, full, spec):
-                files.append(full)
-    from context_engine.indexer.git_committed import filter_indexable_paths
-
-    return filter_indexable_paths(files, project_path)
-
-
 def hash_file(file_path: str) -> str:
     with open(file_path, "rb") as f:
         return hashlib.sha256(f.read()).hexdigest()
