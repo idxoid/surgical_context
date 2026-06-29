@@ -1999,6 +1999,15 @@ def _run_fast_changed_files_pipeline(
     stats["timings_sec"]["property_api"] = round(time.perf_counter() - t_stage, 3)
     degree_seeds |= property_api_uids
 
+    # Clear stale per-file derived edges BEFORE the create-only phases below
+    # (parity with index_file's delete-then-link). The proxy phase must come
+    # after this clear: ``_clear_derived_edges_for_diffs`` DETACH-DELETEs
+    # proxy_binding nodes, so running it after _proxy_binding_phase would wipe
+    # the bindings it just created and leave the final graph without them.
+    t_stage = time.perf_counter()
+    _clear_derived_edges_for_diffs(diffs, db, workspace_id, reporter)
+    stats["timings_sec"]["clear_derived_edges"] = round(time.perf_counter() - t_stage, 3)
+
     t_stage = time.perf_counter()
     proxy_uids = _proxy_binding_phase(diffs, db, workspace_id, reporter, project_path)
     stats["proxy_bindings"] = len(proxy_uids)
@@ -2008,10 +2017,6 @@ def _run_fast_changed_files_pipeline(
     )
     stats["timings_sec"]["proxy"] = round(time.perf_counter() - t_stage, 3)
     degree_seeds |= proxy_uids
-
-    t_stage = time.perf_counter()
-    _clear_derived_edges_for_diffs(diffs, db, workspace_id, reporter)
-    stats["timings_sec"]["clear_derived_edges"] = round(time.perf_counter() - t_stage, 3)
 
     t_stage = time.perf_counter()
     stats["attr_accesses_linked"] = _attr_access_phase(
