@@ -567,7 +567,10 @@ class AskService:
                 prepared,
                 user_id=user_id,
                 workspace_id=workspace_id,
-                manifest_workspace_id=workspace_id,
+                # Manifest lives under the physical (profile-suffixed) namespace;
+                # use the effective id so non-LEGACY profiles read the right
+                # manifest, matching /ask (see ask()).
+                manifest_workspace_id=effective_index_workspace_id(workspace_id),
                 trace=trace,
                 db=db,
                 answer="".join(answer_parts),

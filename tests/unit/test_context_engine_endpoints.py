@@ -534,6 +534,43 @@ def test_ask_stream_degrades_when_llm_unreachable(monkeypatch):
     assert not any(name == "error" for name, _ in events)
 
 
+def test_ask_stream_reads_manifest_under_effective_workspace(monkeypatch):
+    """Regression: /ask/stream must look up the index manifest under the
+    profile-suffixed (physical) workspace id, like /ask — not the base id.
+    Under a non-LEGACY profile the manifest lives only under the effective id,
+    so the base-id lookup used to emit an empty manifest in the SSE context."""
+    from context_engine.index_profile import AXIS_PYTHON_V1_PROFILE, INDEX_PROFILE_ENV
+
+    monkeypatch.setenv(INDEX_PROFILE_ENV, AXIS_PYTHON_V1_PROFILE)
+    main = import_main_with_fakes(monkeypatch)
+
+    base_ws = "local/surgical_context@main"
+    effective_ws = main.route_services.effective_index_workspace_id(base_ws)
+    assert effective_ws != base_ws  # profile suffix is active
+
+    class ManifestDb(FakeDb):
+        def get_index_manifest(self, workspace_id=None):
+            # Manifest is persisted only under the physical (suffixed) namespace.
+            if workspace_id == effective_ws:
+                return {"manifest_id": "mani-axis-1", "manifest_schema_version": 5}
+            return None
+
+    @contextmanager
+    def manifest_db_session(user_id="anonymous"):
+        yield ManifestDb()
+
+    monkeypatch.setattr(main.route_services, "db_session", manifest_db_session)
+
+    response = main.ask_stream(main.AskRequest(symbol="process_payment", question="Stream it"))
+    body = asyncio.run(_read_streaming_response(response)).decode("utf-8")
+    events = _parse_sse_events(body)
+
+    context_events = [payload for name, payload in events if name == "context"]
+    assert len(context_events) == 1
+    assert context_events[0]["index_manifest_id"] == "mani-axis-1"
+    assert context_events[0]["index_manifest_schema_version"] == 5
+
+
 def test_ask_stream_emits_trace_event_on_l3_cache_hit(monkeypatch):
     main = import_main_with_fakes(monkeypatch)
 
