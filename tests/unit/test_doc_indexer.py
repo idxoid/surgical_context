@@ -1,6 +1,18 @@
 from context_engine.indexer import docs as docs_indexer
 
 
+def _provider_returning(client):
+    """Fake DatabaseProvider whose client_for() yields the given neo4j stub —
+    index_docs now mints its client from the shared provider, not a raw
+    Neo4jClient."""
+
+    class _Prov:
+        def client_for(self, user_id="anonymous"):
+            return client
+
+    return _Prov()
+
+
 def test_index_docs_returns_file_and_chunk_counts(tmp_path, monkeypatch):
     docs_dir = tmp_path / "docs"
     docs_dir.mkdir()
@@ -21,7 +33,9 @@ def test_index_docs_returns_file_and_chunk_counts(tmp_path, monkeypatch):
             closed.append("neo4j")
 
     monkeypatch.setattr(docs_indexer, "LanceDBClient", lambda **_: FakeLance())
-    monkeypatch.setattr(docs_indexer, "Neo4jClient", lambda *args, **kwargs: FakeNeo4j())
+    monkeypatch.setattr(
+        docs_indexer, "get_database_provider", lambda: _provider_returning(FakeNeo4j())
+    )
     monkeypatch.setattr(
         docs_indexer,
         "link_docs_to_symbols",
@@ -72,7 +86,9 @@ def test_index_docs_falls_back_to_per_file_upsert_when_bulk_missing(tmp_path, mo
             return None
 
     monkeypatch.setattr(docs_indexer, "LanceDBClient", lambda **_: FakeLance())
-    monkeypatch.setattr(docs_indexer, "Neo4jClient", lambda *args, **kwargs: FakeNeo4j())
+    monkeypatch.setattr(
+        docs_indexer, "get_database_provider", lambda: _provider_returning(FakeNeo4j())
+    )
     monkeypatch.setattr(docs_indexer, "link_docs_to_symbols", lambda *args, **kwargs: None)
 
     docs_indexer.index_docs(str(docs_dir), workspace_id="acme/repo@main", index_profile="legacy")
@@ -107,7 +123,9 @@ def test_index_docs_threads_one_profile_into_client_and_workspace(tmp_path, monk
             return None
 
     monkeypatch.setattr(docs_indexer, "LanceDBClient", fake_client)
-    monkeypatch.setattr(docs_indexer, "Neo4jClient", lambda *a, **k: FakeNeo4j())
+    monkeypatch.setattr(
+        docs_indexer, "get_database_provider", lambda: _provider_returning(FakeNeo4j())
+    )
     monkeypatch.setattr(docs_indexer, "link_docs_to_symbols", lambda *a, **k: None)
 
     docs_indexer.index_docs(

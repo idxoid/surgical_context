@@ -520,7 +520,7 @@ def index_file(
     return changed_uids
 
 
-def run_indexing(project_path: str, workspace_id: str | None = None):
+def run_indexing(project_path: str, workspace_id: str | None = None, *, user_id: str = "anonymous"):
     """Whole-project index pass.
 
     Delegates to ``context_engine.indexer.fast.run_fast_indexing``: parallel hash +
@@ -534,7 +534,7 @@ def run_indexing(project_path: str, workspace_id: str | None = None):
     """
     from context_engine.indexer.fast import run_fast_indexing
 
-    return run_fast_indexing(project_path, workspace_id=workspace_id)
+    return run_fast_indexing(project_path, workspace_id=workspace_id, user_id=user_id)
 
 
 if __name__ == "__main__":

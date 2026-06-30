@@ -120,7 +120,7 @@ def index(
             project_path=str(project_root),
             file_count=len(files),
         )
-        run_indexing(str(project_root), workspace_id=workspace_id)
+        run_indexing(str(project_root), workspace_id=workspace_id, user_id=user_id)
     return {"status": "indexed", "path": str(project_root)}
 
 
@@ -446,5 +446,6 @@ def index_docs_endpoint(
 
     # index_docs resolves the active profile once and derives both the physical
     # workspace namespace and its Lance tables from it — pass the base id.
-    index_docs(safe_docs_path, workspace_id=base_workspace_id)
+    # user_id flows through to the shared-driver audit context.
+    index_docs(safe_docs_path, workspace_id=base_workspace_id, user_id=user_id)
     return {"status": "indexed", "path": safe_docs_path}

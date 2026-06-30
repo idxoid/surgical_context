@@ -5,8 +5,7 @@ import time
 from typing import Any
 
 from context_engine.database.lancedb_client import LanceDBClient
-from context_engine.database.neo4j_client import Neo4jClient
-from context_engine.database.neo4j_env import NEO4J_PASSWORD, NEO4J_URI, NEO4J_USER
+from context_engine.database.provider import get_database_provider
 from context_engine.index_profile import (
     IndexProfile,
     active_index_profile,
@@ -58,6 +57,7 @@ def index_docs(
     workspace_id: str | None = None,
     *,
     index_profile: str | IndexProfile | None = None,
+    user_id: str = "anonymous",
 ) -> dict[str, Any]:
     # Resolve the profile once and derive BOTH the physical workspace namespace
     # and the LanceDBClient's tables from it. Threading the suffix via the
@@ -75,7 +75,11 @@ def index_docs(
     )
     resolved_docs_path = str(resolve_cli_directory(docs_path))
     lance = LanceDBClient(index_profile=profile)
-    neo4j = Neo4jClient(NEO4J_URI, NEO4J_USER, NEO4J_PASSWORD)
+    # Mint a request-scoped view over the process-wide Neo4j driver (audit-
+    # tagged by user_id) instead of opening a second raw driver — same shared
+    # driver the request path and run_fast_indexing use. close() is a no-op on
+    # this view, so the shared driver outlives the call.
+    neo4j = get_database_provider().client_for(user_id)
 
     md_files = sorted(glob.glob(os.path.join(resolved_docs_path, "**/*.md"), recursive=True))
     if not md_files:
@@ -162,8 +166,12 @@ def index_docs(
 if __name__ == "__main__":
     import sys
 
+    from context_engine.database.provider import close_database_provider
+
     raw_docs_path = sys.argv[1] if len(sys.argv) > 1 else "./docs"
     try:
         index_docs(raw_docs_path)
     except (FileNotFoundError, WorkspaceRootNotAllowedError) as exc:
         raise SystemExit(str(exc)) from exc
+    finally:
+        close_database_provider()

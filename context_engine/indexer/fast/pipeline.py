@@ -41,7 +41,12 @@ sys.path.append(
 
 from context_engine.database.lancedb_client import LanceDBClient
 from context_engine.database.neo4j_client import Neo4jClient
-from context_engine.database.neo4j_env import NEO4J_PASSWORD, NEO4J_URI, NEO4J_USER
+from context_engine.database.neo4j_env import (  # noqa: F401 — re-exported for QA scripts & fast/__main__
+    NEO4J_PASSWORD,
+    NEO4J_URI,
+    NEO4J_USER,
+)
+from context_engine.database.provider import get_database_provider
 from context_engine.index_profile import (
     AXIS_PYTHON_V1_PROFILE,
     active_index_profile,
@@ -2214,6 +2219,7 @@ def run_fast_indexing(
     parse_workers: int | None = None,
     skip_affects: bool = False,
     reporter: ProgressReporter | None = None,
+    user_id: str = "anonymous",
 ) -> dict:
     """Drop-in alternative to ``context_engine.indexer.code.run_indexing``.
 
@@ -2227,7 +2233,9 @@ def run_fast_indexing(
     profile = resolve_index_profile(index_profile) if index_profile else active_index_profile()
     base_workspace_id = workspace_id or WorkspaceResolver().from_project_path(project_path).id
     workspace_id = effective_index_workspace_id(base_workspace_id, profile=profile)
-    db = Neo4jClient(NEO4J_URI, NEO4J_USER, NEO4J_PASSWORD)
+    # Request-scoped view over the process-wide driver (audit-tagged), not a
+    # second raw driver. The finally's db.close() is a no-op on this view.
+    db = get_database_provider().client_for(user_id)
     lance = LanceDBClient(index_profile=profile)
     job_log = IndexJobLog()
 
