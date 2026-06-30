@@ -282,7 +282,7 @@
             "axis_python_v1",
             "legacy"
           ],
-          "description": "Sidecar INDEX_PROFILE for graph/Lance namespaces (axis_python_v1 appends +axis_python_v1 to workspace id)"
+          "description": "Documentation mirror of the sidecar's INDEX_PROFILE (graph/Lance namespaces; axis_python_v1 appends +axis_python_v1 to the workspace id). The client does NOT send this — set INDEX_PROFILE in the context_engine .env to the same value, then restart the sidecar and reindex."
         },
         "surgicalContext.overlaySync": {
           "type": "boolean",
