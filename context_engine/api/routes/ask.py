@@ -54,7 +54,10 @@ def ask(
                 db=db,
                 resolve_ask_context=main._resolve_ask_context,
             )
-    except HTTPException:
+    except HTTPException as exc:
+        # 4xx (sandbox/auth/not-found) and 5xx HTTPExceptions are re-raised
+        # unchanged, but must not be recorded as "ok" by the finally below.
+        status = "client_error" if exc.status_code < 500 else "error"
         raise
     except Exception:
         status = "error"
@@ -88,7 +91,10 @@ def ask_axis(
                 trace=trace,
                 db=db,
             )
-    except HTTPException:
+    except HTTPException as exc:
+        # 4xx (sandbox/auth/not-found) and 5xx HTTPExceptions are re-raised
+        # unchanged, but must not be recorded as "ok" by the finally below.
+        status = "client_error" if exc.status_code < 500 else "error"
         raise
     except Exception:
         status = "error"
@@ -126,7 +132,10 @@ def intent(
             base_workspace_id=base_workspace_id,
             trace=trace,
         )
-    except HTTPException:
+    except HTTPException as exc:
+        # 4xx (sandbox/auth/not-found) and 5xx HTTPExceptions are re-raised
+        # unchanged, but must not be recorded as "ok" by the finally below.
+        status = "client_error" if exc.status_code < 500 else "error"
         raise
     except Exception:
         status = "error"

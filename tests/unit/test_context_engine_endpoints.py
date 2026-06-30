@@ -1381,6 +1381,30 @@ def test_index_rejects_repo_name_mismatch(monkeypatch, tmp_path):
     assert error_events[0]["trace_id"] == "trace-stream-error"
 
 
+def test_ask_records_http_exception_as_client_error(monkeypatch):
+    """Regression: a 4xx raised inside /ask (sandbox/auth/not-found) must be
+    recorded as client_error, not the default 'ok' from before the try."""
+    main = import_main_with_fakes(monkeypatch)
+
+    def boom(*args, **kwargs):
+        raise HTTPException(status_code=404, detail="symbol not found")
+
+    monkeypatch.setattr(main.route_services, "_resolve_ask_context", boom)
+
+    recorded: list[str] = []
+    monkeypatch.setattr(
+        main.route_services.default_metrics,
+        "record_trace",
+        lambda trace, status: recorded.append(status),
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        main.ask(main.AskRequest(symbol="missing", question="Where?"))
+
+    assert exc_info.value.status_code == 404
+    assert recorded == ["client_error"]
+
+
 def test_index_file_endpoint_redacts_internal_error(monkeypatch, tmp_path):
     monkeypatch.setenv("TEST_WORKSPACE_ROOT", str(tmp_path))
     main = import_main_with_fakes(monkeypatch)
