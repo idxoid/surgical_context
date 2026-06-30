@@ -194,6 +194,22 @@ PYTHONPATH=..:. ../.venv/bin/python -c \
    print(r.intent); print(r.files); print(r.text[:800])"
 ```
 
+## Type-checking
+
+Run mypy **from the repo root** so it picks up the shared `[tool.mypy]` config
+(`pyproject.toml`) — which adds `mcp_server` as a package base via `mypy_path`
+so `surgical_context_mcp` resolves, and treats `context_engine` as a typed
+package (it ships a `py.typed` marker):
+
+```bash
+# from the repo root, in the repo venv — this is what CI runs:
+PYTHONPATH=. mypy context_engine/ mcp_server/surgical_context_mcp tests/
+```
+
+The `PYTHONPATH=..:.` shown elsewhere is only for **running** the server
+(making both packages importable without an editable install); it is not the
+right context for mypy — invoke mypy from the repo root as above.
+
 ## Limitations / next steps
 
 - **Workspace** defaults to `SURGICAL_CONTEXT_WORKSPACE`; callers can target any

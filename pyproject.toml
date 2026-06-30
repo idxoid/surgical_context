@@ -36,6 +36,12 @@ disallow_incomplete_defs = false
 explicit_package_bases = true
 namespace_packages = true
 warn_unused_ignores = false
+# ``surgical_context_mcp`` lives under ``mcp_server/`` (its package root), so add
+# that dir as a package base. This lets a single repo-root invocation type-check
+# both packages: ``mypy context_engine mcp_server/surgical_context_mcp``.
+# ``context_engine`` ships a ``py.typed`` marker so it is analyzed as a typed
+# package whether imported as source or via PYTHONPATH (the MCP runtime path).
+mypy_path = "mcp_server"
 
 [[tool.mypy.overrides]]
 module = "tests.*"

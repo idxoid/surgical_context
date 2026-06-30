@@ -601,9 +601,7 @@ class AskService:
             status = "client_error" if is_client else "error"
             detail = str(exc.detail) if is_client else PUBLIC_INTERNAL_ERROR
             if not is_client:
-                logger.exception(
-                    "trace_id=%s endpoint=/ask/stream status=error", trace.trace_id
-                )
+                logger.exception("trace_id=%s endpoint=/ask/stream status=error", trace.trace_id)
             yield format_sse(
                 "error",
                 {
