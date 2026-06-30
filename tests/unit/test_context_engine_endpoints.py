@@ -1381,6 +1381,40 @@ def test_index_rejects_repo_name_mismatch(monkeypatch, tmp_path):
     assert error_events[0]["trace_id"] == "trace-stream-error"
 
 
+def test_ask_stream_records_http_exception_as_client_error(monkeypatch):
+    """Mirror of the /ask client_error test for the streaming path: a 4xx raised
+    in prepare_ask (sandbox/workspace validation) must be recorded as
+    client_error and surface its real detail in the SSE error event, not
+    collapsed into a generic internal error + server-error metric."""
+    main = import_main_with_fakes(monkeypatch)
+
+    def boom(*args, **kwargs):
+        raise HTTPException(status_code=403, detail="File path outside workspace root")
+
+    monkeypatch.setattr(main.route_services, "_resolve_ask_context", boom)
+
+    recorded: list[str] = []
+    monkeypatch.setattr(
+        main.route_services.ask_service.metrics,
+        "record_trace",
+        lambda trace, status: recorded.append(status),
+    )
+
+    response = main.ask_stream(
+        main.AskRequest(symbol="missing", question="Where?"),
+        x_trace_id="trace-stream-client-error",
+    )
+    body = asyncio.run(_read_streaming_response(response)).decode("utf-8")
+    events = _parse_sse_events(body)
+    error_events = [payload for name, payload in events if name == "error"]
+
+    assert recorded == ["client_error"]
+    assert len(error_events) == 1
+    assert error_events[0]["error"] == "File path outside workspace root"
+    assert error_events[0]["status_code"] == 403
+    assert error_events[0]["trace_id"] == "trace-stream-client-error"
+
+
 def test_ask_records_http_exception_as_client_error(monkeypatch):
     """Regression: a 4xx raised inside /ask (sandbox/auth/not-found) must be
     recorded as client_error, not the default 'ok' from before the try."""

@@ -8,6 +8,8 @@ from collections.abc import Callable, Generator
 from dataclasses import dataclass
 from typing import Any, cast
 
+from fastapi import HTTPException
+
 from context_engine.ai.engine import AIEngine
 from context_engine.api.errors import (
     LLM_UNREACHABLE_REASON,
@@ -588,6 +590,29 @@ class AskService:
                 },
             )
             yield format_sse("done", {"type": "done", "trace_id": trace.trace_id})
+        except HTTPException as exc:
+            # prepare_ask can raise a deliberate 4xx (sandbox/workspace
+            # validation). The stream already committed a 200, so the HTTP
+            # status can't change — but record the correct metric class and
+            # surface the real client-facing detail rather than a generic
+            # internal error (mirrors /ask, which returns the 4xx + its detail).
+            # 5xx details stay redacted; only 5xx is logged as a server error.
+            is_client = exc.status_code < 500
+            status = "client_error" if is_client else "error"
+            detail = str(exc.detail) if is_client else PUBLIC_INTERNAL_ERROR
+            if not is_client:
+                logger.exception(
+                    "trace_id=%s endpoint=/ask/stream status=error", trace.trace_id
+                )
+            yield format_sse(
+                "error",
+                {
+                    "type": "error",
+                    "error": detail,
+                    "status_code": exc.status_code,
+                    "trace_id": trace.trace_id,
+                },
+            )
         except Exception:
             status = "error"
             logger.exception("trace_id=%s endpoint=/ask/stream status=error", trace.trace_id)
