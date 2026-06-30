@@ -121,7 +121,7 @@ Local development often runs with `AUTH_REQUIRED=false`. Without path checks, an
 | Resolve paths | `/ask` (`file_path`), `/index/file`, `/index/files`, `/index/docs`, and `/overlay` normalize relative paths under that root; absolute paths must still lie inside it (`Path.resolve()` + `relative_to`). |
 | Reject | No manifest yet → HTTP `400`. Path escapes root → HTTP `403`. |
 
-`workspace_paths` plus `sandbox_path()` enforce the same root check on caller-supplied paths and IDE anchors. Stale outside-root graph nodes are pruned at index time; overlay reads stay under the registered root. Details: [spec_context_engine_api.md](spec_context_engine_api.md#filesystem-path-sandboxing).
+`workspace_paths` plus `sandbox_path()` enforce the same root check on caller-supplied paths and IDE anchors. Stale outside-root graph nodes are pruned at index time; overlay reads stay under the registered root. Details: [spec_sidecar_api.md](spec_sidecar_api.md#filesystem-path-sandboxing).
 
 ### 2.3.2. API request bounds ✅
 

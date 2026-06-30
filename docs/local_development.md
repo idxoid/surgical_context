@@ -116,7 +116,7 @@ indexed directory basename or registration returns **403**.
 
 With `AUTH_REQUIRED=false` (local default), this prevents other local processes
 from using the context_engine as a generic file reader. See
-[spec_context_engine_api.md](spec_context_engine_api.md#filesystem-path-sandboxing).
+[spec_sidecar_api.md](spec_sidecar_api.md#filesystem-path-sandboxing).
 
 History controls are environment-driven for the local context_engine:
 
@@ -238,7 +238,7 @@ ANTHROPIC_MODEL=
 
 With `ALLOW_CLOUD_LLM=false`, `MODEL_PREFERENCE=auto` never sends assembled context to Anthropic even when a key is present. Set `MODEL_PREFERENCE=claude` only together with `ALLOW_CLOUD_LLM=true`.
 
-**Safety defaults (context_engine):** after `POST /index`, path sandboxing applies to API and graph reads. Search `limit` is capped at 50; `/ask` `token_budget` at 32 000. Details: [spec_context_engine_api.md](spec_context_engine_api.md#filesystem-path-sandboxing) and [spec_context_engine_api.md](spec_context_engine_api.md#request-validation-bounds).
+**Safety defaults (context_engine):** after `POST /index`, path sandboxing applies to API and graph reads. Search `limit` is capped at 50; `/ask` `token_budget` at 32 000. Details: [spec_sidecar_api.md](spec_sidecar_api.md#filesystem-path-sandboxing) and [spec_sidecar_api.md](spec_sidecar_api.md#request-validation-bounds).
 
 ## Python Quality Gates
 

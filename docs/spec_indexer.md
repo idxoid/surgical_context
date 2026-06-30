@@ -7,7 +7,7 @@ The indexer has two orchestration layers. `context_engine/indexer/code.py` provi
 Entry points:
 - CLI: `python context_engine/indexer/code.py [path]` (defaults to repo root)
 - Programmatic: `run_indexing(path)`, `index_file(path, db, lance, extractor)`
-- Service/API: `IndexingService` in `context_engine/indexer/service.py` plus routes in `context_engine/api/routes/indexing.py`. `POST /index` registers `project_path` immediately (including `queue=true`) before batch workers run; see [spec_context_engine_api.md](spec_context_engine_api.md#filesystem-path-sandboxing).
+- Service/API: `IndexingService` in `context_engine/indexer/service.py` plus routes in `context_engine/api/routes/indexing.py`. `POST /index` registers `project_path` immediately (including `queue=true`) before batch workers run; see [spec_sidecar_api.md](spec_sidecar_api.md#filesystem-path-sandboxing).
 
 ---
 

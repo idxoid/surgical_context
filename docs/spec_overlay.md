@@ -5,7 +5,7 @@
 
 `context_engine/overlay.py` — holds unsaved file content in memory and re-parses symbols on demand. Enables the axis context builder (`context_engine/axis/overlay_context.py`) to answer questions about code the user is currently editing, before it hits disk.
 
-`POST /overlay` and `DELETE /overlay` validate `file_path` under the workspace project root before touching overlay state (see [spec_context_engine_api.md](spec_context_engine_api.md#filesystem-path-sandboxing)).
+`POST /overlay` and `DELETE /overlay` validate `file_path` under the workspace project root before touching overlay state (see [spec_sidecar_api.md](spec_sidecar_api.md#filesystem-path-sandboxing)).
 
 ---
 

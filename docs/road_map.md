@@ -129,7 +129,7 @@ Ordered execution lanes — do not regress green control repos while working tai
 - After axis engine changes: run P7 gate (`pytest tests/integration/ --run-integration`) and spot-check `python -m QA.axis_benchmark` on control repos.
 - Full sweep: `python QA/run_full_benchmark_sweep.py` (manual; requires pre-indexed workspaces).
 
-**Docs:** product thesis + safety specs current (maintenance only). Eval: [spec_eval_harness.md](spec_eval_harness.md). API/sandbox: [spec_context_engine_api.md](spec_context_engine_api.md).
+**Docs:** product thesis + safety specs current (maintenance only). Eval: [spec_eval_harness.md](spec_eval_harness.md). API/sandbox: [spec_sidecar_api.md](spec_sidecar_api.md).
 
 ---
 
@@ -145,7 +145,7 @@ This section preserves the post-MVP hardening record. Completed items remain use
 - [x] Add durable indexing job log with retry/dead-letter states so Neo4j and LanceDB cannot silently diverge after partial failure.
 - [x] Add first endpoint tests for `/ask`, `/ask/stream`, `/index/file`, `/impact`, `/audit/actions`, and `/auth/token`.
 - [x] Add auth-boundary enforcement tests for protected endpoints with `AUTH_REQUIRED=true`.
-- [x] Workspace path sandboxing: caller-supplied paths and **graph-resolved** `file_path` values normalized under registered `project_path`; outside root → `403` or empty code; stale Neo4j paths pruned on manifest persist (`context_engine/workspace_paths.py`, `spec_context_engine_api.md`).
+- [x] Workspace path sandboxing: caller-supplied paths and **graph-resolved** `file_path` values normalized under registered `project_path`; outside root → `403` or empty code; stale Neo4j paths pruned on manifest persist (`context_engine/workspace_paths.py`, `spec_sidecar_api.md`).
 - [x] Queued `POST /index` registers workspace root immediately via `register_workspace_project_root()` (extension default `queue=true` no longer leaves `/overlay` / `/index/file` without a manifest).
 - [x] Bounded public API limits: search `limit` 1–50, `token_budget` 400–32 000 (HTTP 422 when out of range).
 - [x] Anthropic default model `claude-sonnet-4-6` (`ANTHROPIC_MODEL` override; retired `claude-sonnet-4-20250514`).

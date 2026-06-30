@@ -180,5 +180,5 @@ No destructive rebuild needed — additive schema change.
 
 - [spec_uid_stability.md](spec_uid_stability.md) — UIDs must be semantic (not path-based) for cross-workspace identity to work.
 - [spec_overlay.md](spec_overlay.md) — overlay key upgrades to `(user, workspace)`.
-- [spec_context_engine_api.md](spec_context_engine_api.md) — `X-Workspace` header added to every endpoint.
+- [spec_sidecar_api.md](spec_sidecar_api.md) — `X-Workspace` header added to every endpoint.
 - [architectura.md](architectura.md) — local-first product boundary and storage architecture.
