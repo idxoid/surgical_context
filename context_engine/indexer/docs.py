@@ -7,6 +7,12 @@ from typing import Any
 from context_engine.database.lancedb_client import LanceDBClient
 from context_engine.database.neo4j_client import Neo4jClient
 from context_engine.database.neo4j_env import NEO4J_PASSWORD, NEO4J_URI, NEO4J_USER
+from context_engine.index_profile import (
+    IndexProfile,
+    active_index_profile,
+    effective_index_workspace_id,
+    resolve_index_profile,
+)
 from context_engine.indexer.anchor import link_docs_to_symbols
 from context_engine.indexer.progress import make_progress as _make_progress
 from context_engine.workspace import DEFAULT_WORKSPACE_ID
@@ -47,9 +53,28 @@ def _chunk_text(text: str) -> list[str]:
     return chunks
 
 
-def index_docs(docs_path: str, workspace_id: str = DEFAULT_WORKSPACE_ID) -> dict[str, Any]:
+def index_docs(
+    docs_path: str,
+    workspace_id: str | None = None,
+    *,
+    index_profile: str | IndexProfile | None = None,
+) -> dict[str, Any]:
+    # Resolve the profile once and derive BOTH the physical workspace namespace
+    # and the LanceDBClient's tables from it. Threading the suffix via the
+    # workspace string while letting the client read the profile from env is the
+    # split that lets the two drift (docs written to one table, read from
+    # another). ``workspace_id`` here is the client-facing (base) id.
+    if isinstance(index_profile, IndexProfile):
+        profile = index_profile
+    elif index_profile:
+        profile = resolve_index_profile(index_profile)
+    else:
+        profile = active_index_profile()
+    index_workspace_id = effective_index_workspace_id(
+        workspace_id or DEFAULT_WORKSPACE_ID, profile=profile
+    )
     resolved_docs_path = str(resolve_cli_directory(docs_path))
-    lance = LanceDBClient()
+    lance = LanceDBClient(index_profile=profile)
     neo4j = Neo4jClient(NEO4J_URI, NEO4J_USER, NEO4J_PASSWORD)
 
     md_files = sorted(glob.glob(os.path.join(resolved_docs_path, "**/*.md"), recursive=True))
@@ -93,12 +118,12 @@ def index_docs(docs_path: str, workspace_id: str = DEFAULT_WORKSPACE_ID) -> dict
     if hasattr(lance, "upsert_chunk_batches"):
         lance.upsert_chunk_batches(
             file_chunks,
-            workspace_id=workspace_id,
+            workspace_id=index_workspace_id,
             progress_callback=lambda msg: print(f"[docs upsert] {msg}"),
         )
     else:
         for path, chunks in file_chunks:
-            lance.upsert_chunks(path, chunks, workspace_id=workspace_id)
+            lance.upsert_chunks(path, chunks, workspace_id=index_workspace_id)
     upsert_seconds += time.perf_counter() - t_stage
     upsert_progress.update(1)
     upsert_progress.close()
@@ -108,7 +133,7 @@ def index_docs(docs_path: str, workspace_id: str = DEFAULT_WORKSPACE_ID) -> dict
     link_stats = link_docs_to_symbols(
         neo4j,
         lance,
-        workspace_id=workspace_id,
+        workspace_id=index_workspace_id,
         allowed_prefixes=[resolved_docs_path],
     )
     link_seconds = time.perf_counter() - t_stage

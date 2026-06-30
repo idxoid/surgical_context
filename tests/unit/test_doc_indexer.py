@@ -20,7 +20,7 @@ def test_index_docs_returns_file_and_chunk_counts(tmp_path, monkeypatch):
         def close(self):
             closed.append("neo4j")
 
-    monkeypatch.setattr(docs_indexer, "LanceDBClient", lambda: FakeLance())
+    monkeypatch.setattr(docs_indexer, "LanceDBClient", lambda **_: FakeLance())
     monkeypatch.setattr(docs_indexer, "Neo4jClient", lambda *args, **kwargs: FakeNeo4j())
     monkeypatch.setattr(
         docs_indexer,
@@ -28,7 +28,9 @@ def test_index_docs_returns_file_and_chunk_counts(tmp_path, monkeypatch):
         lambda neo4j, lance, workspace_id="", **_: linked.append(workspace_id),
     )
 
-    result = docs_indexer.index_docs(str(docs_dir), workspace_id="acme/repo@main")
+    result = docs_indexer.index_docs(
+        str(docs_dir), workspace_id="acme/repo@main", index_profile="legacy"
+    )
 
     assert result["files_indexed"] == 2
     assert result["chunks_indexed"] == 2
@@ -69,10 +71,50 @@ def test_index_docs_falls_back_to_per_file_upsert_when_bulk_missing(tmp_path, mo
         def close():
             return None
 
-    monkeypatch.setattr(docs_indexer, "LanceDBClient", lambda: FakeLance())
+    monkeypatch.setattr(docs_indexer, "LanceDBClient", lambda **_: FakeLance())
     monkeypatch.setattr(docs_indexer, "Neo4jClient", lambda *args, **kwargs: FakeNeo4j())
     monkeypatch.setattr(docs_indexer, "link_docs_to_symbols", lambda *args, **kwargs: None)
 
-    docs_indexer.index_docs(str(docs_dir), workspace_id="acme/repo@main")
+    docs_indexer.index_docs(str(docs_dir), workspace_id="acme/repo@main", index_profile="legacy")
 
     assert upserts == [(str(docs_dir / "a.md"), 1)]
+
+
+def test_index_docs_threads_one_profile_into_client_and_workspace(tmp_path, monkeypatch):
+    """Regression: a single resolved profile must drive BOTH the LanceDBClient
+    tables and the effective workspace suffix, so docs are not written to a
+    table that mismatches the suffixed namespace they are stored under."""
+    from context_engine.index_profile import AXIS_PYTHON_V1_PROFILE
+
+    docs_dir = tmp_path / "docs"
+    docs_dir.mkdir()
+    (docs_dir / "a.md").write_text("# A\n\nhello world", encoding="utf-8")
+
+    constructed: dict[str, object] = {}
+    upsert_ws: list[str] = []
+
+    class FakeLance:
+        def upsert_chunk_batches(self, file_chunks, *, workspace_id="", progress_callback=None):
+            upsert_ws.append(workspace_id)
+
+    def fake_client(*, index_profile=None):
+        constructed["profile"] = index_profile
+        return FakeLance()
+
+    class FakeNeo4j:
+        @staticmethod
+        def close():
+            return None
+
+    monkeypatch.setattr(docs_indexer, "LanceDBClient", fake_client)
+    monkeypatch.setattr(docs_indexer, "Neo4jClient", lambda *a, **k: FakeNeo4j())
+    monkeypatch.setattr(docs_indexer, "link_docs_to_symbols", lambda *a, **k: None)
+
+    docs_indexer.index_docs(
+        str(docs_dir), workspace_id="acme/repo@main", index_profile="axis_python_v1"
+    )
+
+    profile = constructed["profile"]
+    assert getattr(profile, "name", None) == AXIS_PYTHON_V1_PROFILE
+    # The suffix on the upsert workspace id comes from the same profile.
+    assert upsert_ws == ["acme/repo@main+axis_python_v1"]

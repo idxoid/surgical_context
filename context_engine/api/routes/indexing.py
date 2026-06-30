@@ -437,7 +437,6 @@ def index_docs_endpoint(
     main = deps.services
     user_id = main._resolve_request_user(x_user_id, authorization)
     base_workspace_id = main._resolve_workspace(x_workspace, authorization)
-    index_workspace_id = main.effective_index_workspace_id(base_workspace_id)
     with main.db_session(user_id=user_id) as db:
         safe_docs_path = main._sandbox_path(req.docs_path, workspace_id=base_workspace_id, db=db)
     if not os.path.isdir(safe_docs_path):
@@ -445,5 +444,7 @@ def index_docs_endpoint(
 
     from context_engine.indexer.docs import index_docs
 
-    index_docs(safe_docs_path, workspace_id=index_workspace_id)
+    # index_docs resolves the active profile once and derives both the physical
+    # workspace namespace and its Lance tables from it — pass the base id.
+    index_docs(safe_docs_path, workspace_id=base_workspace_id)
     return {"status": "indexed", "path": safe_docs_path}
