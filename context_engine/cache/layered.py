@@ -7,12 +7,31 @@ behind the same LayeredCache facade later.
 
 from __future__ import annotations
 
+import functools
+import threading
 from collections import OrderedDict
+from collections.abc import Callable
 from dataclasses import dataclass
 from time import time
 
 from context_engine.context_types import Subgraph
 from context_engine.observability.metrics import default_metrics
+
+
+def _synchronized[F: Callable[..., object]](method: F) -> F:
+    """Run ``method`` while holding ``self._lock`` (reentrant).
+
+    The process-wide ``default_cache`` is reached from FastAPI's threadpool plus
+    the index-queue worker; concurrent put/invalidate over the OrderedDict and
+    the response cache's file index would otherwise race.
+    """
+
+    @functools.wraps(method)
+    def wrapper(self, *args, **kwargs):  # type: ignore[no-untyped-def]
+        with self._lock:
+            return method(self, *args, **kwargs)
+
+    return wrapper  # type: ignore[return-value]
 
 
 @dataclass(frozen=True)
@@ -56,10 +75,13 @@ class _LRU[T]:
 class InMemoryBodyCache:
     def __init__(self, capacity: int = 10_000):
         self._cache: _LRU[CachedBody] = _LRU(capacity)
+        self._lock = threading.RLock()
 
+    @_synchronized
     def get(self, file_path: str, line_range: tuple[int, int], file_hash: str) -> CachedBody | None:
         return self._cache.get((file_path, line_range, file_hash))
 
+    @_synchronized
     def put(
         self,
         file_path: str,
@@ -69,6 +91,7 @@ class InMemoryBodyCache:
     ) -> None:
         self._cache.put((file_path, line_range, file_hash), body)
 
+    @_synchronized
     def invalidate_file(self, file_path: str) -> None:
         self._cache.clear_prefix((file_path,))
 
@@ -76,7 +99,9 @@ class InMemoryBodyCache:
 class InMemorySubgraphCache:
     def __init__(self, capacity: int = 1_000):
         self._cache: _LRU[Subgraph] = _LRU(capacity)
+        self._lock = threading.RLock()
 
+    @_synchronized
     def get(
         self,
         primary_uid: str,
@@ -87,6 +112,7 @@ class InMemorySubgraphCache:
     ) -> Subgraph | None:
         return self._cache.get((workspace_id, graph_version, primary_uid, intent_hash, budget))
 
+    @_synchronized
     def put(
         self,
         primary_uid: str,
@@ -107,7 +133,9 @@ class InMemoryResponseCache:
         self._file_index: dict[str, set[tuple]] = {}
         # cache key → file paths currently indexed for that entry
         self._key_paths: dict[tuple, set[str]] = {}
+        self._lock = threading.RLock()
 
+    @_synchronized
     def get(self, prompt_hash: str, workspace_id: str) -> CachedResponse | None:
         item = self._cache.get((workspace_id, prompt_hash))
         if item is None or item.expires_at < time():
@@ -123,6 +151,7 @@ class InMemoryResponseCache:
             if not bucket:
                 del self._file_index[path]
 
+    @_synchronized
     def put(
         self,
         prompt_hash: str,
@@ -146,6 +175,7 @@ class InMemoryResponseCache:
         for path in indexed_paths:
             self._file_index.setdefault(path, set()).add(key)
 
+    @_synchronized
     def invalidate_files(self, file_paths: list[str], workspace_id: str | None = None) -> int:
         """Evict cached responses that reference any of the given file paths.
 

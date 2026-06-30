@@ -1,5 +1,6 @@
 """Unit tests for InMemoryOverlay — dirty state handling."""
 
+import threading
 import time
 
 import pytest
@@ -222,3 +223,41 @@ class MyClass:
         assert overlay.read_lines("fresh.py", 1, 1) == "keep\n"
         now += 50.0
         assert overlay.has("fresh.py")
+
+    def test_concurrent_update_and_iteration_is_thread_safe(self, overlay):
+        """Regression: concurrent writers mutating _files while readers iterate
+        it (iter_dirty_files / stats) must not raise 'dict changed size during
+        iteration'. Reproduces the streaming-ask + save-overlay + index race."""
+        errors: list[BaseException] = []
+        stop = threading.Event()
+
+        def writer(start: int) -> None:
+            try:
+                # Unique keys so the dict keeps GROWING during reader iteration
+                # (overlay fixture has no cap/ttl eviction); reassigning a fixed
+                # keyset would stop changing size once warmed and hide the race.
+                for i in range(2000):
+                    overlay.update(f"f{start}_{i}.py", "x = 1\n", user_id=f"u{i % 3}")
+            except BaseException as exc:  # noqa: BLE001 — record any thread error
+                errors.append(exc)
+
+        def reader() -> None:
+            # Iterate _files (via iter_dirty_files) for as long as writers run; a
+            # concurrent insert mid-iteration is the race we are guarding against.
+            try:
+                while not stop.is_set():
+                    overlay.iter_dirty_files(user_id="u0")
+            except BaseException as exc:  # noqa: BLE001 — record any thread error
+                errors.append(exc)
+
+        writers = [threading.Thread(target=writer, args=(k,)) for k in range(3)]
+        reader_thread = threading.Thread(target=reader)
+        reader_thread.start()
+        for t in writers:
+            t.start()
+        for t in writers:
+            t.join()
+        stop.set()
+        reader_thread.join()
+
+        assert not errors, errors

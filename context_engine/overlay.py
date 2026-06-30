@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import functools
 import os
+import threading
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
@@ -14,6 +17,24 @@ if TYPE_CHECKING:
 
 DEFAULT_OVERLAY_MAX_ENTRIES = 256
 DEFAULT_OVERLAY_TTL_SECONDS = 86_400.0
+
+
+def _synchronized[F: Callable[..., object]](method: F) -> F:
+    """Run ``method`` while holding ``self._lock`` (a reentrant lock).
+
+    The overlay is touched from FastAPI's threadpool (sync route handlers) plus
+    the git-delta poller / index-queue worker threads; without this guard a
+    concurrent ``update`` mutating ``_files`` while another thread iterates it
+    (eviction, ``iter_dirty_files``) raises ``dict changed size during
+    iteration``.
+    """
+
+    @functools.wraps(method)
+    def wrapper(self, *args, **kwargs):  # type: ignore[no-untyped-def]
+        with self._lock:
+            return method(self, *args, **kwargs)
+
+    return wrapper  # type: ignore[return-value]
 
 
 def _env_int(name: str, default: int) -> int:
@@ -68,7 +89,9 @@ class InMemoryOverlay:
         self._files: dict[tuple[str, str, str], _OverlayEntry] = {}
         self._extractor = SymbolExtractor()
         self._metrics = metrics if metrics is not None else default_metrics
+        self._lock = threading.RLock()
 
+    @_synchronized
     def update(
         self,
         file_path: str,
@@ -87,6 +110,7 @@ class InMemoryOverlay:
         self._metrics.increment("context_engine_overlay_updates_total")
         self._publish_stats()
 
+    @_synchronized
     def clear(
         self,
         file_path: str,
@@ -100,6 +124,7 @@ class InMemoryOverlay:
             )
             self._publish_stats()
 
+    @_synchronized
     def has(
         self,
         file_path: str,
@@ -113,6 +138,7 @@ class InMemoryOverlay:
         self._touch(key)
         return True
 
+    @_synchronized
     def is_dirty(
         self,
         file_path: str,
@@ -127,6 +153,7 @@ class InMemoryOverlay:
         self._touch(key)
         return entry.dirty
 
+    @_synchronized
     def read_lines(
         self,
         file_path: str,
@@ -142,6 +169,7 @@ class InMemoryOverlay:
         lines = entry.content.splitlines(keepends=True)
         return "".join(lines[start - 1 : end])
 
+    @_synchronized
     def get_symbols(
         self,
         file_path: str,
@@ -160,6 +188,7 @@ class InMemoryOverlay:
             return {}
         return {m.name: (m.start_line, m.end_line) for m in metas}
 
+    @_synchronized
     def get_calls(
         self,
         file_path: str,
@@ -178,6 +207,7 @@ class InMemoryOverlay:
             # No symbol-extraction adapter for this extension (config/data file).
             return []
 
+    @_synchronized
     def iter_dirty_files(
         self,
         workspace_id: str = DEFAULT_WORKSPACE_ID,
@@ -193,6 +223,7 @@ class InMemoryOverlay:
             if ws == target_ws and user == target_user and entry.dirty
         ]
 
+    @_synchronized
     def stats(self) -> dict[str, int]:
         return {
             "entries": len(self._files),
