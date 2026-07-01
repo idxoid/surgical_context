@@ -165,14 +165,17 @@ def test_context_seeds_per_role_caps_the_pool(stub_stages):
 
 
 def test_anchor_symbol_pins_named_candidate_to_context_front(stub_stages):
+    # A named symbol (without anchor_only) is a pinned SEED HINT: it moves to the
+    # front but the full ranked pool still renders, so recall is not collapsed.
     result = _run(anchor_symbol="c")
 
     assert [c.uid for c in result.candidates_for_context][0] == "c"
-    assert [b.seed.uid for b in result.bundles] == ["c"]
+    assert [b.seed.uid for b in result.bundles] == ["c", "a", "b"]
 
 
-def test_anchor_symbol_expands_only_pinned_seed(stub_stages):
-    result = _run(anchor_symbol="b")
+def test_anchor_only_expands_only_pinned_seed(stub_stages):
+    # anchor_only opts into the CodeLens fast context: render just the anchor.
+    result = _run(anchor_symbol="b", anchor_only=True)
 
     assert len(result.bundles) == 1
     assert result.bundles[0].seed.uid == "b"
@@ -198,7 +201,7 @@ def test_anchor_symbol_uses_architecture_budget(stub_stages, monkeypatch):
     assert captured["token_budget"] == 8000
 
 
-def test_anchor_symbol_fast_path_classifies_question_but_skips_pool_retrieval(
+def test_anchor_only_fast_path_classifies_question_but_skips_pool_retrieval(
     stub_stages, monkeypatch
 ):
     import context_engine.axis.intent_classifier as _intent_mod
@@ -229,6 +232,7 @@ def test_anchor_symbol_fast_path_classifies_question_but_skips_pool_retrieval(
         config=axis_pipeline.AxisRetrievalConfig(
             anchor_symbol="walk_neighbours",
             anchor_path="/repo/context_engine/axis/graph_walk.py",
+            anchor_only=True,
         ),
     )
 

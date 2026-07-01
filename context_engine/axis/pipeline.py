@@ -1276,7 +1276,11 @@ def _run_axis_retrieval_impl(
             db=db,
             scanned=scanned,
         )
-        if active:
+        # Collapse the rendered context to just the anchor ONLY for the opt-in
+        # CodeLens fast context. A question that merely names a symbol keeps the
+        # full ranked pool (anchor pinned to the front) — otherwise the bundle
+        # covers only the anchor's neighbourhood and recall collapses.
+        if cfg.anchor_only and active:
             active = [active[0]]
 
     bundles: list[ContextBundle] = []
