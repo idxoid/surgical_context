@@ -1021,6 +1021,12 @@ class AxisRetrievalConfig:
     render_mode_override: str | None = None
     anchor_path: str | None = None
     anchor_symbol: str | None = None
+    # Opt-in latency fast path: when True AND anchor_symbol is set, retrieval
+    # returns only the pinned symbol's neighbourhood (CodeLens "explain this
+    # symbol"), skipping intent embed + pool walks. Default False so a named
+    # symbol is a SEED HINT (pinned) over full question retrieval — naming a
+    # symbol must not silently collapse recall on the /ask path.
+    anchor_only: bool = False
     hook_transparency: bool = False
     trace: Any | None = None
     overlay: Any | None = None
@@ -1099,7 +1105,7 @@ def _run_axis_retrieval_impl(
         trace=tr,
     )
 
-    if (cfg.anchor_symbol or "").strip():
+    if cfg.anchor_only and (cfg.anchor_symbol or "").strip():
         fast = _try_symbol_targeted_retrieval(
             anchor_symbol=cfg.anchor_symbol,
             anchor_path=cfg.anchor_path,

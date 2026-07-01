@@ -313,6 +313,7 @@ def test_anchor_symbol_impact_uses_directional_impact_candidates(stub_stages, mo
         config=axis_pipeline.AxisRetrievalConfig(
             anchor_symbol="_resolve_committed_uid",
             anchor_path="/repo/context_engine/api/routes/impact.py",
+            anchor_only=True,  # exercise the symbol-targeted fast path explicitly
         ),
     )
 
