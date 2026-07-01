@@ -522,6 +522,7 @@ def _try_symbol_targeted_retrieval(
     *,
     anchor_symbol: str | None,
     anchor_path: str | None,
+    anchor_only: bool,
     options: _SymbolTargetedRetrievalOptions,
     intent: list[IntentMatch],
     intent_budget: bool,
@@ -530,9 +531,12 @@ def _try_symbol_targeted_retrieval(
 ) -> AxisRetrievalResult | None:
     """CodeLens / ask-from-code fast path — pin the seed, skip pool retrieval.
 
-    The question is still classified before this function runs.  A pinned
-    symbol removes seed-search ambiguity; it does not erase whether the user
-    asked for architecture, impact, or a call trace.
+    An OVERLAY-only anchor (a brand-new symbol that exists solely in the editor
+    buffer, with no graph node) always short-circuits here — there is nothing to
+    walk. For an INDEXED anchor the fast path is opt-in via ``anchor_only``:
+    otherwise a named symbol is a pinned seed hint over full question retrieval,
+    so naming a symbol does not silently skip the pool walk (and collapse recall)
+    on the /ask path.
     """
     if not (anchor_symbol or "").strip():
         return None
@@ -564,6 +568,11 @@ def _try_symbol_targeted_retrieval(
             render_mode=render_mode_override or "full",
             intent=intent,
         )
+
+    # Indexed anchor: the fast path (skip pool walk) is opt-in. A question that
+    # merely names a symbol still gets full retrieval with the symbol pinned.
+    if not anchor_only:
+        return None
 
     token_budget, render_mode, budget_profile = _symbol_targeted_budget(
         intent=intent,
@@ -1105,10 +1114,11 @@ def _run_axis_retrieval_impl(
         trace=tr,
     )
 
-    if cfg.anchor_only and (cfg.anchor_symbol or "").strip():
+    if (cfg.anchor_symbol or "").strip():
         fast = _try_symbol_targeted_retrieval(
             anchor_symbol=cfg.anchor_symbol,
             anchor_path=cfg.anchor_path,
+            anchor_only=cfg.anchor_only,
             options=_SymbolTargetedRetrievalOptions(
                 workspace_id=workspace_id,
                 db=db,

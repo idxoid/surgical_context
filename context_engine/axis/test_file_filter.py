@@ -25,16 +25,20 @@ import re
 
 # Tokens that mark a path segment as part of a test surface. ``t`` is
 # Celery's convention (``t/unit``, ``t/integration``); ``test`` and
-# ``tests`` are the universal ones. ``qa`` covers this repo's ``QA/``
-# harness (mirrors ``file_tier``). We match on full path segments only
+# ``tests`` are the universal ones. We match on full path segments only
 # (case-insensitive) so a directory called ``contests`` or ``startests``
 # never gets accidentally fenced.
+#
+# NB: ``qa`` is deliberately NOT here. This repo clones benchmark targets
+# under ``QA/repos/<repo>/``, so fencing a ``qa`` segment excluded every
+# indexed benchmark repo from role scans and collapsed retrieval recall
+# (fastapi 1.0 -> 0.62). Fencing the tool's own QA harness is a
+# workspace-specific concern, not a universal path-segment rule.
 _TEST_DIR_SEGMENTS: frozenset[str] = frozenset(
     {
         "tests",
         "test",
         "t",
-        "qa",
         "__tests__",
         "testfixtures",
         "__testfixtures__",
@@ -80,8 +84,6 @@ _CYPHER_TEST_PATH_EXCLUSION = (
     "  fn.path CONTAINS '/tests/' "
     "  OR fn.path CONTAINS '/test/' "
     "  OR fn.path CONTAINS '/t/' "
-    "  OR fn.path CONTAINS '/qa/' "
-    "  OR fn.path CONTAINS '/QA/' "
     "  OR fn.path CONTAINS '/__tests__/' "
     "  OR fn.path CONTAINS '/integration/' "
     "  OR fn.path CONTAINS '/e2e/' "
