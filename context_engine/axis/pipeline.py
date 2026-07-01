@@ -59,7 +59,11 @@ from context_engine.axis.intent_classifier import IntentMatch
 from context_engine.axis.proximity import proximity_boost
 from context_engine.axis.retrieval_budget import ARCHITECTURE, budget_for_intent
 from context_engine.axis.role_retrieval import RoleCandidate
-from context_engine.axis.stage_warnings import collect_stage_warnings, stage_warning_dicts
+from context_engine.axis.stage_warnings import (
+    collect_stage_warnings,
+    record_stage_warning,
+    stage_warning_dicts,
+)
 
 # Question-shape pseudo-roles: modes, not retrieval roles. They drive the
 # blast-radius / call-chain passes and are excluded from the pools that
@@ -334,6 +338,18 @@ def _pin_anchor_symbol(
         )
         if synthetic is not None:
             return _reorder_candidates_front(candidates, pinned=synthetic)
+        record_stage_warning(
+            "pin_anchor_symbol",
+            "anchor_symbol_unresolved",
+            f"anchor_symbol={name!r} did not resolve to any candidate, indexed "
+            "symbol, or overlay buffer; retrieval fell through to the "
+            "unanchored pool.",
+            details={
+                "anchor_symbol": name,
+                "anchor_path": requested_path,
+                "workspace_id": workspace_id,
+            },
+        )
         return candidates
 
     injected = _injected_anchor_candidate(uid, name, file_path)

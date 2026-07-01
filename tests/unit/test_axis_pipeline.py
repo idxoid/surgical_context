@@ -173,6 +173,19 @@ def test_anchor_symbol_pins_named_candidate_to_context_front(stub_stages):
     assert [b.seed.uid for b in result.bundles] == ["c", "a", "b"]
 
 
+def test_anchor_symbol_unresolved_surfaces_stage_warning(stub_stages):
+    # None of the pool candidates, the (empty) workspace scan, or the bare
+    # `db` can resolve "does_not_exist" -> pinning silently falls through to
+    # the unanchored pool. That fallthrough must not be silent to the caller.
+    result = _run(anchor_symbol="does_not_exist")
+
+    assert [c.uid for c in result.candidates_for_context] == ["a", "b", "c"]
+    warning_codes = {warning["code"] for warning in result.stage_warnings}
+    assert "anchor_symbol_unresolved" in warning_codes
+    warning = next(w for w in result.stage_warnings if w["code"] == "anchor_symbol_unresolved")
+    assert warning["details"]["anchor_symbol"] == "does_not_exist"
+
+
 def test_anchor_only_expands_only_pinned_seed(stub_stages):
     # anchor_only opts into the CodeLens fast context: render just the anchor.
     result = _run(anchor_symbol="b", anchor_only=True)
