@@ -155,6 +155,7 @@ def import_main_with_fakes(monkeypatch):
             ][:limit]
 
     fake_lancedb.LanceDBClient = FakeLanceDBClient
+    fake_lancedb.DB_PATH = f"{feedback_dir}/lancedb"
     monkeypatch.setitem(sys.modules, "context_engine.database.lancedb_client", fake_lancedb)
 
     fake_engine = types.ModuleType("context_engine.ai.engine")
@@ -201,6 +202,10 @@ def import_main_with_fakes(monkeypatch):
 
     monkeypatch.setattr(main.route_services, "_context_from_axis", fake_context_from_axis)
     monkeypatch.setattr(main.route_services, "db_session", fake_db_session)
+    # IndexingService holds its own injected db_session seam (separate from
+    # route_services.db_session); index_file_now runs on it, so patch both or
+    # synchronous indexing reaches the real Neo4j driver.
+    monkeypatch.setattr(main.indexing_service, "db_session", fake_db_session)
 
     class FakeIndexQueue:
         def __init__(self):
