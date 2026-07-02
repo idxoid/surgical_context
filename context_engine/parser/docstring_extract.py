@@ -99,11 +99,42 @@ def python_docstring(source_code: str, node) -> str:
     return ""
 
 
+def python_module_docstring(source_code: str, root) -> str:
+    """PEP 257 module docstring — the file's first statement, comments aside.
+
+    Unlike defs/classes the module node has no ``body`` field; its statements
+    are direct children. Stops at the first non-comment statement: a docstring
+    below any real code is not a module docstring.
+    """
+    for child in root.children:
+        if child.type == "comment":
+            continue
+        if child.type != "expression_statement":
+            return ""
+        expr = child.children[0] if child.children else None
+        if expr is None or expr.type != "string":
+            return ""
+        literal = source_code[expr.start_byte : expr.end_byte]
+        try:
+            value = ast.literal_eval(literal)
+        except (SyntaxError, ValueError):
+            return ""
+        return str(value).strip() if isinstance(value, str) else ""
+    return ""
+
+
 def docstrings_by_start_line(source_code: str, tree, *, language: str) -> dict[int, str]:
     """Map ``start_line`` (1-based) -> docstring text for one source file."""
     if tree is None:
         return {}
     out: dict[int, str] = {}
+    if language == "python":
+        # Module docstring keys on the module symbol's start line (always 1),
+        # not the literal's own line — a shebang/comment above the docstring
+        # must not detach it from the module symbol.
+        module_doc = python_module_docstring(source_code, tree.root_node)
+        if module_doc:
+            out[tree.root_node.start_point[0] + 1] = module_doc
     for node in _iter_nodes(tree.root_node):
         if language == "python":
             if node.type not in _PYTHON_DEF_TYPES:

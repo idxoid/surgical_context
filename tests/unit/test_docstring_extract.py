@@ -91,3 +91,26 @@ def test_javascript_adapter_attaches_jsdoc():
     docstring = symbol.docstring
     assert docstring is not None
     assert docstring == "Factory helper."
+
+
+def test_python_module_docstring_attaches_to_module_symbol():
+    source = '"""Intent-axis ranking - boost candidates."""\n\ndef boost():\n    return 1\n'
+    symbols = PythonAdapter().extract_symbols(source, "pkg/axis_ranking.py")
+    module = next(s for s in symbols if s.kind == "module")
+    assert module.docstring == "Intent-axis ranking - boost candidates."
+    fn = next(s for s in symbols if s.name == "boost")
+    assert not fn.docstring
+
+
+def test_python_module_docstring_survives_leading_comment():
+    source = '#!/usr/bin/env python\n# comment\n"""Module doc."""\nX = 1\n'
+    symbols = PythonAdapter().extract_symbols(source, "pkg/mod.py")
+    module = next(s for s in symbols if s.kind == "module")
+    assert module.docstring == "Module doc."
+
+
+def test_python_string_below_code_is_not_module_docstring():
+    source = 'X = 1\n"""Not a docstring."""\n'
+    symbols = PythonAdapter().extract_symbols(source, "pkg/mod.py")
+    module = next(s for s in symbols if s.kind == "module")
+    assert not module.docstring
