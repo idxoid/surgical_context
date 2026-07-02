@@ -769,6 +769,57 @@ def _type_reference_phase(
     return len(references)
 
 
+def _flow_pair_phase(
+    diffs: list[FileDiff],
+    db: Neo4jClient,
+    workspace_id: str,
+    reporter: ProgressReporter,
+    project_path: str = "",
+) -> int:
+    """Create FLOWS_INTO edges (call A's result feeds call B's arguments).
+
+    A co-invocation dataflow pair (``x = A(...); B(x)`` / ``B(A(...))``) is a
+    syntactic fact, like a type reference. Runs after `_apply_graph` so both
+    callee symbols exist, and under the same project_root_scope so uids match
+    stored nodes. Pairs are recorded per caller site, so a reindexed file's
+    stale pairs are cleared by its current + removed symbol uids first.
+    """
+    from context_engine.parser.registry import REGISTRY
+    from context_engine.parser.uid import project_root_scope
+
+    link_pairs = getattr(db, "link_flow_pairs", None)
+    delete_pairs = getattr(db, "delete_flow_pairs_for_callers", None)
+    reporter.stage_start("flow_pairs", total=1)
+    pairs: list[dict] = []
+    linked = 0
+    if callable(link_pairs):
+        stale_caller_uids: list[str] = []
+        with project_root_scope(project_path or None, workspace_id):
+            for diff in diffs:
+                ex = diff.extracted
+                stale_caller_uids.extend(diff.current_uids)
+                stale_caller_uids.extend(diff.removed_uids)
+                try:
+                    language = REGISTRY.detect_language(ex.path)
+                    adapter = REGISTRY.get_adapter(language)
+                except Exception:
+                    continue
+                extract_pairs = getattr(adapter, "extract_flow_pairs", None)
+                if not callable(extract_pairs):
+                    continue
+                try:
+                    pairs.extend(extract_pairs(ex.source, ex.path))
+                except Exception:
+                    continue
+        if callable(delete_pairs) and stale_caller_uids:
+            delete_pairs(stale_caller_uids, workspace_id=workspace_id)
+        if pairs:
+            linked = link_pairs(pairs, workspace_id=workspace_id)
+    reporter.step("flow_pairs")
+    reporter.stage_end("flow_pairs")
+    return int(linked or 0)
+
+
 def _symbol_alias_phase(
     diffs: list[FileDiff],
     db: Neo4jClient,

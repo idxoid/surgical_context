@@ -3315,6 +3315,206 @@ class PythonAdapter(TreeSitterAdapter):
 
         return calls
 
+    # --- FLOWS_INTO extraction (co-invocation dataflow) ---------------------
+    #
+    # ``x = A(...); B(..., x, ...)`` and ``B(A(...))`` are static AST facts: the
+    # caller binds A's result and hands it to B. CALLS edges only connect the
+    # caller to each callee, so retrieval cannot hop A -> B without walking
+    # through the (often noisy) shared caller. The pair below becomes a primary
+    # ``FLOWS_INTO`` edge, the first non-derived member of the DATAFLOW axis.
+
+    # Pathology guard only (mega-functions / generated builder chains) — an
+    # orchestrator function legitimately yields dozens of pairs (one bound
+    # result feeding many stages), so the cap must sit well above that.
+    _FLOW_PAIRS_PER_CALLER_CAP = 64
+
+    def extract_flow_pairs(self, source_code: str, file_path: str, *, tree=None) -> list[dict]:
+        """FLOWS_INTO pairs: a caller binds call A's result and passes it into call B.
+
+        Intra-caller only (bindings never leak across function boundaries), and
+        only over calls whose callee resolves statically (imported / scoped /
+        self-method / typed) — a guess-tier callee produces no pair, precision
+        over recall. Rebinding a name switches its source; uses inside nested
+        argument expressions (keywords, comprehensions) count, but the walk
+        stops at a nested call boundary — the nested call is itself the source
+        for the outer call, and its own arguments are its own uses.
+        """
+        if tree is None:
+            tree = self._parse(source_code)
+        captures = self._py_call_query_captures(tree)
+        (
+            by_name,
+            import_bindings,
+            module,
+            method_returns,
+            function_returns,
+            attr_type_table,
+        ) = self._py_call_resolution_context(source_code, file_path, tree=tree)
+        alias_cache: dict[int, dict[str, str]] = {}
+
+        resolved_refs: dict[int, dict] = {}
+        calls_by_caller: dict[str, list] = {}
+        for capture_node, tag in captures:
+            if tag != "call":
+                continue
+            node: Any = capture_node
+            resolved = self._py_call_from_capture(
+                node,
+                file_path=file_path,
+                import_bindings=import_bindings,
+                by_name=by_name,
+                attr_type_table=attr_type_table,
+                alias_cache=alias_cache,
+                method_returns=method_returns,
+                function_returns=function_returns,
+                module=module,
+            )
+            if resolved is None:
+                continue
+            caller_uid, call_name, _rel, _tier, _conf, callee_uid, callee_qn = resolved
+            # Name-only refs stay in: the linker applies the same workspace-side
+            # resolution as CALLS (exact qn, else globally-unique name) and drops
+            # what it cannot pin to a project symbol.
+            ref = {"name": call_name, "uid": callee_uid or "", "qn": callee_qn or ""}
+            resolved_refs[node.id] = ref
+            calls_by_caller.setdefault(caller_uid, []).append((node, ref))
+
+        pairs: list[dict] = []
+        for caller_uid, entries in calls_by_caller.items():
+            self._append_caller_flow_pairs(
+                pairs,
+                caller_uid=caller_uid,
+                entries=sorted(entries, key=lambda e: e[0].start_byte),
+                resolved_refs=resolved_refs,
+            )
+        return pairs
+
+    def _append_caller_flow_pairs(
+        self,
+        pairs: list[dict],
+        *,
+        caller_uid: str,
+        entries: list,
+        resolved_refs: dict[int, dict],
+    ) -> None:
+        bindings: dict[str, dict] = {}
+        # A binding becomes visible only past its assignment statement, so
+        # ``x = A(B(x))`` keeps B reading the OLD x, not A's fresh result.
+        pending: list[tuple[int, str, dict]] = []
+        emitted: set[tuple[str, str]] = set()
+        for node, ref in entries:
+            while pending and pending[0][0] <= node.start_byte:
+                _, bound_name, bound_ref = pending.pop(0)
+                bindings[bound_name] = bound_ref
+            for source_ref in self._flow_sources_in_call(node, bindings, resolved_refs):
+                self._append_flow_pair(
+                    pairs,
+                    emitted,
+                    caller_uid=caller_uid,
+                    source=source_ref,
+                    target=ref,
+                    line=node.start_point[0] + 1,
+                )
+            assignment = self._flow_assignment_for_call(node)
+            if assignment is not None:
+                for bound_name in self._flow_assignment_target_names(assignment):
+                    pending.append((assignment.end_byte + 1, bound_name, ref))
+                pending.sort(key=lambda item: item[0])
+
+    @staticmethod
+    def _flow_ref_key(ref: dict) -> str:
+        return str(ref["uid"] or ref["qn"] or ref["name"])
+
+    def _append_flow_pair(
+        self,
+        pairs: list[dict],
+        emitted: set[tuple[str, str]],
+        *,
+        caller_uid: str,
+        source: dict,
+        target: dict,
+        line: int,
+    ) -> None:
+        source_key = self._flow_ref_key(source)
+        target_key = self._flow_ref_key(target)
+        if not source_key or not target_key or source_key == target_key:
+            return
+        if len(emitted) >= self._FLOW_PAIRS_PER_CALLER_CAP:
+            return
+        key = (source_key, target_key)
+        if key in emitted:
+            return
+        emitted.add(key)
+        pairs.append(
+            {
+                "caller_uid": caller_uid,
+                "source_uid": source["uid"],
+                "source_qualified_name": source["qn"],
+                "source_name": source["name"],
+                "target_uid": target["uid"],
+                "target_qualified_name": target["qn"],
+                "target_name": target["name"],
+                "line": line,
+            }
+        )
+
+    def _flow_sources_in_call(
+        self,
+        call_node,
+        bindings: dict[str, dict],
+        resolved_refs: dict[int, dict],
+    ) -> list[dict]:
+        """Source refs feeding this call's arguments: bound names + nested calls."""
+        args = call_node.child_by_field_name("arguments")
+        if args is None:
+            return []
+        sources: list[dict] = []
+        stack = list(args.named_children)
+        while stack:
+            current = stack.pop()
+            if current.type == "call":
+                nested = resolved_refs.get(current.id)
+                if nested is not None:
+                    sources.append(nested)
+                # The nested call's own arguments are ITS uses, not the outer's.
+                continue
+            if current.type == "identifier":
+                bound = bindings.get(_node_text(current))
+                if bound is not None:
+                    sources.append(bound)
+                continue
+            stack.extend(current.named_children)
+        return sources
+
+    @staticmethod
+    def _flow_assignment_for_call(call_node):
+        """The ``assignment`` node whose right-hand side is this call, if any."""
+        rhs = call_node
+        if rhs.parent is not None and rhs.parent.type == "await":
+            rhs = rhs.parent
+        parent = rhs.parent
+        if parent is None or parent.type != "assignment":
+            return None
+        right = parent.child_by_field_name("right")
+        # Compare by node id: tree-sitter hands out fresh wrapper objects, so
+        # identity (`is`) on two lookups of the same node is not reliable.
+        if right is None or right.id != rhs.id:
+            return None
+        return parent
+
+    @staticmethod
+    def _flow_assignment_target_names(assignment) -> list[str]:
+        left = assignment.child_by_field_name("left")
+        if left is None:
+            return []
+        if left.type == "identifier":
+            return [_node_text(left)]
+        if left.type in {"pattern_list", "tuple_pattern"}:
+            return [
+                _node_text(child) for child in left.named_children if child.type == "identifier"
+            ]
+        return []
+
     def _classify_direct_call(self, call_name: str) -> str:
         """Classify a direct identifier call as DIRECT or INFERRED based on known patterns."""
         inferred_patterns = {

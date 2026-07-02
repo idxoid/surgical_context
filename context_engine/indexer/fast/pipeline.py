@@ -61,6 +61,7 @@ from context_engine.indexer.fast.phases import (
     _ensure_adjacency_materialized,
     _extends_external_phase,
     _external_boundary_phase,
+    _flow_pair_phase,
     _hash_phase,
     _hook_phase,
     _http_endpoint_phase,
@@ -535,6 +536,12 @@ def _run_fast_changed_files_pipeline(
         diffs, db, workspace_id, reporter, project_path
     )
     stats["timings_sec"]["type_refs"] = round(time.perf_counter() - t_stage, 3)
+
+    t_stage = time.perf_counter()
+    stats["flow_pairs_linked"] = _flow_pair_phase(
+        diffs, db, workspace_id, reporter, project_path
+    )
+    stats["timings_sec"]["flow_pairs"] = round(time.perf_counter() - t_stage, 3)
 
     t_stage = time.perf_counter()
     alias_count, alias_uids = _symbol_alias_phase(diffs, db, workspace_id, reporter, project_path)

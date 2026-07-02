@@ -31,14 +31,16 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 
-from context_engine.axis.axis_profiles import Axis, edges_for_axes
-from context_engine.axis.graph_walk import cap_by_file, walk_neighbours
+from context_engine.axis.graph_walk import EdgeProfile, cap_by_file, walk_neighbours
 from context_engine.axis.role_retrieval import RoleCandidate
 
-# File-bridge walk runs on the DATAFLOW axis (the AFFECTS parameter/return
-# impact closure). Kept kind-agnostic (whole pool) — same edges as the legacy
-# ``EdgeProfile.AFFECTS``, now named in the canonical axis vocabulary.
-_DATAFLOW_EDGES = edges_for_axes(frozenset({Axis.DATAFLOW}))
+# The broad file-bridge stays pinned to the AFFECTS closure — NOT the full
+# DATAFLOW axis. FLOWS_INTO joined the axis as its primary member, but folding
+# it into this 2-hop union walk drowns the tight sibling signal in closure
+# fan-out (hub files reached by most of the pool win every file slot); the
+# direct pairs get their own 1-hop pass below instead.
+_AFFECTS_EDGES = EdgeProfile.AFFECTS
+_FLOW_SIBLING_EDGES: tuple[str, ...] = ("FLOWS_INTO",)
 
 
 def expand_structural_neighbours(
@@ -73,7 +75,7 @@ def expand_structural_neighbours(
         db,
         workspace_id,
         seed_uids,
-        edges=_DATAFLOW_EDGES,
+        edges=_AFFECTS_EDGES,
         direction="undirected",
         max_hops=max_hops,
         exclude_tests=not include_tests,
@@ -103,4 +105,69 @@ def expand_structural_neighbours(
     ]
 
 
-__all__ = ["expand_structural_neighbours"]
+def expand_dataflow_siblings(
+    seed_candidates: Iterable[RoleCandidate],
+    *,
+    db,
+    workspace_id: str,
+    max_files: int = 3,
+    max_per_file: int = 2,
+    max_total: int = 6,
+    # Above the AFFECTS bridge's 0.25 (a direct per-call-site fact is a
+    # strictly stronger evidence class than membership in the 2-hop closure
+    # region), still below lookahead's 0.40 so vector candidates keep rank.
+    base_score: float = 0.35,
+    exclude_uids: Iterable[str] = (),
+    include_tests: bool = False,
+) -> list[RoleCandidate]:
+    """Direct co-invocation dataflow siblings of the pool, one hop only.
+
+    ``FLOWS_INTO`` is a primary per-call-site fact (some caller binds a pool
+    candidate's result and passes it into the neighbour, or vice versa), so a
+    single undirected hop is the whole honest reach — no closure walk. The fan
+    is naturally tight (measured ~19 new files from an 83-seed pool on the
+    dogfood repo vs ~600 for the 2-hop AFFECTS region), which is exactly why
+    it must not share the broad bridge's walk: hub files reached by most of
+    the pool would claim every file slot ahead of a reach-3 direct sibling.
+    """
+    seeds = list(seed_candidates)
+    if not seeds:
+        return []
+    seed_uids = [c.uid for c in seeds]
+    seed_files = {c.file_path for c in seeds if c.file_path}
+
+    neighbours = walk_neighbours(
+        db,
+        workspace_id,
+        seed_uids,
+        edges=_FLOW_SIBLING_EDGES,
+        direction="undirected",
+        max_hops=1,
+        exclude_tests=not include_tests,
+    )
+    capped = cap_by_file(
+        neighbours,
+        seed_files=seed_files,
+        exclude_uids=set(exclude_uids) | set(seed_uids),
+        max_per_file=max_per_file,
+        max_files=max_files,
+        max_total=max_total,
+    )
+    return [
+        RoleCandidate(
+            uid=n.uid,
+            name=n.name,
+            file_path=n.file_path,
+            role="structural_neighbour",
+            satisfying_contracts=(),
+            satisfying_kinds=("dataflow_sibling",),
+            contract_count=0,
+            kind_count=1,
+            vector_distance=None,
+            score=base_score,
+        )
+        for n in capped
+    ]
+
+
+__all__ = ["expand_dataflow_siblings", "expand_structural_neighbours"]
