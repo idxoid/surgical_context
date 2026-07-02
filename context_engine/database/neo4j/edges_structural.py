@@ -510,3 +510,127 @@ class StructuralEdgesMixin:
                 path=file_path,
                 workspace_id=workspace_id,
             )
+
+    def link_flow_pairs(
+        self,
+        pairs: list[dict],
+        workspace_id: str = DEFAULT_WORKSPACE_ID,
+    ) -> int:
+        """Create FLOWS_INTO edges: call A's result feeds call B's arguments.
+
+        The pair is a static AST fact extracted per caller function
+        (``x = A(...); B(x)`` / ``B(A(...))``); this is the first primary edge
+        of the DATAFLOW axis (AFFECTS is a derived closure rebuilt per change,
+        so the pairs must live under their own type to survive that rebuild).
+        Endpoint resolution mirrors ``link_calls``: extractor-computed uid wins,
+        else exact qualified name, else a workspace-globally-unique name;
+        unresolvable endpoints drop the pair — project symbols only, precision
+        over recall. The caller's uid rides the edge as a property so the
+        incremental path can clear a reindexed file's pairs by caller.
+        """
+        if not pairs:
+            return 0
+        with self.driver.session() as session:
+            result = session.run(
+                """
+                MATCH (:File {workspace_id: $workspace_id})-[:CONTAINS]->(s:Symbol)
+                RETURN s.uid AS uid,
+                       s.name AS name,
+                       coalesce(s.qualified_name, '') AS qn
+                """,
+                workspace_id=workspace_id,
+            )
+            rows = list(result)
+        by_qn: dict[str, str] = {}
+        by_name: dict[str, list[str]] = {}
+        for row in rows:
+            uid = row["uid"]
+            if not uid:
+                continue
+            if row["qn"]:
+                by_qn.setdefault(row["qn"], uid)
+            if row["name"]:
+                by_name.setdefault(row["name"], []).append(uid)
+
+        def _resolve(uid: str, qn: str, name: str) -> str | None:
+            if uid:
+                return uid
+            if qn and qn in by_qn:
+                return by_qn[qn]
+            candidates = by_name.get(name or "", [])
+            if len(candidates) == 1:
+                return candidates[0]
+            return None
+
+        resolved: list[dict] = []
+        for pair in pairs:
+            source = _resolve(
+                str(pair.get("source_uid") or ""),
+                str(pair.get("source_qualified_name") or ""),
+                str(pair.get("source_name") or ""),
+            )
+            target = _resolve(
+                str(pair.get("target_uid") or ""),
+                str(pair.get("target_qualified_name") or ""),
+                str(pair.get("target_name") or ""),
+            )
+            if not source or not target or source == target:
+                continue
+            resolved.append(
+                {
+                    "source_uid": source,
+                    "target_uid": target,
+                    "caller_uid": str(pair.get("caller_uid") or ""),
+                    "line": int(pair.get("line") or 0),
+                }
+            )
+        if not resolved:
+            return 0
+        with self.driver.session() as session:
+            session.execute_write(self._create_flow_pair_relations, resolved, workspace_id)
+            _bump_workspace_graph_version(session, workspace_id)
+        return len(resolved)
+
+    @staticmethod
+    def _create_flow_pair_relations(tx, rows, workspace_id):
+        if not rows:
+            return
+        tx.run(
+            """
+            UNWIND $rows AS d
+            MATCH (a:Symbol {uid: d.source_uid})
+            MATCH (b:Symbol {uid: d.target_uid})
+            WHERE a <> b
+            MERGE (a)-[r:FLOWS_INTO {workspace_id: $workspace_id,
+                                     caller_uid: d.caller_uid}]->(b)
+            SET r.resolver = 'arg-flow-v1',
+                r.line = d.line
+            """,
+            rows=rows,
+            workspace_id=workspace_id,
+        )
+
+    def delete_flow_pairs_for_callers(
+        self,
+        caller_uids: list[str],
+        workspace_id: str = DEFAULT_WORKSPACE_ID,
+    ):
+        """Clear FLOWS_INTO edges recorded at the given caller sites.
+
+        Called with a reindexed file's current + removed symbol uids before
+        relinking — the caller anchors the edge only as a property (the edge
+        itself connects the two callees), so a deleted caller function cannot
+        take its pairs down via DETACH DELETE and must be cleared here.
+        """
+        if not caller_uids:
+            return
+        with self.driver.session() as session:
+            session.run(
+                """
+                MATCH ()-[r:FLOWS_INTO {workspace_id: $workspace_id}]->()
+                WHERE r.caller_uid IN $caller_uids
+                DELETE r
+                """,
+                workspace_id=workspace_id,
+                caller_uids=list(caller_uids),
+            )

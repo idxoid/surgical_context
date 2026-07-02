@@ -68,7 +68,10 @@ AXIS_EDGES: dict[str, tuple[str, ...]] = {
         "HAS_API",
     ),
     Axis.COMPOSITION: ("READS_ATTR", "WRITES_ATTR", "RESOLVES_ATTR"),
-    Axis.DATAFLOW: ("AFFECTS",),
+    # AFFECTS is the derived reverse-dependency closure; FLOWS_INTO is the
+    # primary co-invocation fact (a caller binds A's result and passes it into
+    # B) — the hop CALLS cannot express without routing through the caller.
+    Axis.DATAFLOW: ("AFFECTS", "FLOWS_INTO"),
 }
 
 

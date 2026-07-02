@@ -33,7 +33,7 @@ def _node_source(source_code: str, node) -> str:
     """
     text = getattr(node, "text", None)
     if text is not None:
-        return text.decode("utf-8", errors="replace")
+        return str(text.decode("utf-8", errors="replace"))
     raw = source_code.encode("utf-8")
     return raw[node.start_byte : node.end_byte].decode("utf-8", errors="replace")
 
