@@ -355,6 +355,22 @@ def _degree_seeds_snapshot(
     return seed_uids, removed_uids
 
 
+def _orphan_prune_phase(
+    db: Neo4jClient,
+    workspace_id: str,
+    reporter: ProgressReporter,
+) -> int:
+    """Remove file-less orphan Symbols and heal neighbor degrees."""
+    prune_orphans = getattr(db, "prune_orphan_symbols", None)
+    reporter.stage_start("orphan_prune", total=1)
+    pruned = prune_orphans(workspace_id=workspace_id) if callable(prune_orphans) else 0
+    reporter.step("orphan_prune")
+    reporter.stage_end("orphan_prune")
+    if pruned:
+        print(f"Pruned {pruned} orphan symbol nodes")
+    return int(pruned or 0)
+
+
 def _degree_phase(
     seed_uids: set[str],
     removed_uids: set[str],

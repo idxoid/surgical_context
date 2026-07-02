@@ -9,14 +9,16 @@
     "context_seeds_per_role": null,
     "intent_budget": true
   },
-  "min_overall_mean_recall": 0.55,
-  "min_overall_seed_mean_recall": 0.25,
-  "min_overall_pool_mean_recall": 0.40,
-  "max_zero_recall_count": 2,
-  "min_full_recall_count": 3,
+  "min_overall_mean_recall": 0.85,
+  "min_overall_seed_mean_recall": 0.6,
+  "min_overall_pool_mean_recall": 0.8,
+  "max_zero_recall_count": 0,
+  "min_full_recall_count": 5,
   "per_question_min_file_recall": {
-    "surgical_context_q01": 0.5,
-    "surgical_context_q02": 0.25,
-    "surgical_context_q03": 0.25
+    "surgical_context_q01": 1.0,
+    "surgical_context_q02": 1.0,
+    "surgical_context_q03": 0.5,
+    "surgical_context_q07": 1.0,
+    "surgical_context_q08": 0.667
   }
 }

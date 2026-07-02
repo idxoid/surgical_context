@@ -7,6 +7,7 @@ from context_engine.database.neo4j._common import (
     _DEGREE_REL_PATTERN,
     _WORKSPACE_GRAPH_VERSION_MATCH,
     _WORKSPACE_GRAPH_VERSION_SET,
+    _bump_workspace_graph_version,
     _split_workspace_id,
     _symbol_row,
 )
@@ -291,8 +292,12 @@ class WorkspaceMixin:
                 DELETE r, c
                 WITH collect(DISTINCT s) AS symbols
                 UNWIND symbols AS sym
-                OPTIONAL MATCH (:File)-[:CONTAINS]->(sym)
-                WITH sym, count(*) AS owners
+                OPTIONAL MATCH (owner:File)-[:CONTAINS]->(sym)
+                // count(owner) not count(*): OPTIONAL MATCH keeps a null row for
+                // ownerless symbols, so count(*) is never 0 and the delete below
+                // would never fire; replaced symbols would linger as file-less
+                // orphan nodes still holding their semantic edges.
+                WITH sym, count(owner) AS owners
                 WHERE owners = 0
                 DETACH DELETE sym
                 WITH count(*) AS deleted_symbols
@@ -329,6 +334,46 @@ class WorkspaceMixin:
                 symbol_uids=symbol_uids,
                 workspace_id=workspace_id,
             )
+
+    def prune_orphan_symbols(self, workspace_id: str = DEFAULT_WORKSPACE_ID) -> int:
+        """Delete workspace Symbol nodes with no File CONTAINS links.
+
+        Historical owner checks used ``count(*)`` after OPTIONAL MATCH, which
+        leaves a null row and prevents ownerless symbols from being deleted.
+        This self-healing sweep removes those stale nodes and fixes degrees for
+        surviving neighbours that lost edges.
+        """
+        with self.driver.session() as session:
+            rows = session.run(
+                """
+                MATCH (o:Symbol {workspace_id: $workspace_id})
+                WHERE NOT ( (:File)-[:CONTAINS]->(o) )
+                RETURN o.uid AS uid
+                """,
+                workspace_id=workspace_id,
+            )
+            orphan_uids = [str(row["uid"]) for row in rows if row.get("uid")]
+        if not orphan_uids:
+            return 0
+
+        neighbors = self.degree_neighbor_uids(orphan_uids, workspace_id=workspace_id)
+        orphan_set = set(orphan_uids)
+        survivors = sorted(uid for uid in neighbors if uid not in orphan_set)
+        with self.driver.session() as session:
+            for start in range(0, len(orphan_uids), 2000):
+                session.run(
+                    """
+                    MATCH (o:Symbol {workspace_id: $workspace_id})
+                    WHERE o.uid IN $uids
+                    DETACH DELETE o
+                    """,
+                    workspace_id=workspace_id,
+                    uids=orphan_uids[start : start + 2000],
+                )
+            _bump_workspace_graph_version(session, workspace_id)
+        if survivors:
+            self.recompute_degree_for_closure(survivors, workspace_id=workspace_id)
+        return len(orphan_uids)
 
     def degree_neighbor_uids(
         self,
@@ -432,8 +477,9 @@ class WorkspaceMixin:
                 DETACH DELETE f
                 WITH symbols
                 UNWIND symbols AS sym
-                OPTIONAL MATCH (:File)-[:CONTAINS]->(sym)
-                WITH sym, count(*) AS owners
+                OPTIONAL MATCH (owner:File)-[:CONTAINS]->(sym)
+                // count(owner) not count(*): see prune_symbols_for_file.
+                WITH sym, count(owner) AS owners
                 WHERE owners = 0
                 DETACH DELETE sym
                 WITH count(*) AS deleted_symbols

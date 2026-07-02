@@ -238,7 +238,12 @@ def expand_impact_neighbourhood(
         for n in neighbours:
             if n.uid in excluded:
                 continue
-            utility = _impact_utility(tag, n.depth, publisher_spine=publisher_spine)
+            utility = _impact_utility(
+                tag,
+                n.depth,
+                publisher_spine=publisher_spine,
+                reach=getattr(n, "reach", 1) or 1,
+            )
             prior = best.get(n.uid)
             if prior is not None and (prior.utility_score or 0.0) >= utility:
                 continue
@@ -341,7 +346,13 @@ def _hub_gate(
     return [n for n in forward if fanin.get(n.uid, 0) <= cap]
 
 
-def _impact_utility(tag: str, depth: int, *, publisher_spine: bool = False) -> float:
+def _impact_utility(
+    tag: str,
+    depth: int,
+    *,
+    publisher_spine: bool = False,
+    reach: int = 1,
+) -> float:
     if publisher_spine:
         base = {
             "forward_calls": 0.95,
@@ -362,7 +373,13 @@ def _impact_utility(tag: str, depth: int, *, publisher_spine: bool = False) -> f
             "structural_inheritor": 0.82,
             "forward_affects": 0.58,
         }.get(tag, 0.50)
-    return max(0.10, round(base - max(depth - 1, 0) * 0.08, 3))
+    # Reach (distinct seeds hitting the node) breaks ties INSIDE a
+    # (walk, depth) class: a caller touching many changed symbols is more
+    # impacted than a caller touching one. The bonus is capped at +0.018 —
+    # below the smallest class gap (0.02) and the depth step (0.08) — so it
+    # can never promote a node across walk classes or depths.
+    reach_bonus = min(max(reach, 1) - 1, 9) * 0.002
+    return max(0.10, round(base - max(depth - 1, 0) * 0.08 + reach_bonus, 3))
 
 
 __all__ = [

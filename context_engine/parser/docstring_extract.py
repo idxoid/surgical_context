@@ -21,6 +21,23 @@ _SKIP_JS_SIBLING_TYPES = frozenset(
 )
 
 _PYTHON_DEF_TYPES = frozenset({"function_definition", "class_definition"})
+
+
+def _node_source(source_code: str, node) -> str:
+    """Slice a node's text byte-safely.
+
+    Tree-sitter offsets are BYTE offsets; slicing the ``str`` with them shifts
+    the window as soon as any non-ASCII character (an em-dash in a docstring)
+    appears earlier in the file — the mangled literal then fails
+    ``ast.literal_eval`` and every later docstring in the file is lost.
+    """
+    text = getattr(node, "text", None)
+    if text is not None:
+        return text.decode("utf-8", errors="replace")
+    raw = source_code.encode("utf-8")
+    return raw[node.start_byte : node.end_byte].decode("utf-8", errors="replace")
+
+
 _TS_DEF_TYPES = frozenset(
     {
         "function_declaration",
@@ -69,7 +86,7 @@ def leading_jsdoc(source_code: str, node) -> str:
         if sib.type in _SKIP_JS_SIBLING_TYPES:
             continue
         if sib.type == "comment":
-            text = source_code[sib.start_byte : sib.end_byte]
+            text = _node_source(source_code, sib)
             if text.lstrip().startswith("/**"):
                 return strip_jsdoc(text)
             continue
@@ -90,7 +107,31 @@ def python_docstring(source_code: str, node) -> str:
         expr = child.children[0] if child.children else None
         if expr is None or expr.type != "string":
             continue
-        literal = source_code[expr.start_byte : expr.end_byte]
+        literal = _node_source(source_code, expr)
+        try:
+            value = ast.literal_eval(literal)
+        except (SyntaxError, ValueError):
+            return ""
+        return str(value).strip() if isinstance(value, str) else ""
+    return ""
+
+
+def python_module_docstring(source_code: str, root) -> str:
+    """PEP 257 module docstring — the file's first statement, comments aside.
+
+    Unlike defs/classes the module node has no ``body`` field; its statements
+    are direct children. Stops at the first non-comment statement: a docstring
+    below any real code is not a module docstring.
+    """
+    for child in root.children:
+        if child.type == "comment":
+            continue
+        if child.type != "expression_statement":
+            return ""
+        expr = child.children[0] if child.children else None
+        if expr is None or expr.type != "string":
+            return ""
+        literal = _node_source(source_code, expr)
         try:
             value = ast.literal_eval(literal)
         except (SyntaxError, ValueError):
@@ -104,6 +145,13 @@ def docstrings_by_start_line(source_code: str, tree, *, language: str) -> dict[i
     if tree is None:
         return {}
     out: dict[int, str] = {}
+    if language == "python":
+        # Module docstring keys on the module symbol's start line (always 1),
+        # not the literal's own line — a shebang/comment above the docstring
+        # must not detach it from the module symbol.
+        module_doc = python_module_docstring(source_code, tree.root_node)
+        if module_doc:
+            out[tree.root_node.start_point[0] + 1] = module_doc
     for node in _iter_nodes(tree.root_node):
         if language == "python":
             if node.type not in _PYTHON_DEF_TYPES:

@@ -692,12 +692,16 @@ questions:
   - SidecarClient
   - ask
   - SurgicalContextViewProvider
-  - activate
+  - askAboutSymbol
   expected_files:
-  - extension/src/context_engineClient.ts
+  # The actual request path: webview UI action -> provider message handler ->
+  # HTTP client -> FastAPI route. main.py stopped being the /ask handler when
+  # 14ce082 extracted the HTTP routes into api/routes/; extension.ts only
+  # registers the provider at activation and is not on the request path.
+  - extension/src/webview/main.ts
   - extension/src/providers/SurgicalContextViewProvider.ts
-  - extension/src/extension.ts
-  - context_engine/main.py
+  - extension/src/context_engineClient.ts
+  - context_engine/api/routes/ask.py
 - id: dathund_q01
   repo: dathund
   core12: true

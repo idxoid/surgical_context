@@ -69,6 +69,7 @@ from context_engine.indexer.fast.phases import (
     _integrates_with_phase,
     _metadata_bridge_phase,
     _mro_api_bridge_phase,
+    _orphan_prune_phase,
     _parse_phase,
     _property_api_phase,
     _proxy_binding_phase,
@@ -462,6 +463,10 @@ def _run_fast_changed_files_pipeline(
     t_stage = time.perf_counter()
     _apply_graph(diffs, db, workspace_id, reporter)
     stats["timings_sec"]["graph"] = round(time.perf_counter() - t_stage, 3)
+
+    t_stage = time.perf_counter()
+    stats["orphan_symbols_pruned"] = _orphan_prune_phase(db, workspace_id, reporter)
+    stats["timings_sec"]["orphan_prune"] = round(time.perf_counter() - t_stage, 3)
 
     t_stage = time.perf_counter()
     ext_calls, ext_imports = _external_boundary_phase(

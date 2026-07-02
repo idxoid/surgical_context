@@ -155,6 +155,7 @@ def import_main_with_fakes(monkeypatch):
             ][:limit]
 
     fake_lancedb.LanceDBClient = FakeLanceDBClient
+    fake_lancedb.DB_PATH = f"{feedback_dir}/lancedb"
     monkeypatch.setitem(sys.modules, "context_engine.database.lancedb_client", fake_lancedb)
 
     fake_engine = types.ModuleType("context_engine.ai.engine")

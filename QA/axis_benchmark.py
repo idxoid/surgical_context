@@ -98,10 +98,16 @@ REPO_TO_WORKSPACE: dict[str, str] = {
     for repo in _BENCH_REPOS
     if repo != "surgical_context"
 }
-# Dogfood repo is indexed under the local tenant (see run_demo / manual reindex),
-# not under qa_repo like the cloned benchmark checkouts.
-_SC_WS = os.getenv("AXIS_SURGICAL_CONTEXT_WORKSPACE", f"local/surgical_context@{_BENCH_REF}")
+# Dogfood repo is indexed under the same qa_repo tenant as the benchmark
+# checkouts on this box. Keep a dedicated override for CI/manual local runs
+# that intentionally index it elsewhere.
+_SC_WS = os.getenv(
+    "AXIS_SURGICAL_CONTEXT_WORKSPACE",
+    f"{_BENCH_TENANT}/surgical_context@{_BENCH_REF}",
+)
 REPO_TO_WORKSPACE["surgical_context"] = _BENCH_PROFILE.workspace_id(_SC_WS)
+
+_TOP_CANDIDATE_AUDIT_LIMIT = 15
 
 
 @dataclass
@@ -139,6 +145,14 @@ class QuestionResult:
     # code actually handed to the prompt.
     context_seconds: float = 0.0
     rendered_tokens: int = 0
+    # Candidate-level precision audit. These fields do not affect scoring;
+    # they make the existing seed/pool/bundle report explain *why* noisy
+    # candidates reached the pool or prompt.
+    candidate_relation_histogram: dict[str, int] = field(default_factory=dict)
+    bundle_relation_histogram: dict[str, int] = field(default_factory=dict)
+    top_candidates: list[dict[str, Any]] = field(default_factory=list)
+    top_rendered_symbols: list[dict[str, Any]] = field(default_factory=list)
+    expected_file_layers: list[dict[str, Any]] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -164,6 +178,11 @@ class QuestionResult:
             "candidate_count": self.candidate_count,
             "context_seconds": self.context_seconds,
             "rendered_tokens": self.rendered_tokens,
+            "candidate_relation_histogram": self.candidate_relation_histogram,
+            "bundle_relation_histogram": self.bundle_relation_histogram,
+            "top_candidates": self.top_candidates,
+            "top_rendered_symbols": self.top_rendered_symbols,
+            "expected_file_layers": self.expected_file_layers,
         }
 
 
@@ -228,6 +247,142 @@ def _compute_recall(expected: list[str], retrieved: list[str]) -> tuple[float, l
                 matched.append(exp)
                 break
     return len(matched) / len(expected), matched
+
+
+def _sorted_counter_dict(counter: Counter[str]) -> dict[str, int]:
+    return {
+        key: count for key, count in sorted(counter.items(), key=lambda item: (-item[1], item[0]))
+    }
+
+
+def _candidate_relation(candidate: Any) -> str:
+    return str(getattr(candidate, "role", "") or getattr(candidate, "edge_type", "") or "(none)")
+
+
+def _rendered_symbol_relation(symbol: Any) -> str:
+    return str(
+        getattr(symbol, "role", "")
+        or getattr(symbol, "expansion_step", "")
+        or getattr(symbol, "edge_type", "")
+        or "(none)"
+    )
+
+
+def _float_or_none(value: Any) -> float | None:
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _candidate_audit_row(candidate: Any, rank: int) -> dict[str, Any]:
+    return {
+        "rank": rank,
+        "uid": str(getattr(candidate, "uid", "") or ""),
+        "name": str(getattr(candidate, "name", "") or ""),
+        "qualified_name": str(getattr(candidate, "qualified_name", "") or ""),
+        "file_path": str(getattr(candidate, "file_path", "") or ""),
+        "relation": _candidate_relation(candidate),
+        "role": str(getattr(candidate, "role", "") or ""),
+        "score": _float_or_none(getattr(candidate, "score", None)),
+        "utility_score": _float_or_none(getattr(candidate, "utility_score", None)),
+        "depth": getattr(candidate, "depth", None),
+        "edge_type": str(getattr(candidate, "edge_type", "") or ""),
+        "satisfying_contracts": list(getattr(candidate, "satisfying_contracts", ()) or ()),
+        "satisfying_kinds": list(getattr(candidate, "satisfying_kinds", ()) or ()),
+    }
+
+
+def _rendered_symbol_audit_row(symbol: Any, rank: int) -> dict[str, Any]:
+    return {
+        "rank": rank,
+        "uid": str(getattr(symbol, "uid", "") or ""),
+        "name": str(getattr(symbol, "name", "") or ""),
+        "qualified_name": str(getattr(symbol, "qualified_name", "") or ""),
+        "file_path": str(getattr(symbol, "file_path", "") or ""),
+        "relation": _rendered_symbol_relation(symbol),
+        "distance_from_seed": getattr(symbol, "distance_from_seed", None),
+        "expansion_step": str(getattr(symbol, "expansion_step", "") or ""),
+        "edge_type": str(getattr(symbol, "edge_type", "") or ""),
+        "relevance_score": _float_or_none(getattr(symbol, "relevance_score", None)),
+        "utility_score": _float_or_none(getattr(symbol, "utility_score", None)),
+    }
+
+
+def _unique_rendered_symbols(bundles: Any) -> list[Any]:
+    seen: set[str] = set()
+    out: list[Any] = []
+    for bundle in bundles:
+        for symbol in bundle.all_symbols():
+            uid = str(getattr(symbol, "uid", "") or "")
+            key = uid or "::".join(
+                (
+                    str(getattr(symbol, "file_path", "") or ""),
+                    str(getattr(symbol, "name", "") or ""),
+                    str(getattr(symbol, "distance_from_seed", "") or ""),
+                )
+            )
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append(symbol)
+    return out
+
+
+def _layer_presence(expected_file: str, paths: list[str]) -> bool:
+    return any(_file_matches(path, expected_file) for path in paths)
+
+
+def _expected_file_layers(result: QuestionResult) -> list[dict[str, Any]]:
+    layers: list[dict[str, Any]] = []
+    for expected in result.expected_files:
+        present = {
+            "seed": _layer_presence(expected, result.seed_files),
+            "pool": _layer_presence(expected, result.pool_files),
+            "bundle": _layer_presence(expected, result.retrieved_files),
+        }
+        first_layer = next((name for name in ("seed", "pool", "bundle") if present[name]), None)
+        lost_after: list[str] = []
+        if present["seed"] and not present["pool"]:
+            lost_after.append("seed")
+        if present["pool"] and not present["bundle"]:
+            lost_after.append("pool")
+        layers.append(
+            {
+                "expected_file": expected,
+                **present,
+                "first_layer": first_layer or "missing",
+                "lost_after": lost_after,
+            }
+        )
+    return layers
+
+
+def _populate_candidate_audit(
+    result: QuestionResult,
+    retrieval: Any,
+    *,
+    top_limit: int = _TOP_CANDIDATE_AUDIT_LIMIT,
+) -> None:
+    candidates = list(getattr(retrieval, "candidates_for_context", []) or [])
+    rendered_symbols = _unique_rendered_symbols(getattr(retrieval, "bundles", []) or [])
+
+    result.candidate_relation_histogram = _sorted_counter_dict(
+        Counter(_candidate_relation(candidate) for candidate in candidates)
+    )
+    result.bundle_relation_histogram = _sorted_counter_dict(
+        Counter(_rendered_symbol_relation(symbol) for symbol in rendered_symbols)
+    )
+    result.top_candidates = [
+        _candidate_audit_row(candidate, rank)
+        for rank, candidate in enumerate(candidates[:top_limit], start=1)
+    ]
+    result.top_rendered_symbols = [
+        _rendered_symbol_audit_row(symbol, rank)
+        for rank, symbol in enumerate(rendered_symbols[:top_limit], start=1)
+    ]
 
 
 def _question_result_from_entry(question_entry: dict[str, Any]) -> QuestionResult:
@@ -417,6 +572,8 @@ def run_question(
     _apply_intent(result, retrieval.intent)
     result.candidate_count = len(retrieval.candidates_for_context)
     _populate_recall_layers(result, retrieval)
+    _populate_candidate_audit(result, retrieval)
+    result.expected_file_layers = _expected_file_layers(result)
     return result
 
 
@@ -585,6 +742,12 @@ def summarise(results: list[QuestionResult]) -> dict[str, Any]:
     for r in scored:
         by_intent[r.intent_top_role or "(no_role)"] += 1
 
+    candidate_relation_totals: Counter[str] = Counter()
+    bundle_relation_totals: Counter[str] = Counter()
+    for r in scored:
+        candidate_relation_totals.update(r.candidate_relation_histogram)
+        bundle_relation_totals.update(r.bundle_relation_histogram)
+
     return {
         "scored": len(scored),
         "skipped": len(skipped),
@@ -601,6 +764,8 @@ def summarise(results: list[QuestionResult]) -> dict[str, Any]:
         "masked_by_context_expander": masked_by_context_expander,
         "per_repo": by_repo_summary,
         "intent_top_role_counts": dict(by_intent),
+        "candidate_relation_totals": _sorted_counter_dict(candidate_relation_totals),
+        "bundle_relation_totals": _sorted_counter_dict(bundle_relation_totals),
         "skipped_reasons": Counter(r.skipped_reason for r in skipped),
         # Post-processing cost (the expensive part of the budget cost model).
         "overall_mean_context_seconds": _mean("context_seconds"),
@@ -618,6 +783,42 @@ def summarise(results: list[QuestionResult]) -> dict[str, Any]:
             for r in sorted(scored, key=lambda x: x.question_id)
         ],
     }
+
+
+def _short_report_text(text: str, *, limit: int = 80) -> str:
+    compacted = " ".join(str(text or "").split())
+    if len(compacted) <= limit:
+        return compacted
+    return compacted[: limit - 3].rstrip() + "..."
+
+
+def _format_histogram(histogram: dict[str, int], *, limit: int = 4) -> str:
+    if not histogram:
+        return "—"
+    items = list(histogram.items())[:limit]
+    rendered = ", ".join(f"{key}:{count}" for key, count in items)
+    if len(histogram) > limit:
+        rendered += ", ..."
+    return rendered
+
+
+def _format_top_candidate_rows(rows: list[dict[str, Any]], *, limit: int = 5) -> str:
+    if not rows:
+        return "—"
+    parts: list[str] = []
+    for row in rows[:limit]:
+        label = row.get("qualified_name") or row.get("name") or row.get("uid") or "?"
+        score = row.get("score")
+        score_text = f"{score:.2f}" if isinstance(score, int | float) else "?"
+        parts.append(
+            _short_report_text(
+                f"{row.get('relation') or '?'}:{label}({score_text})",
+                limit=48,
+            )
+        )
+    if len(rows) > limit:
+        parts.append("...")
+    return "; ".join(parts)
 
 
 def _render_markdown(results: list[QuestionResult], summary: dict[str, Any]) -> str:
@@ -699,12 +900,21 @@ def _render_markdown(results: list[QuestionResult], summary: dict[str, Any]) -> 
             "",
             f"`{json.dumps(summary['intent_top_role_counts'], sort_keys=True)}`",
             "",
+            "## Candidate audit",
+            "",
+            "| surface | top relations |",
+            "|---|---|",
+            f"| context candidate pool | "
+            f"{_format_histogram(summary.get('candidate_relation_totals', {}), limit=8)} |",
+            f"| rendered bundle symbols | "
+            f"{_format_histogram(summary.get('bundle_relation_totals', {}), limit=8)} |",
+            "",
             "## Per-question detail",
             "",
             "`p⚠` = pool expander masks a seed miss · `c⚠` = context expander masks a pool miss",
             "",
-            "| id | repo | seed | pool | bundle | matched/expected | intent | cand |",
-            "|---|---|---|---|---|---|---|---|",
+            "| id | repo | seed | pool | bundle | matched/expected | intent | cand | top candidate relations |",
+            "|---|---|---|---|---|---|---|---|---|",
         ]
     )
     for r in sorted(results, key=lambda x: (x.repo, x.question_id)):
@@ -725,8 +935,60 @@ def _render_markdown(results: list[QuestionResult], summary: dict[str, Any]) -> 
             f"| {r.question_id} | {r.repo} | {r.seed_recall:.2f} | "
             f"{r.pool_recall:.2f} | {r.file_recall:.2f}{marks} | "
             f"{len(r.matched_files)}/{len(r.expected_files)} | "
-            f"{intent_str} | {r.candidate_count} |"
+            f"{intent_str} | {r.candidate_count} | "
+            f"{_format_histogram(r.candidate_relation_histogram, limit=3)} |"
         )
+
+    expected_layer_rows = [
+        (r, row)
+        for r in sorted(results, key=lambda x: (x.repo, x.question_id))
+        if not r.skipped_reason
+        for row in r.expected_file_layers
+        if row.get("first_layer") != "seed" or row.get("lost_after")
+    ]
+    if expected_layer_rows:
+        lines.extend(
+            [
+                "",
+                "## Expected files by layer",
+                "",
+                "Rows here either missed seed retrieval, appeared only after expansion, "
+                "or were lost before the final bundle.",
+                "",
+                "| id | repo | expected file | seed | pool | bundle | first | lost after |",
+                "|---|---|---|---|---|---|---|---|",
+            ]
+        )
+        for r, row in expected_layer_rows:
+            lost = ", ".join(row.get("lost_after") or []) or "—"
+            lines.append(
+                f"| {r.question_id} | {r.repo} | {row.get('expected_file')} | "
+                f"{'yes' if row.get('seed') else 'no'} | "
+                f"{'yes' if row.get('pool') else 'no'} | "
+                f"{'yes' if row.get('bundle') else 'no'} | "
+                f"{row.get('first_layer')} | {lost} |"
+            )
+
+    top_candidate_rows = [
+        r
+        for r in sorted(results, key=lambda x: (x.repo, x.question_id))
+        if not r.skipped_reason and (r.file_recall < 1.0 - 1e-9 or r.candidate_count >= 50)
+    ]
+    if top_candidate_rows:
+        lines.extend(
+            [
+                "",
+                "## Top candidates for noisy or non-full questions",
+                "",
+                "| id | repo | candidate count | top candidates |",
+                "|---|---|---|---|",
+            ]
+        )
+        for r in top_candidate_rows:
+            lines.append(
+                f"| {r.question_id} | {r.repo} | {r.candidate_count} | "
+                f"{_format_top_candidate_rows(r.top_candidates)} |"
+            )
     return "\n".join(lines) + "\n"
 
 

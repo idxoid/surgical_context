@@ -91,3 +91,43 @@ def test_javascript_adapter_attaches_jsdoc():
     docstring = symbol.docstring
     assert docstring is not None
     assert docstring == "Factory helper."
+
+
+def test_python_module_docstring_attaches_to_module_symbol():
+    source = '"""Intent-axis ranking - boost candidates."""\n\ndef boost():\n    return 1\n'
+    symbols = PythonAdapter().extract_symbols(source, "pkg/axis_ranking.py")
+    module = next(s for s in symbols if s.kind == "module")
+    assert module.docstring == "Intent-axis ranking - boost candidates."
+    fn = next(s for s in symbols if s.name == "boost")
+    assert not fn.docstring
+
+
+def test_python_module_docstring_survives_leading_comment():
+    source = '#!/usr/bin/env python\n# comment\n"""Module doc."""\nX = 1\n'
+    symbols = PythonAdapter().extract_symbols(source, "pkg/mod.py")
+    module = next(s for s in symbols if s.kind == "module")
+    assert module.docstring == "Module doc."
+
+
+def test_python_string_below_code_is_not_module_docstring():
+    source = 'X = 1\n"""Not a docstring."""\n'
+    symbols = PythonAdapter().extract_symbols(source, "pkg/mod.py")
+    module = next(s for s in symbols if s.kind == "module")
+    assert not module.docstring
+
+
+def test_docstrings_survive_non_ascii_source():
+    # Tree-sitter offsets are byte offsets; an em-dash before a docstring used
+    # to shift the str slice and lose every docstring after it in the file.
+    source = (
+        '"""Module doc — em-dash inside."""\n'
+        "\n"
+        "def later():\n"
+        '    """Function doc after non-ASCII — must survive."""\n'
+        "    return 1\n"
+    )
+    symbols = PythonAdapter().extract_symbols(source, "pkg/unicode_mod.py")
+    module = next(s for s in symbols if s.kind == "module")
+    fn = next(s for s in symbols if s.name == "later")
+    assert module.docstring == "Module doc — em-dash inside."
+    assert fn.docstring == "Function doc after non-ASCII — must survive."
