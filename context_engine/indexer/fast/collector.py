@@ -53,10 +53,49 @@ _INDEXED_EXTENSIONS = frozenset(
     ext for adapter in REGISTRY.supported_adapters() for ext in adapter.file_extensions
 )
 
+# Compiled/bundled JS output committed outside the pruned build dirs (e.g. a
+# VS Code extension's webview bundles). Two structural markers, both compiler
+# artifacts rather than name patterns: the sourcemap directive that emitters
+# append as the final line of generated output, and minified single-line shape.
+# Only the byte tail is read — collection stays cheap.
+_GENERATED_CHECK_EXTENSIONS = frozenset({".js", ".jsx", ".mjs", ".cjs"})
+_GENERATED_TAIL_BYTES = 8192
+_MINIFIED_LINE_LENGTH = 2000
+_SOURCE_MAP_DIRECTIVES = (b"//# sourceMappingURL=", b"//@ sourceMappingURL=")
+
 
 def is_indexable_file(file_path: str) -> bool:
     _, ext = os.path.splitext(file_path)
     return ext.lower() in _INDEXED_EXTENSIONS
+
+
+def is_generated_output(file_path: str) -> bool:
+    """True for build-output JS: sourcemap trailer or minified line shape.
+
+    Generated bundles duplicate symbols whose real sources are indexed
+    elsewhere in the tree; when collected they pollute vector seeds and leave
+    stale phantom symbols behind every re-bundle (chunk names are content
+    hashes). The directive check is anchored to the file's last non-empty
+    line — where emitters place it — so source code merely *mentioning*
+    ``sourceMappingURL`` (bundler/tooling code) is not excluded.
+    """
+    _, ext = os.path.splitext(file_path)
+    if ext.lower() not in _GENERATED_CHECK_EXTENSIONS:
+        return False
+    try:
+        with open(file_path, "rb") as f:
+            f.seek(0, os.SEEK_END)
+            size = f.tell()
+            f.seek(max(0, size - _GENERATED_TAIL_BYTES))
+            tail = f.read()
+    except OSError:
+        return False
+    lines = [line.strip() for line in tail.splitlines()]
+    non_empty = [line for line in lines if line]
+    if non_empty and non_empty[-1].startswith(_SOURCE_MAP_DIRECTIVES):
+        return True
+    longest = max((len(line) for line in lines), default=0)
+    return longest > _MINIFIED_LINE_LENGTH
 
 
 def _load_gitignore(root: str):
@@ -104,6 +143,8 @@ def _maybe_collect_file(
         rel = os.path.relpath(full, project_root)
         if spec.match_file(rel):
             return
+    if is_generated_output(full):
+        return
     files.append(full)
 
 
