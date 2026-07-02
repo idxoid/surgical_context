@@ -251,17 +251,12 @@ def _compute_recall(expected: list[str], retrieved: list[str]) -> tuple[float, l
 
 def _sorted_counter_dict(counter: Counter[str]) -> dict[str, int]:
     return {
-        key: count
-        for key, count in sorted(counter.items(), key=lambda item: (-item[1], item[0]))
+        key: count for key, count in sorted(counter.items(), key=lambda item: (-item[1], item[0]))
     }
 
 
 def _candidate_relation(candidate: Any) -> str:
-    return str(
-        getattr(candidate, "role", "")
-        or getattr(candidate, "edge_type", "")
-        or "(none)"
-    )
+    return str(getattr(candidate, "role", "") or getattr(candidate, "edge_type", "") or "(none)")
 
 
 def _rendered_symbol_relation(symbol: Any) -> str:
