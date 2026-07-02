@@ -877,18 +877,26 @@ def _run_structural_pool_passes(
     if not existing_pool_for_struct:
         return
     with trace.stage("structural_neighbours"):
+        # Direct FLOWS_INTO siblings first: the tight primary-fact hop must not
+        # compete with the broad AFFECTS closure for file slots.
+        sibling_pool = structural_neighbours.expand_dataflow_siblings(
+            existing_pool_for_struct,
+            db=db,
+            workspace_id=workspace_id,
+        )
         affects_pool = structural_neighbours.expand_structural_neighbours(
             existing_pool_for_struct,
             db=db,
             workspace_id=workspace_id,
+            exclude_uids=[c.uid for c in sibling_pool],
         )
     ancestor_pool = inheritance_ancestors.expand_inheritance_ancestors(
         existing_pool_for_struct,
         db=db,
         workspace_id=workspace_id,
-        exclude_uids=[c.uid for c in affects_pool],
+        exclude_uids=[c.uid for c in (list(sibling_pool) + list(affects_pool))],
     )
-    already = {c.uid for c in (list(affects_pool) + list(ancestor_pool))}
+    already = {c.uid for c in (list(sibling_pool) + list(affects_pool) + list(ancestor_pool))}
     with trace.stage("phased"):
         phased_pool = axis_phased.expand_phased(
             existing_pool_for_struct,
@@ -899,7 +907,7 @@ def _run_structural_pool_passes(
             prescanned=scanned,
         )
     raw_by_role["structural_neighbour"] = (
-        list(affects_pool) + list(ancestor_pool) + list(phased_pool)
+        list(sibling_pool) + list(affects_pool) + list(ancestor_pool) + list(phased_pool)
     )
 
 
