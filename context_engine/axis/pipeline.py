@@ -1017,12 +1017,18 @@ def _prepare_budgeted_candidates(
     budget_profile = ARCHITECTURE if symbol_targeted else budget_for_intent(intent)
 
     def _budget_utility_score(c: RoleCandidate) -> float:
-        return c.score + proximity_boost(c.file_path, anchor_path)
+        # Walk-derived candidates (impact/trace/pinned) carry a differentiated
+        # utility_score (walk class × depth × reach); flattening them to the
+        # constant expansion `score` erased that ranking right before the
+        # packer, so every impact bundle competed at the same base utility and
+        # selection degenerated to bridge-bonus size.
+        base = c.utility_score if c.utility_score is not None else c.score
+        return base + proximity_boost(c.file_path, anchor_path)
 
     utility_score_fn = _budget_utility_score
     active = sorted(
         candidates_for_context,
-        key=lambda c: c.score + proximity_boost(c.file_path, anchor_path),
+        key=_budget_utility_score,
         reverse=True,
     )
     token_budget = budget_profile.effective_tokens(base_token_budget)
