@@ -32,7 +32,7 @@ def _node_source(source_code: str, node) -> str:
     ``ast.literal_eval`` and every later docstring in the file is lost.
     """
     text = getattr(node, "text", None)
-    if text is not None:
+    if isinstance(text, bytes):
         return text.decode("utf-8", errors="replace")
     raw = source_code.encode("utf-8")
     return raw[node.start_byte : node.end_byte].decode("utf-8", errors="replace")
