@@ -519,6 +519,29 @@ def _degree_seeds_snapshot(
     return seed_uids, removed_uids
 
 
+def _orphan_prune_phase(
+    db: Neo4jClient,
+    workspace_id: str,
+    reporter: ProgressReporter,
+) -> int:
+    """Remove file-less orphan Symbol nodes and heal neighbor degrees.
+
+    Runs right after ``_apply_graph`` so every later edge-linking phase resolves
+    against a graph where each Symbol is reachable through its File — edges can
+    no longer silently land on stale duplicate nodes retrieval cannot map to a
+    file. ``prune_orphan_symbols`` recomputes degree for surviving neighbors
+    itself, so this phase does not extend the degree closure.
+    """
+    prune_orphans = getattr(db, "prune_orphan_symbols", None)
+    reporter.stage_start("orphan_prune", total=1)
+    pruned = prune_orphans(workspace_id=workspace_id) if callable(prune_orphans) else 0
+    reporter.step("orphan_prune")
+    reporter.stage_end("orphan_prune")
+    if pruned:
+        print(f"🧹 pruned {pruned} orphan symbol nodes")
+    return pruned
+
+
 def _degree_phase(
     seed_uids: set[str],
     removed_uids: set[str],
@@ -1966,6 +1989,12 @@ def _run_fast_changed_files_pipeline(
     t_stage = time.perf_counter()
     _apply_graph(diffs, db, workspace_id, reporter)
     stats["timings_sec"]["graph"] = round(time.perf_counter() - t_stage, 3)
+
+    # Self-healing sweep for file-less orphan Symbol nodes left by the historical
+    # prune/delete owner-count bug. Steady-state this is one indexed query.
+    t_stage = time.perf_counter()
+    stats["orphan_symbols_pruned"] = _orphan_prune_phase(db, workspace_id, reporter)
+    stats["timings_sec"]["orphan_prune"] = round(time.perf_counter() - t_stage, 3)
 
     t_stage = time.perf_counter()
     ext_calls, ext_imports = _external_boundary_phase(

@@ -355,8 +355,12 @@ class Neo4jClient:
                 DELETE r, c
                 WITH collect(DISTINCT s) AS symbols
                 UNWIND symbols AS sym
-                OPTIONAL MATCH (:File)-[:CONTAINS]->(sym)
-                WITH sym, count(*) AS owners
+                OPTIONAL MATCH (owner:File)-[:CONTAINS]->(sym)
+                // count(owner) not count(*): OPTIONAL MATCH keeps a null row for
+                // ownerless symbols, so count(*) is never 0 and the delete below
+                // would never fire — replaced symbols would linger as file-less
+                // orphan nodes still holding their semantic edges.
+                WITH sym, count(owner) AS owners
                 WHERE owners = 0
                 DETACH DELETE sym
                 WITH count(*) AS deleted_symbols
@@ -393,6 +397,50 @@ class Neo4jClient:
                 symbol_uids=symbol_uids,
                 workspace_id=workspace_id,
             )
+
+    def prune_orphan_symbols(self, workspace_id: str = DEFAULT_WORKSPACE_ID) -> int:
+        """Delete workspace Symbol nodes no File CONTAINS-links (stale leftovers).
+
+        Historical prune/delete owner-checks used ``count(*)`` over an OPTIONAL
+        MATCH — never 0 — so replaced/deleted-file symbols were unlinked from
+        their File but the nodes survived, accumulating as file-less "orphans"
+        that keep stale semantic edges (USES_TYPE/AFFECTS/INSTANTIATES/…)
+        pointed at them. Retrieval maps symbols to files through CONTAINS, so
+        edges landing on orphans are invisible to the pool — they only dilute
+        resolution and degree. Steady-state (post-fix) this finds nothing.
+        """
+        with self.driver.session() as session:
+            rows = session.run(
+                """
+                MATCH (o:Symbol {workspace_id: $workspace_id})
+                WHERE NOT ( (:File)-[:CONTAINS]->(o) )
+                RETURN o.uid AS uid
+                """,
+                workspace_id=workspace_id,
+            )
+            orphan_uids = [str(row["uid"]) for row in rows if row.get("uid")]
+        if not orphan_uids:
+            return 0
+        # Snapshot degree neighbors BEFORE deletion — once an orphan is gone its
+        # surviving neighbors are unreachable from it but still lose an edge.
+        neighbors = self.degree_neighbor_uids(orphan_uids, workspace_id=workspace_id)
+        orphan_set = set(orphan_uids)
+        survivors = sorted(uid for uid in neighbors if uid not in orphan_set)
+        with self.driver.session() as session:
+            for start in range(0, len(orphan_uids), 2000):
+                session.run(
+                    """
+                    MATCH (o:Symbol {workspace_id: $workspace_id})
+                    WHERE o.uid IN $uids
+                    DETACH DELETE o
+                    """,
+                    workspace_id=workspace_id,
+                    uids=orphan_uids[start : start + 2000],
+                )
+            _bump_workspace_graph_version(session, workspace_id)
+        if survivors:
+            self.recompute_degree_for_closure(survivors, workspace_id=workspace_id)
+        return len(orphan_uids)
 
     def degree_neighbor_uids(
         self,
@@ -496,8 +544,11 @@ class Neo4jClient:
                 DETACH DELETE f
                 WITH symbols
                 UNWIND symbols AS sym
-                OPTIONAL MATCH (:File)-[:CONTAINS]->(sym)
-                WITH sym, count(*) AS owners
+                OPTIONAL MATCH (owner:File)-[:CONTAINS]->(sym)
+                // count(owner) not count(*): see prune_symbols_for_file — count(*)
+                // counts the null row, so symbols of a deleted file were never
+                // removed and survived as file-less orphans.
+                WITH sym, count(owner) AS owners
                 WHERE owners = 0
                 DETACH DELETE sym
                 WITH count(*) AS deleted_symbols
