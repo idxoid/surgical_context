@@ -1191,13 +1191,20 @@ def _initial_credit_render(
 
 
 def _target_credit_modes(bundle: ContextBundle, render_mode: str) -> tuple[str, ...]:
+    """Upgrade rungs available to a bundle under credit budgeting.
+
+    The profile ``render_mode`` shapes the cheap initial coverage, but it is
+    NOT a hard ceiling any more: the exact printed-cost accounting is what
+    bounds spending now, and capping the ladder at the profile mode left
+    budget unspendable while answer bodies sat one rung above (a ``hybrid``
+    profile renders related symbols as signatures forever — pydantic_q05's
+    gold froze at 18 tokens with 4.7k unspent). ``impact_tiered`` keeps its
+    tiered base render and climbs the rich rungs from there.
+    """
     del bundle
     if render_mode == "impact_tiered":
-        return ("impact_tiered",)
-    if render_mode not in _RENDER_LADDER:
-        return _RENDER_LADDER
-    idx = _RENDER_LADDER.index(render_mode)
-    return _RENDER_LADDER[: idx + 1]
+        return ("impact_tiered", "hybrid", "full")
+    return _RENDER_LADDER
 
 
 def _next_upgrade_render(
@@ -1809,6 +1816,10 @@ def _apply_token_credit_budget(
         token_budget=token_budget,
         used=used,
     )
+    # Waves 2 and 3 both run with the whole budget as the per-step limit, so
+    # they can share one fresh render cache (the memo key assumes a constant
+    # limit — sharing with the CAPPED pass above would be wrong).
+    relaxed_cache: dict[tuple[int, str], tuple[ContextBundle, int]] = {}
     if used < token_budget:
         # Cap relaxation on leftover budget: every capped upgrade has landed
         # or been rejected, so contention — the reason the leader cap exists —
@@ -1832,11 +1843,30 @@ def _apply_token_credit_budget(
                 render_mode=render_mode,
                 transaction_limit=token_budget,
                 full_render_max_depth=full_render_max_depth,
-                render_cache={},
+                render_cache=relaxed_cache,
                 token_budget=token_budget,
                 used=used,
                 entry_filter=relaxed_entries,
             )
+    if used < token_budget:
+        # Third wave: the leader set is saturated and budget still remains.
+        # ``_leader_pool_metrics`` promises that symbols below the noise floor
+        # "still enter via marginal packer on leftover budget" — deliver that
+        # for upgrades too: same gain/delta economics, eligibility widened to
+        # every entry. Saturated leaders re-enqueue as cheap no-ops
+        # (``_next_upgrade_render`` returns None at the ladder top), so the
+        # wave only costs renders where there is genuinely something to buy.
+        used = _apply_credit_upgrades(
+            selected,
+            static,
+            state,
+            render_mode=render_mode,
+            transaction_limit=token_budget,
+            full_render_max_depth=full_render_max_depth,
+            render_cache=relaxed_cache,
+            token_budget=token_budget,
+            used=used,
+        )
     return _selected_credit_rendered_bundles(selected)
 
 

@@ -239,6 +239,74 @@ def test_cap_relaxation_buys_large_body_on_leftover_budget():
     assert estimate_text_tokens(big_rendered.seed.code or "") >= big_cost // 2
 
 
+def test_render_ceiling_lifts_to_full_on_leftover_budget():
+    # A ``hybrid`` profile used to cap the ladder at hybrid — related symbols
+    # stayed signatures forever even with most of the budget unspent. The
+    # profile mode shapes initial coverage; the budget is the only ceiling.
+    related = _sym("rel", "def rel():\n    return 42\n", file_path="/rel.py")
+    bundle = ContextBundle(
+        role="seeds",
+        seed=_sym("s", "def s():\n    return 1\n", file_path="/s.py"),
+        related=(related,),
+        utility_score=1.0,
+    )
+
+    out = _apply_render_and_budget([bundle], token_budget=500, render_mode="hybrid")
+
+    rel_rendered = next(s for s in out[0].all_symbols() if s.uid == "rel")
+    assert "return 42" in (rel_rendered.code or "")
+
+
+def test_third_wave_upgrades_below_floor_symbols_on_leftover_budget():
+    # Leaders saturate cheaply and budget remains; the below-floor bundle's
+    # body exceeds the per-step cap so the capped pass can't buy it and the
+    # leaders-only relaxation excludes it. The third wave must deliver the
+    # noise-floor contract: weak symbols enter on leftover budget.
+    weak_body = "def weak():\n" + "    y = 2\n" * 80
+    bundles = [
+        ContextBundle(
+            role="seeds",
+            seed=_sym("l1", "def l1():\n    return 1\n", file_path="/l1.py"),
+            related=(),
+            utility_score=1.0,
+        ),
+        ContextBundle(
+            role="seeds",
+            seed=_sym("l2", "def l2():\n    return 2\n", file_path="/l2.py"),
+            related=(),
+            utility_score=1.0,
+        ),
+        ContextBundle(
+            role="seeds",
+            seed=_sym("weak", weak_body, file_path="/weak.py"),
+            related=(),
+            utility_score=0.2,
+        ),
+        ContextBundle(
+            role="seeds",
+            seed=_sym("w2", "def w2(): pass", file_path="/w2.py"),
+            related=(),
+            utility_score=0.2,
+        ),
+    ]
+    budget = 300
+    assert _leader_transaction_limit(budget, leader_count=2) < estimate_text_tokens(weak_body)
+
+    out = _apply_render_and_budget(bundles, token_budget=budget, render_mode="full")
+
+    weak = next(b for b in out if b.seed.uid == "weak")
+    assert "y = 2" in (weak.seed.code or "")
+    printed: set[str] = set()
+    total = 0
+    for bundle in out:
+        for sym in bundle.all_symbols():
+            if sym.uid in printed:
+                continue
+            printed.add(sym.uid)
+            total += estimate_text_tokens(sym.code or "")
+    assert total <= budget
+
+
 # --- leader noise (MAD tail) ------------------------------------------------
 
 
@@ -675,8 +743,11 @@ def test_impact_tiered_skips_fold_for_test_tier_class():
     assert len(out[0].seed.code.splitlines()) == 1
 
 
-def test_token_credit_respects_render_mode_ceiling():
-    """Impact profile caps at impact_tiered — no upgrade to full."""
+def test_token_credit_impact_tiered_climbs_on_leftover_budget():
+    """Impact profile starts at impact_tiered coverage, but the profile mode
+    is initial shape, not a hard ceiling — leftover budget buys the rich
+    rungs (the old cap left budget unspendable while answer bodies sat one
+    rung above)."""
     bundle = ContextBundle(
         role="impact_analysis",
         seed=_sym("x", "def x():\n    return 1\n"),
@@ -688,8 +759,7 @@ def test_token_credit_respects_render_mode_ceiling():
         token_budget=10_000,
         render_mode="impact_tiered",
     )
-    assert out.render_mode == "impact_tiered"
-    assert "return 1" not in (out.seed.code or "")
+    assert "return 1" in (out.seed.code or "")
 
 
 def test_token_credit_downgrades_oversized_full_candidate_to_signature():
