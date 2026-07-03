@@ -30,13 +30,18 @@ dense graph touches many neighbours.
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 
 from context_engine.axis.graph_walk import EdgeProfile, walk_neighbours
 from context_engine.axis.kind_rows import flat_kinds
 from context_engine.axis.role_resolver import ROLE_EVIDENCE_MAP
-from context_engine.axis.role_retrieval import RoleCandidate
+from context_engine.axis.role_retrieval import (
+    RoleCandidate,
+    _combined_score,
+    _scan_distances,
+    _semantic_score,
+)
 
 
 def _build_kind_to_roles(intent_roles: Iterable[str]) -> dict[str, set[str]]:
@@ -244,7 +249,13 @@ def _lookahead_injection_candidate(
     target_role: str,
     evidence_kinds: set[str],
     base_score: float,
+    distance: float | None = None,
 ) -> RoleCandidate:
+    # ``base_score`` is the structural-affinity constant; blending the real
+    # query distance (free — the scan matrix is already in memory) keeps the
+    # injections on the same combined scale as scan candidates instead of a
+    # flat constant that lands mid-way through the semantically-scored range
+    # and outranks genuinely close symbols by uid tiebreak.
     return RoleCandidate(
         uid=uid,
         name=name,
@@ -254,8 +265,8 @@ def _lookahead_injection_candidate(
         satisfying_kinds=tuple(sorted(evidence_kinds)),
         contract_count=0,
         kind_count=len(evidence_kinds),
-        vector_distance=None,
-        score=base_score,
+        vector_distance=distance,
+        score=_combined_score(base_score, _semantic_score(distance), distance is not None),
     )
 
 
@@ -314,6 +325,7 @@ def _auto_promote_lookahead_roles(
     auto_promote_min_hits: int,
     max_injected_per_role: int,
     base_score: float,
+    distance_for: Callable[[str], float | None] = lambda _uid: None,
 ) -> None:
     for target_role, uid_evidence in promotion_evidence.items():
         if len(uid_evidence) < auto_promote_min_hits:
@@ -327,6 +339,7 @@ def _auto_promote_lookahead_roles(
         for uid in ranked_uids:
             name_path, kinds = uid_evidence[uid]
             name, _, file_path = name_path.partition("|")
+            distance = distance_for(uid)
             injected.append(
                 RoleCandidate(
                     uid=uid,
@@ -337,8 +350,10 @@ def _auto_promote_lookahead_roles(
                     satisfying_kinds=kinds,
                     contract_count=0,
                     kind_count=len(kinds),
-                    vector_distance=None,
-                    score=base_score,
+                    vector_distance=distance,
+                    score=_combined_score(
+                        base_score, _semantic_score(distance), distance is not None
+                    ),
                 )
             )
         out[target_role] = injected[:max_injected_per_role]
@@ -368,6 +383,7 @@ def _expand_lookahead_for_source_role(
     base_score: float,
     max_injected_per_role: int,
     state: _LookaheadExpansionState,
+    distance_for: Callable[[str], float | None] = lambda _uid: None,
 ) -> None:
     seed_uids = [c.uid for c in (candidates_by_role.get(source_role) or [])]
     if not seed_uids:
@@ -416,6 +432,7 @@ def _expand_lookahead_for_source_role(
                         target_role=target_role,
                         evidence_kinds=evidence_kinds,
                         base_score=base_score,
+                        distance=distance_for(uid),
                     )
                 )
                 state.existing_uids_by_role[target_role].add(uid)
@@ -445,6 +462,8 @@ def expand_candidates_via_neighbourhood(
     auto_promote_role_pool: Iterable[str] | None = None,
     include_tests: bool = False,
     prescanned=None,
+    query_text: str | None = None,
+    embed_fn=None,
 ) -> dict[str, list[RoleCandidate]]:
     """Walk K hops from every role's candidates and use the
     container_kinds of the reached neighbours two ways:
@@ -477,6 +496,24 @@ def expand_candidates_via_neighbourhood(
     relevant_roles = set(intent_roles) | promote_pool
     kind_to_roles = _build_kind_to_roles(relevant_roles)
     intent_set = set(intent_roles)
+
+    # Query distances for injected candidates, looked up off the prescanned
+    # matrix (one vectorised pass; no per-row loops). Neighbours outside the
+    # scan (e.g. test-fenced rows) fall back to the flat ``base_score``.
+    distances = (
+        _scan_distances(prescanned, query_text, embed_fn)
+        if prescanned is not None and query_text and embed_fn is not None
+        else None
+    )
+
+    def _distance_for(uid: str) -> float | None:
+        if distances is None:
+            return None
+        row = prescanned.rows_by_uid.get(uid)
+        if row is None:
+            return None
+        idx = row.get("_idx")
+        return float(distances[idx]) if idx is not None else None
 
     out: dict[str, list[RoleCandidate]] = {
         role: list(candidates_by_role.get(role) or []) for role in intent_roles
@@ -524,6 +561,7 @@ def expand_candidates_via_neighbourhood(
             base_score=base_score,
             max_injected_per_role=max_injected_per_role,
             state=expansion_state,
+            distance_for=_distance_for,
         )
 
     _auto_promote_lookahead_roles(
@@ -533,6 +571,7 @@ def expand_candidates_via_neighbourhood(
         auto_promote_min_hits=auto_promote_min_hits,
         max_injected_per_role=max_injected_per_role,
         base_score=base_score,
+        distance_for=_distance_for,
     )
 
     return out

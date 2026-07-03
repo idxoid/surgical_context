@@ -83,6 +83,76 @@ def test_neighbour_backing_other_role_is_injected():
     assert [c.uid for c in out["proxy_mechanism"]] == ["u:proxy"]
 
 
+def test_injected_candidate_blends_query_semantic_from_prescanned():
+    """The 0.55-wall fix: with a query + prescanned vectors, an injected
+    neighbour scores ``0.5*base + 0.5*semantic`` instead of the flat
+    ``base_score`` constant — a semantically-close neighbour outranks a
+    far one instead of tying with it mid-way through the scored range."""
+    import numpy as np
+
+    from context_engine.axis.role_retrieval import WorkspaceScan
+
+    seed = _candidate("u:proxy", role="proxy_mechanism")
+    cands = {"proxy_mechanism": [seed], "dispatch_surface": []}
+    db = _queued_db([walk_rows(["u:near", "u:far"])])
+    rows = [
+        {
+            "uid": "u:near",
+            "name": "near",
+            "file_path": axis_test_file_path("near"),
+            "_contracts": set(),
+            "_kinds": {"keyed_dispatch_callable"},
+            "_idx": 0,
+        },
+        {
+            "uid": "u:far",
+            "name": "far",
+            "file_path": axis_test_file_path("far"),
+            "_contracts": set(),
+            "_kinds": {"keyed_dispatch_callable"},
+            "_idx": 1,
+        },
+    ]
+    scan = WorkspaceScan(rows=rows, vectors=np.array([[1.0, 0.0], [0.0, 5.0]], dtype=float))
+
+    out = expand_candidates_via_neighbourhood(
+        ["proxy_mechanism", "dispatch_surface"],
+        cands,
+        db=db,
+        lance=FakeLanceDB([]),
+        workspace_id=AXIS_TEST_WORKSPACE,
+        prescanned=scan,
+        query_text="how is dispatch keyed?",
+        embed_fn=lambda _text: [1.0, 0.0],
+    )
+
+    injected = {c.uid: c for c in out["dispatch_surface"]}
+    near, far = injected["u:near"], injected["u:far"]
+    assert near.vector_distance == pytest.approx(0.0)
+    assert near.score == pytest.approx(0.5 * 0.4 + 0.5 * 1.0)
+    assert far.vector_distance == pytest.approx((1 + 25) ** 0.5)
+    assert far.score < near.score
+
+
+def test_injected_candidate_without_query_keeps_flat_base_score():
+    seed = _candidate("u:proxy", role="proxy_mechanism")
+    cands = {"proxy_mechanism": [seed], "dispatch_surface": []}
+    db = _queued_db([walk_rows(["u:dispatcher"])])
+    lance = FakeLanceDB([lance_kind_row("u:dispatcher", kinds=["keyed_dispatch_callable"])])
+
+    out = expand_candidates_via_neighbourhood(
+        ["proxy_mechanism", "dispatch_surface"],
+        cands,
+        db=db,
+        lance=lance,
+        workspace_id=AXIS_TEST_WORKSPACE,
+    )
+
+    injected = out["dispatch_surface"][0]
+    assert injected.vector_distance is None
+    assert injected.score == pytest.approx(0.4)
+
+
 def test_neighbour_already_in_target_role_is_not_duplicated():
     seed = _candidate("u:proxy", role="proxy_mechanism")
     pre_existing = _candidate("u:dispatcher", role="dispatch_surface", score=0.9)

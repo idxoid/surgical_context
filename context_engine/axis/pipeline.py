@@ -1197,6 +1197,8 @@ def _run_axis_retrieval_impl(
                 lance=lance,
                 workspace_id=workspace_id,
                 prescanned=scanned,
+                query_text=question,
+                embed_fn=lambda text: lance._embed([text])[0],  # noqa: SLF001
             )
 
     with tr.stage("vector_seeds"):
