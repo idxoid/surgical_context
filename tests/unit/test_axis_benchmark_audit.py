@@ -10,6 +10,7 @@ from QA.axis_benchmark import (
     _expected_file_layers,
     _populate_candidate_audit,
     _populate_recall_layers,
+    _split_rendered_tokens,
     summarise,
 )
 
@@ -30,7 +31,7 @@ def _candidate(uid: str, path: str, role: str, *, score: float = 0.5) -> RoleCan
     )
 
 
-def _symbol(uid: str, path: str, role: str, *, depth: int = 0) -> ContextSymbol:
+def _symbol(uid: str, path: str, role: str, *, depth: int = 0, code: str = "x") -> ContextSymbol:
     return ContextSymbol(
         uid=uid,
         name=uid,
@@ -39,7 +40,7 @@ def _symbol(uid: str, path: str, role: str, *, depth: int = 0) -> ContextSymbol:
         role=role,
         distance_from_seed=depth,
         expansion_step=role if depth else None,
-        code="x",
+        code=code,
     )
 
 
@@ -106,3 +107,59 @@ def test_axis_benchmark_records_candidate_audit_and_expected_layers() -> None:
     summary = summarise([result])
     assert summary["candidate_relation_totals"]["structural_neighbour"] == 2
     assert summary["bundle_relation_totals"]["reverse_calls"] == 1
+
+
+def test_axis_benchmark_records_precision_layers_and_token_split() -> None:
+    from context_engine.observability.metrics import estimate_text_tokens
+    from QA.axis_benchmark import QuestionResult
+
+    result = QuestionResult(
+        question_id="q2",
+        repo="repo",
+        workspace_id="ws",
+        question="how noisy is the bundle?",
+        mechanism="debug",
+        expected_files=["src/a.py"],
+    )
+    noise = _symbol("n", "/repo/src/noise.py", "structural_neighbour", depth=1, code="noise " * 40)
+    retrieval = SimpleNamespace(
+        seed_files=["/repo/src/a.py", "/repo/src/noise.py"],
+        candidates_for_context=[
+            _candidate("a", "/repo/src/a.py", "vector_seed", score=0.9),
+            _candidate("n", "/repo/src/noise.py", "structural_neighbour", score=0.4),
+        ],
+        bundles=[
+            ContextBundle(
+                role="vector_seed",
+                seed=_symbol("a", "/repo/src/a.py", "vector_seed"),
+                related=(noise,),
+            )
+        ],
+    )
+
+    _populate_recall_layers(result, retrieval)
+
+    assert result.seed_recall == 1.0
+    assert result.seed_precision == 0.5
+    assert result.pool_precision == 0.5
+    assert result.bundle_precision == 0.5
+
+    expected_tokens, other_tokens = _split_rendered_tokens(retrieval.bundles, result.expected_files)
+    assert expected_tokens == estimate_text_tokens("x")
+    assert other_tokens == estimate_text_tokens("noise " * 40)
+
+    result.expected_tokens = expected_tokens
+    result.other_tokens = other_tokens
+    result.rendered_tokens = expected_tokens + other_tokens
+    result.token_precision = expected_tokens / result.rendered_tokens
+
+    summary = summarise([result])
+    assert summary["overall_mean_precision"] == 0.5
+    assert summary["overall_seed_mean_precision"] == 0.5
+    assert summary["overall_pool_mean_precision"] == 0.5
+    assert summary["overall_mean_token_precision"] == result.token_precision
+    assert summary["per_repo"]["repo"]["mean_precision"] == 0.5
+    row = summary["per_question"][0]
+    assert row["bundle_precision"] == 0.5
+    assert row["expected_tokens"] == expected_tokens
+    assert row["other_tokens"] == other_tokens
