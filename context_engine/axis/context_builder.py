@@ -1299,13 +1299,17 @@ def _leader_pool_metrics(
 ) -> tuple[float, int]:
     """Tail noise threshold and leader breadth for the ladder cap.
 
-    ``tail`` = ``100 * (1 - u/peak)`` on symbols at or below median utility::
+    Floor and signal live on the SAME axis: ``marginality = 100 * (u/peak)``
+    (closeness to peak). The noise floor is the robust location + spread of
+    the weak half's marginality::
 
-        noise_level = median(tail) + k * 1.4826 * MAD(tail)
+        noise_level = median(marginality_tail) + k * 1.4826 * MAD(tail)
 
-    ``marginality`` = ``100 * (u/peak)`` (signal strength, same scale).  Leaders
-    are symbols with ``marginality > noise_level`` — above the robust noise
-    floor.  Then::
+    Leaders are symbols with ``marginality > noise_level`` — above what the
+    noise typically reaches. A weaker tail LOWERS the floor (signal stands out
+    against weak noise); a tail hugging the peak raises it (nothing clearly
+    leads). The pre-2026-07 form measured the floor on the complementary
+    distance-from-peak axis, which inverted that response.  Then::
 
         %leader = 100 / COUNT(marginality > noise_level)
 
@@ -1322,7 +1326,7 @@ def _leader_pool_metrics(
     tail_u = [u for u in sorted_u if u <= median_u]
     if not tail_u:
         tail_u = sorted_u
-    tail = [100.0 * (1.0 - u / peak) for u in tail_u]
+    tail = [100.0 * (u / peak) for u in tail_u]
     noise_level = _noise_level_from_tail(tail, k=k)
     leader_count = sum(1 for u in utilities if (100.0 * u / peak) > noise_level)
     return noise_level, max(1, leader_count)
@@ -1362,6 +1366,31 @@ class _TokenCreditCoverageState:
     covered_steps: set[str] = field(default_factory=set)
     file_counts: dict[str, int] = field(default_factory=dict)
     file_tokens: dict[str, int] = field(default_factory=dict)
+    # First-wins uid set. The prompt path (``axis_bundles_to_prompt_context``)
+    # dedupes symbols by uid keeping the FIRST occurrence in bundle order, so
+    # a uid repeated across bundles prints exactly once. Purchases price only
+    # uids not yet present (exact during phase 1 — entries are append-only and
+    # renders don't change there). Upgrades change renders and may DROP uids
+    # from a bundle (fold regrouping), which shifts which occurrence prints —
+    # so the upgrade phase never trusts membership bookkeeping and re-derives
+    # printed size from the selected entries directly
+    # (``_first_wins_printed_tokens``).
+    printed_uids: set[str] = field(default_factory=set)
+
+    def marginal_purchase_cost(self, rendered: ContextBundle) -> int:
+        seen: set[str] = set()
+        total = 0
+        for sym in rendered.all_symbols():
+            uid = sym.uid
+            if uid in seen or uid in self.printed_uids:
+                continue
+            seen.add(uid)
+            total += estimate_text_tokens(sym.code or "")
+        return total
+
+    def charge_purchase(self, rendered: ContextBundle) -> None:
+        for sym in rendered.all_symbols():
+            self.printed_uids.add(sym.uid)
 
     def file_saturation_penalty(self, bundle: ContextBundle) -> float:
         primary = _primary_file(bundle)
@@ -1472,14 +1501,18 @@ def _select_bundles_under_credit_budget(
         if idx in selected_indices or idx in skipped_indices:
             continue
         source = bundles[idx]
+        # ``cost`` is the gross render size (kept on the entry for ladder
+        # monotonicity); the budget pays only the marginal price — tokens of
+        # uids the prompt's first-wins dedupe will actually print.
+        marginal_cost = state.marginal_purchase_cost(rendered)
         current_value = _credit_coverage_gain(idx, source, static=static, state=state) / max(
-            1, cost
+            1, marginal_cost
         )
         best_competing = -initial[0][0] if initial else -1.0
         if current_value + 1e-12 < best_competing:
             heapq.heappush(initial, (-current_value, idx, cost, rendered))
             continue
-        if selected and used + cost > token_budget:
+        if selected and used + marginal_cost > token_budget:
             skipped_indices.add(idx)
             continue
         selected.append(
@@ -1491,11 +1524,58 @@ def _select_bundles_under_credit_budget(
             }
         )
         selected_indices.add(idx)
-        used += cost
-        state.record_selection(source, cost)
+        used += marginal_cost
+        state.record_selection(source, marginal_cost)
+        state.charge_purchase(rendered)
         if used >= token_budget:
             break
     return selected, used
+
+
+def _first_wins_printed_tokens(selected: list[dict[str, object]]) -> int:
+    """Exact deduped-prompt size of the selected renders (first-wins by uid).
+
+    This is the ground truth ``used`` must track: renders change during the
+    upgrade phase and fold regrouping can drop uids from a bundle, silently
+    promoting a later bundle's occurrence into the prompt — so printed size is
+    re-derived from the entries, never inferred from ownership bookkeeping.
+    Cost is a ``len()`` sweep over selected symbols — negligible.
+    """
+    seen: set[str] = set()
+    total = 0
+    for entry in selected:
+        rendered = entry.get("rendered")
+        if not isinstance(rendered, ContextBundle):
+            continue
+        for sym in rendered.all_symbols():
+            if sym.uid in seen:
+                continue
+            seen.add(sym.uid)
+            total += estimate_text_tokens(sym.code or "")
+    return total
+
+
+def _upgrade_exact_delta(
+    selected: list[dict[str, object]],
+    entry_index: int,
+    upgraded: ContextBundle,
+    *,
+    printed_before: int | None = None,
+) -> int:
+    """Printed-size delta of swapping ``entry_index``'s render for ``upgraded``.
+
+    ``printed_before`` lets callers that maintain the ``used == printed``
+    invariant skip the pre-swap sweep (the upgrade loop calls this per
+    enqueue/pop, so the saved sweep is the dominant accounting cost).
+    """
+    entry = selected[entry_index]
+    previous = entry.get("rendered")
+    if printed_before is None:
+        printed_before = _first_wins_printed_tokens(selected)
+    entry["rendered"] = upgraded
+    after = _first_wins_printed_tokens(selected)
+    entry["rendered"] = previous
+    return after - printed_before
 
 
 def _credit_upgrade_entry_parts(
@@ -1539,6 +1619,7 @@ def _enqueue_credit_upgrade(
     transaction_limit: int,
     full_render_max_depth: int,
     render_cache: dict[tuple[int, str], tuple[ContextBundle, int]],
+    printed_tokens: int,
 ) -> None:
     parts = _credit_upgrade_entry_parts(selected[entry_index])
     if parts is None:
@@ -1556,11 +1637,16 @@ def _enqueue_credit_upgrade(
     if candidate is None:
         return
     upgraded, upgraded_cost = candidate
-    delta = upgraded_cost - current_cost
-    if delta < 0:
+    if upgraded_cost < current_cost:
         return
+    # Priority divides by the exact printed delta: re-rendering uids whose
+    # first-wins occurrence lives in another entry costs nothing in the
+    # prompt, so such upgrades rank high.
+    exact_delta = _upgrade_exact_delta(
+        selected, entry_index, upgraded, printed_before=printed_tokens
+    )
     priority = _credit_upgrade_gain(static[bundle_index], entry_source, upgraded, state) / max(
-        1, delta
+        1, exact_delta
     )
     heapq.heappush(
         upgrade_heap,
@@ -1579,9 +1665,12 @@ def _apply_credit_upgrades(
     render_cache: dict[tuple[int, str], tuple[ContextBundle, int]],
     token_budget: int,
     used: int,
+    entry_filter: set[int] | None = None,
 ) -> int:
     upgrade_heap: list[tuple[float, int, int, ContextBundle, int]] = []
     for entry_index in range(len(selected)):
+        if entry_filter is not None and entry_index not in entry_filter:
+            continue
         _enqueue_credit_upgrade(
             entry_index,
             selected,
@@ -1592,6 +1681,7 @@ def _apply_credit_upgrades(
             transaction_limit=transaction_limit,
             full_render_max_depth=full_render_max_depth,
             render_cache=render_cache,
+            printed_tokens=used,
         )
 
     while upgrade_heap and used < token_budget:
@@ -1602,17 +1692,22 @@ def _apply_credit_upgrades(
         current_cost = entry["cost"]
         if current_cost != expected_cost or not isinstance(current_cost, int):
             continue
-        delta = upgraded_cost - current_cost
-        if delta < 0 or used + delta > token_budget:
+        if upgraded_cost < current_cost:
+            continue
+        # Recompute the exact delta at pop time — earlier upgrades changed
+        # other entries' renders (and hence first-wins winners) since this
+        # entry was enqueued.
+        exact_delta = _upgrade_exact_delta(selected, entry_index, upgraded, printed_before=used)
+        if used + exact_delta > token_budget:
             continue
         entry["rendered"] = upgraded
         entry["cost"] = upgraded_cost
-        used += delta
+        used += exact_delta
         entry_source = entry["source"]
         if isinstance(entry_source, ContextBundle):
             primary = _primary_file(entry_source)
             if primary:
-                state.file_tokens[primary] = state.file_tokens.get(primary, 0) + delta
+                state.file_tokens[primary] = state.file_tokens.get(primary, 0) + exact_delta
         _enqueue_credit_upgrade(
             entry_index,
             selected,
@@ -1623,6 +1718,7 @@ def _apply_credit_upgrades(
             transaction_limit=transaction_limit,
             full_render_max_depth=full_render_max_depth,
             render_cache=render_cache,
+            printed_tokens=used,
         )
     return used
 
@@ -1648,14 +1744,20 @@ def _apply_token_credit_budget(
     """Token Credit System v2 prototype: coverage-first marginal transactions.
 
     Phase 1 dedupes to unique seed symbols, then buys cheap coverage ordered
-    by marginal utility per token.  Each ladder step is capped by
-    ``_leader_transaction_limit`` from a robust tail noise estimate::
+    by marginal utility per token. Both phases price transactions by the
+    MARGINAL printed cost (the uid ledger on ``_TokenCreditCoverageState``):
+    the prompt path dedupes symbols first-wins by uid, so a uid already bought
+    by an earlier entry re-renders for free and ``used`` matches the deduped
+    prompt size instead of over-billing shared neighbours. Each ladder step is
+    capped by ``_leader_transaction_limit`` from a robust tail noise estimate::
 
-        noise_level = median(tail) + k * 1.4826 * MAD(tail)
+        noise_level = median(marginality_tail) + k * 1.4826 * MAD(tail)
         %leader = 100 / COUNT(marginality > noise_level)
 
     ``marginality = 100 * (u/u_peak)`` on each deduped symbol.  Phase 2 uses
-    the same cap.
+    the same cap, then — if budget remains once every capped upgrade has been
+    resolved — reruns the sweep with the leftover budget as the per-step
+    limit (cap relaxation: the cap manages contention, and contention is over).
     """
     if token_budget <= 0:
         return bundles
@@ -1669,11 +1771,17 @@ def _apply_token_credit_budget(
     initial_mode = render_mode if render_mode in _RENDER_LADDER else "signature_only"
     render_cache: dict[tuple[int, str], tuple[ContextBundle, int]] = {}
     static = _bundle_static_rows(bundles)
-    _, leader_count = _leader_pool_metrics(static)
+    noise_level, leader_count = _leader_pool_metrics(static)
     transaction_limit = _leader_transaction_limit(
         token_budget,
         leader_count=leader_count,
     )
+    peak_utility = max((st.base_utility for st in static), default=0.0)
+    leader_indices = {
+        idx
+        for idx, st in enumerate(static)
+        if peak_utility > 0 and (100.0 * st.base_utility / peak_utility) > noise_level
+    }
 
     initial = _build_initial_credit_heap(
         bundles,
@@ -1701,6 +1809,34 @@ def _apply_token_credit_budget(
         token_budget=token_budget,
         used=used,
     )
+    if used < token_budget:
+        # Cap relaxation on leftover budget: every capped upgrade has landed
+        # or been rejected, so contention — the reason the leader cap exists —
+        # is over. Re-run the upgrade sweep with the whole remaining budget as
+        # the per-step limit so large high-gain bodies the cap kept at
+        # signature level can finally buy their render. Leaders only: rendering
+        # rich variants is the expensive part of this pass, and symbols below
+        # the noise floor are noise by the pool's own measure. Fresh render
+        # cache: the memo key is (bundle, mode) and assumes a constant limit.
+        relaxed_entries = {
+            entry_index
+            for entry_index, entry in enumerate(selected)
+            if isinstance((bundle_index := entry.get("index")), int)
+            and bundle_index in leader_indices
+        }
+        if relaxed_entries:
+            used = _apply_credit_upgrades(
+                selected,
+                static,
+                state,
+                render_mode=render_mode,
+                transaction_limit=token_budget,
+                full_render_max_depth=full_render_max_depth,
+                render_cache={},
+                token_budget=token_budget,
+                used=used,
+                entry_filter=relaxed_entries,
+            )
     return _selected_credit_rendered_bundles(selected)
 
 

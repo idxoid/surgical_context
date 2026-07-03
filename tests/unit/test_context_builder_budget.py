@@ -25,7 +25,10 @@ from context_engine.axis.context_builder import (
     _median,
     _noise_level_from_tail,
     _render_bundle,
+    _TokenCreditCoverageState,
+    _upgrade_exact_delta,
 )
+from context_engine.observability.metrics import estimate_text_tokens
 
 # --- helpers ---------------------------------------------------------------
 
@@ -104,6 +107,138 @@ def test_token_credit_dedupes_axis_duplicate_symbols_before_packing():
     assert {b.seed.uid for b in out} == {"dup", "uniq"}
 
 
+# --- marginal uid ledger (first-wins pricing) --------------------------------
+
+
+def test_marginal_purchase_and_exact_upgrade_delta_price_first_wins():
+    state = _TokenCreditCoverageState(file_soft_cap=1000)
+    shared_sig = "def shared(a, b):"
+    shared_full = "def shared(a, b):\n    return a + b\n"
+    first = ContextBundle(
+        role="seeds",
+        seed=_sym("a", "def a():", file_path="/a.py"),
+        related=(_sym("shared", shared_sig, file_path="/s.py"),),
+    )
+    second = ContextBundle(
+        role="seeds",
+        seed=_sym("b", "def b():", file_path="/b.py"),
+        related=(_sym("shared", shared_sig, file_path="/s.py"),),
+    )
+
+    tok = estimate_text_tokens
+    assert state.marginal_purchase_cost(first) == tok("def a():") + tok(shared_sig)
+    state.charge_purchase(first)
+    # ``shared`` already prints from the first bundle — the second pays only
+    # for its seed.
+    assert state.marginal_purchase_cost(second) == tok("def b():")
+    state.charge_purchase(second)
+
+    selected: list[dict[str, object]] = [
+        {"index": 0, "source": first, "rendered": first, "cost": 0},
+        {"index": 1, "source": second, "rendered": second, "cost": 0},
+    ]
+
+    # Upgrading entry 1 re-renders ``shared`` richer, but entry 0's occurrence
+    # wins the first-wins dedupe — only entry 1's own seed delta prints.
+    second_up = ContextBundle(
+        role="seeds",
+        seed=_sym("b", "def b():\n    return 2\n", file_path="/b.py"),
+        related=(_sym("shared", shared_full, file_path="/s.py"),),
+    )
+    assert _upgrade_exact_delta(selected, 1, second_up) == tok("def b():\n    return 2\n") - tok(
+        "def b():"
+    )
+    selected[1]["rendered"] = second_up
+
+    # The fold-drop case: entry 0's new render DROPS ``shared``, so entry 1's
+    # richer occurrence surfaces into the prompt — the exact delta charges the
+    # swap instead of crediting the dropped stub (the 2026-07 overshoot bug).
+    first_up = ContextBundle(
+        role="seeds",
+        seed=_sym("a", "def a():", file_path="/a.py"),
+        related=(),
+    )
+    assert _upgrade_exact_delta(selected, 0, first_up) == tok(shared_full) - tok(shared_sig)
+
+
+def test_token_credit_budget_pays_shared_related_symbol_once():
+    # One fat related symbol shared by three bundles: gross accounting bills
+    # it three times and evicts bundles that the deduped prompt would fit.
+    shared = _sym(
+        "shared", "def shared(alpha, beta, gamma, delta, epsilon, zeta):", file_path="/s.py"
+    )
+    bundles = [
+        ContextBundle(
+            role="seeds",
+            seed=_sym(uid, f"def {uid}():", file_path=f"/{uid}.py"),
+            related=(shared,),
+            utility_score=score,
+        )
+        for uid, score in (("a", 0.9), ("b", 0.8), ("c", 0.7))
+    ]
+    shared_cost = estimate_text_tokens(shared.code or "")
+    seed_cost = estimate_text_tokens("def a():")
+    deduped_total = shared_cost + 3 * seed_cost
+    gross_total = 3 * (shared_cost + seed_cost)
+    budget = deduped_total + 2  # fits deduped, nowhere near gross
+    assert gross_total > budget
+
+    out = _apply_render_and_budget(bundles, token_budget=budget, render_mode="signature_only")
+
+    assert len(out) == 3
+    printed: set[str] = set()
+    printed_tokens = 0
+    for bundle in out:
+        for sym in bundle.all_symbols():
+            if sym.uid in printed:
+                continue
+            printed.add(sym.uid)
+            printed_tokens += estimate_text_tokens(sym.code or "")
+    assert printed_tokens <= budget
+
+
+def test_cap_relaxation_buys_large_body_on_leftover_budget():
+    # Two leaders → per-step cap = budget/2, below the big body's cost. The
+    # capped sweep leaves the big bundle at signature; the relaxation sweep
+    # must spend the leftover budget on its body.
+    big_body = "def big():\n" + "    x = 1\n" * 80
+    bundles = [
+        ContextBundle(
+            role="seeds",
+            seed=_sym("big", big_body, file_path="/big.py"),
+            related=(),
+            utility_score=1.0,
+        ),
+        ContextBundle(
+            role="seeds",
+            seed=_sym("mid", "def mid():\n    return 2\n", file_path="/mid.py"),
+            related=(),
+            utility_score=1.0,
+        ),
+        ContextBundle(
+            role="seeds",
+            seed=_sym("w1", "def w1(): pass", file_path="/w1.py"),
+            related=(),
+            utility_score=0.2,
+        ),
+        ContextBundle(
+            role="seeds",
+            seed=_sym("w2", "def w2(): pass", file_path="/w2.py"),
+            related=(),
+            utility_score=0.2,
+        ),
+    ]
+    budget = 300
+    big_cost = estimate_text_tokens(big_body)
+    assert _leader_transaction_limit(budget, leader_count=2) < big_cost
+
+    out = _apply_render_and_budget(bundles, token_budget=budget, render_mode="full")
+
+    big_rendered = next(b for b in out if b.seed.uid == "big")
+    assert "x = 1" in (big_rendered.seed.code or "")
+    assert estimate_text_tokens(big_rendered.seed.code or "") >= big_cost // 2
+
+
 # --- leader noise (MAD tail) ------------------------------------------------
 
 
@@ -115,7 +250,8 @@ def test_median_and_mad():
 def test_leader_pool_metrics_one_strong_above_noise():
     from context_engine.axis.context_builder import _BundleStatic
 
-    # 1 strong + 99 weak: noise ~95, only peak symbol clears it → count=1.
+    # 1 strong + 99 weak: the weak tail's marginality sits at 5, so the floor
+    # is 5 and only the peak symbol clears it → count=1.
     static = [
         _BundleStatic(
             files=frozenset({f"/f{i}.py"}),
@@ -128,7 +264,7 @@ def test_leader_pool_metrics_one_strong_above_noise():
         for i in range(100)
     ]
     noise, count = _leader_pool_metrics(static)
-    assert 90.0 <= noise <= 99.0
+    assert noise == pytest.approx(5.0)
     assert count == 1
     assert _leader_transaction_limit(10_000, leader_count=count) == 10_000
 
@@ -163,9 +299,36 @@ def test_leader_pool_metrics_counts_symbols_above_noise_floor():
         ),
     ]
     noise, count = _leader_pool_metrics(static)
-    leaders = sum(1 for u in (1.0, 0.8, 0.05) if 100 * u / 1.0 > noise)
-    assert count == max(1, leaders)
+    # tail (u <= median 0.8) → marginality [5, 80]: floor = 42.5 + 1.4826*37.5.
+    assert noise == pytest.approx(42.5 + 1.4826 * 37.5)
+    # Only the peak (100) clears the floor; 80 sits inside the noise spread.
+    assert count == 1
     assert _leader_transaction_limit(10_000, leader_count=count) == int(10_000 / count)
+
+
+def test_leader_noise_floor_drops_when_tail_weakens():
+    from context_engine.axis.context_builder import _BundleStatic
+
+    def _pool(weak: float) -> list[_BundleStatic]:
+        return [
+            _BundleStatic(
+                files=frozenset({f"/f{i}.py"}),
+                steps=frozenset(),
+                tier_weight=1.0,
+                impact_mode=False,
+                base_utility=u,
+                structural_bridge=0.0,
+            )
+            for i, u in enumerate((1.0, 0.95, weak, weak))
+        ]
+
+    # The floor must FALL as the tail weakens: signal stands out more against
+    # weaker noise. The old distance-axis form inverted this response.
+    noise_mid_tail, _ = _leader_pool_metrics(_pool(0.5))
+    noise_weak_tail, _ = _leader_pool_metrics(_pool(0.1))
+    assert noise_mid_tail == pytest.approx(50.0)
+    assert noise_weak_tail == pytest.approx(10.0)
+    assert noise_weak_tail < noise_mid_tail
 
 
 def test_noise_level_from_tail_matches_robust_formula():
