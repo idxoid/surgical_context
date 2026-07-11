@@ -53,6 +53,7 @@ the engine-first development line.
 
 **Advanced Topics:**
 - **[spec_eval_harness.md](docs/spec_eval_harness.md)** — axis benchmark harness, question packs, and CI gate
+- **[spec_contextbench.md](docs/spec_contextbench.md)** — external ContextBench trajectory capture, conversion, and A/B protocol
 - **[question_structural_role_profiles.md](docs/question_structural_role_profiles.md)** — gold per-question structural profiles (design draft)
 - **[logical_roles_structural_closure.md](docs/logical_roles_structural_closure.md)** — logical roles vs structural closure values
 - **[spec_embedding_versioning.md](docs/spec_embedding_versioning.md)** — managing embedding model versions
