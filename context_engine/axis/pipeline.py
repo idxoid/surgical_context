@@ -867,6 +867,8 @@ def _run_structural_pool_passes(
     workspace_id: str,
     scanned,
     trace: Any,
+    query_text: str | None = None,
+    embed_fn: Any | None = None,
 ) -> None:
     existing_pool_for_struct = [
         c
@@ -876,6 +878,21 @@ def _run_structural_pool_passes(
     ]
     if not existing_pool_for_struct:
         return
+    distances = (
+        role_retrieval._scan_distances(scanned, query_text, embed_fn)  # noqa: SLF001
+        if scanned is not None and query_text and embed_fn is not None
+        else None
+    )
+
+    def _distance_for(uid: str) -> float | None:
+        if distances is None:
+            return None
+        row = scanned.rows_by_uid.get(uid)
+        if row is None:
+            return None
+        idx = row.get("_idx")
+        return float(distances[idx]) if idx is not None else None
+
     with trace.stage("structural_neighbours"):
         # Direct FLOWS_INTO siblings first: the tight primary-fact hop must not
         # compete with the broad AFFECTS closure for file slots.
@@ -889,6 +906,7 @@ def _run_structural_pool_passes(
             db=db,
             workspace_id=workspace_id,
             exclude_uids=[c.uid for c in sibling_pool],
+            distance_for=_distance_for if distances is not None else None,
         )
     ancestor_pool = inheritance_ancestors.expand_inheritance_ancestors(
         existing_pool_for_struct,
@@ -1197,6 +1215,8 @@ def _run_axis_retrieval_impl(
                 lance=lance,
                 workspace_id=workspace_id,
                 prescanned=scanned,
+                query_text=question,
+                embed_fn=lambda text: lance._embed([text])[0],  # noqa: SLF001
             )
 
     with tr.stage("vector_seeds"):
@@ -1253,6 +1273,8 @@ def _run_axis_retrieval_impl(
         workspace_id=workspace_id,
         scanned=scanned,
         trace=tr,
+        query_text=question,
+        embed_fn=lambda text: lance._embed([text])[0],  # noqa: SLF001
     )
     _run_mode_traversal_passes(
         raw_by_role,

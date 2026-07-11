@@ -29,7 +29,7 @@ structural-neighbours.
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 
 from context_engine.axis.graph_walk import EdgeProfile, cap_by_file, walk_neighbours
 from context_engine.axis.role_retrieval import RoleCandidate
@@ -55,10 +55,19 @@ def expand_structural_neighbours(
     base_score: float = 0.25,
     exclude_uids: Iterable[str] = (),
     include_tests: bool = False,
+    distance_for: Callable[[str], float | None] | None = None,
 ) -> list[RoleCandidate]:
     """Walk ``AFFECTS`` undirected K hops from each seed, return
     deduplicated symbols from *previously-unseen* files (relative to
     the seeds' own files), capped.
+
+    ``distance_for`` (uid → query L2 distance off the prescanned matrix, the
+    role_lookahead pattern) re-orders neighbours depth-then-closeness before
+    the file caps. The 2-hop closure region spans hundreds of files while the
+    caps keep ~5 — reach-ordered slots go to hub files most of the pool
+    touches, which is query-blind; the answer file's members sit mid-reach
+    but semantically close (django make_view_atomic: slot 120 by reach, 4 by
+    closeness). Neighbours outside the scan keep walk order within their depth.
 
     Returned candidates carry the pseudo-role ``structural_neighbour``
     and ``satisfying_kinds=("affects_bridge",)`` so the consumer can
@@ -80,6 +89,16 @@ def expand_structural_neighbours(
         max_hops=max_hops,
         exclude_tests=not include_tests,
     )
+    if distance_for is not None:
+        # Stable sort: ties and unscanned rows keep the walk's
+        # depth-then-reach order.
+        neighbours = sorted(
+            neighbours,
+            key=lambda n: (
+                n.depth,
+                dist if (dist := distance_for(n.uid)) is not None else float("inf"),
+            ),
+        )
     capped = cap_by_file(
         neighbours,
         seed_files=seed_files,

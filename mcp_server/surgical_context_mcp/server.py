@@ -24,6 +24,7 @@ from pydantic import BaseModel
 
 from surgical_context_mcp import schemas
 from surgical_context_mcp.config import DEFAULT_TOKEN_BUDGET, resolve_workspace_id
+from surgical_context_mcp.contextbench_log import record_tool_result
 from surgical_context_mcp.engine import AxisEngine, _common_dir_prefix
 
 MIN_TOKEN_BUDGET = 400
@@ -98,9 +99,11 @@ def _result[T: BaseModel](markdown: str, payload: T) -> T:
     generation and stays mypy-clean; the runtime object is the ``CallToolResult``
     (a single, contained cast — the symmetric ``_as_result`` undoes it in batch).
     """
+    structured = payload.model_dump(mode="json")
+    record_tool_result(structured)
     res = CallToolResult(
         content=[TextContent(type="text", text=markdown)],
-        structuredContent=payload.model_dump(mode="json"),
+        structuredContent=structured,
     )
     return cast(T, res)
 

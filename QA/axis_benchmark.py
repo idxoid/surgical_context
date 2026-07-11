@@ -7,6 +7,12 @@ appear in the retrieved file_paths. The legacy ``/ask`` cascade is
 unaffected; this tool is the A/B baseline for the axis side so the
 two can be compared by a separate harness or by eye.
 
+Alongside recall, each layer also reports a REPORT-ONLY precision
+(``expected_files`` is a recall gold set, not an exhaustive relevance
+set — see ``_compute_precision``) plus a token split of the rendered
+bundle (expected-file tokens vs everything else), so noise growth is
+visible even while recall sits at 1.0. None of these gate P7.
+
 We only score questions whose repository is indexed under the
 axis_python_v1 profile. Others are recorded as ``skipped`` with the
 reason so the report is honest about coverage.
@@ -134,6 +140,13 @@ class QuestionResult:
     pool_files: list[str] = field(default_factory=list)
     pool_matched: list[str] = field(default_factory=list)
     pool_recall: float = 0.0
+    # Report-only precision mirror of the recall ladder: the share of each
+    # layer's files that match an expected entry. ``expected_files`` is a
+    # recall gold set (non-exhaustive), so a non-expected file is NOT
+    # necessarily noise — read these as trends/deltas, never as P7 gates.
+    seed_precision: float = 0.0
+    pool_precision: float = 0.0
+    bundle_precision: float = 0.0
     intent_top_role: str | None = None
     intent_top_similarity: float | None = None
     intent_matches: list[tuple[str, float]] = field(default_factory=list)
@@ -145,6 +158,12 @@ class QuestionResult:
     # code actually handed to the prompt.
     context_seconds: float = 0.0
     rendered_tokens: int = 0
+    # Token split of ``rendered_tokens`` (the packing-density view file
+    # recall is blind to): tokens rendered from expected files vs everything
+    # else. Same non-exhaustive-gold caveat as the precision fields above.
+    expected_tokens: int = 0
+    other_tokens: int = 0
+    token_precision: float = 0.0
     # Candidate-level precision audit. These fields do not affect scoring;
     # they make the existing seed/pool/bundle report explain *why* noisy
     # candidates reached the pool or prompt.
@@ -171,6 +190,9 @@ class QuestionResult:
             "pool_files": self.pool_files,
             "pool_matched": self.pool_matched,
             "pool_recall": self.pool_recall,
+            "seed_precision": self.seed_precision,
+            "pool_precision": self.pool_precision,
+            "bundle_precision": self.bundle_precision,
             "intent_top_role": self.intent_top_role,
             "intent_top_similarity": self.intent_top_similarity,
             "intent_matches": [{"role": r, "similarity": s} for r, s in self.intent_matches],
@@ -178,6 +200,9 @@ class QuestionResult:
             "candidate_count": self.candidate_count,
             "context_seconds": self.context_seconds,
             "rendered_tokens": self.rendered_tokens,
+            "expected_tokens": self.expected_tokens,
+            "other_tokens": self.other_tokens,
+            "token_precision": self.token_precision,
             "candidate_relation_histogram": self.candidate_relation_histogram,
             "bundle_relation_histogram": self.bundle_relation_histogram,
             "top_candidates": self.top_candidates,
@@ -247,6 +272,22 @@ def _compute_recall(expected: list[str], retrieved: list[str]) -> tuple[float, l
                 matched.append(exp)
                 break
     return len(matched) / len(expected), matched
+
+
+def _compute_precision(expected: list[str], retrieved: list[str]) -> float:
+    """Share of retrieved files that match an expected entry.
+
+    REPORT-ONLY. ``expected_files`` is a recall gold set — files that MUST
+    be present — not an exhaustive relevance set, so this number is biased
+    low and a non-expected file is not necessarily noise. Gating P7 on it
+    would create pressure to under-retrieve; read it as a trend/delta
+    between runs, and report token pairs next to it, not the bare ratio.
+    """
+    paths = _ordered_unique_paths(retrieved)
+    if not paths:
+        return 0.0
+    matched = sum(1 for ret in paths if any(_file_matches(ret, exp) for exp in expected))
+    return matched / len(paths)
 
 
 def _sorted_counter_dict(counter: Counter[str]) -> dict[str, int]:
@@ -410,16 +451,34 @@ def _resolve_question_workspace(
     return workspace_id
 
 
-def _count_rendered_tokens(bundles: Any) -> int:
+def _split_rendered_tokens(bundles: Any, expected: list[str]) -> tuple[int, int]:
+    """Token split of the deduped rendered bundle: (expected, other).
+
+    Same uid-dedupe as the old total counter (``rendered_tokens`` is the sum
+    of the two halves), attributed by whether the symbol's file matches an
+    expected entry. Carries ``_compute_precision``'s caveat: "other" is not
+    synonymous with noise, the gold set is recall-oriented.
+    """
     seen: set[str] = set()
-    total = 0
+    match_cache: dict[str, bool] = {}
+    expected_total = 0
+    other_total = 0
     for bundle in bundles:
         for sym in bundle.all_symbols():
             if sym.uid in seen:
                 continue
             seen.add(sym.uid)
-            total += estimate_text_tokens(sym.code or "")
-    return total
+            path = sym.file_path or ""
+            hit = match_cache.get(path)
+            if hit is None:
+                hit = any(_file_matches(path, exp) for exp in expected)
+                match_cache[path] = hit
+            tokens = estimate_text_tokens(sym.code or "")
+            if hit:
+                expected_total += tokens
+            else:
+                other_total += tokens
+    return expected_total, other_total
 
 
 def _apply_intent(result: QuestionResult, intent: Any) -> None:
@@ -459,6 +518,10 @@ def _populate_recall_layers(result: QuestionResult, retrieval: Any) -> None:
     result.file_recall, result.matched_files = _compute_recall(
         result.expected_files, result.retrieved_files
     )
+
+    result.seed_precision = _compute_precision(result.expected_files, result.seed_files)
+    result.pool_precision = _compute_precision(result.expected_files, result.pool_files)
+    result.bundle_precision = _compute_precision(result.expected_files, result.retrieved_files)
 
 
 def _run_axis_retrieval_for_question(
@@ -568,7 +631,13 @@ def run_question(
     # ``axis_bundles_to_prompt_context`` does (no double-counting shared
     # neighbours across bundles).
     result.context_seconds = round(timer.durations.get("context", 0.0), 4)
-    result.rendered_tokens = _count_rendered_tokens(retrieval.bundles)
+    result.expected_tokens, result.other_tokens = _split_rendered_tokens(
+        retrieval.bundles, result.expected_files
+    )
+    result.rendered_tokens = result.expected_tokens + result.other_tokens
+    result.token_precision = (
+        result.expected_tokens / result.rendered_tokens if result.rendered_tokens else 0.0
+    )
     _apply_intent(result, retrieval.intent)
     result.candidate_count = len(retrieval.candidates_for_context)
     _populate_recall_layers(result, retrieval)
@@ -734,6 +803,10 @@ def summarise(results: list[QuestionResult]) -> dict[str, Any]:
             "seed_full_recall": sum(1 for r in items if r.seed_recall >= 1.0 - 1e-9),
             "pool_mean_recall": sum(r.pool_recall for r in items) / len(items),
             "pool_full_recall": sum(1 for r in items if r.pool_recall >= 1.0 - 1e-9),
+            "mean_precision": sum(r.bundle_precision for r in items) / len(items),
+            "mean_token_precision": sum(r.token_precision for r in items) / len(items),
+            "mean_expected_tokens": sum(r.expected_tokens for r in items) / len(items),
+            "mean_other_tokens": sum(r.other_tokens for r in items) / len(items),
         }
         for repo, items in sorted(by_repo.items())
     }
@@ -760,6 +833,14 @@ def summarise(results: list[QuestionResult]) -> dict[str, Any]:
         "overall_pool_mean_recall": overall_pool_recall,
         "pool_full_recall_questions": pool_full_count,
         "pool_zero_recall_questions": pool_zero_count,
+        # Report-only precision telemetry (never a P7 gate — the gold set is
+        # recall-oriented; see ``_compute_precision``).
+        "overall_seed_mean_precision": _mean("seed_precision"),
+        "overall_pool_mean_precision": _mean("pool_precision"),
+        "overall_mean_precision": _mean("bundle_precision"),
+        "overall_mean_token_precision": _mean("token_precision"),
+        "overall_mean_expected_tokens": _mean("expected_tokens"),
+        "overall_mean_other_tokens": _mean("other_tokens"),
         "masked_by_pool_expander": masked_by_pool_expander,
         "masked_by_context_expander": masked_by_context_expander,
         "per_repo": by_repo_summary,
@@ -779,6 +860,10 @@ def summarise(results: list[QuestionResult]) -> dict[str, Any]:
                 "file_recall": round(r.file_recall, 4),
                 "seed_recall": round(r.seed_recall, 4),
                 "pool_recall": round(r.pool_recall, 4),
+                "bundle_precision": round(r.bundle_precision, 4),
+                "token_precision": round(r.token_precision, 4),
+                "expected_tokens": r.expected_tokens,
+                "other_tokens": r.other_tokens,
             }
             for r in sorted(scored, key=lambda x: x.question_id)
         ],
@@ -843,11 +928,20 @@ def _render_markdown(results: list[QuestionResult], summary: dict[str, Any]) -> 
         f"**{len(summary.get('masked_by_pool_expander', []))}**  ·  "
         f"masked by **context expander** (bundle>pool): "
         f"**{len(summary.get('masked_by_context_expander', []))}**",
+        f"- mean **precision** (report-only; gold is recall-oriented, other ≠ noise): "
+        f"seed **{summary.get('overall_seed_mean_precision', 0.0):.3f}** → "
+        f"pool **{summary.get('overall_pool_mean_precision', 0.0):.3f}** → "
+        f"bundle **{summary.get('overall_mean_precision', 0.0):.3f}**",
+        f"- mean **rendered token split**: expected "
+        f"**{summary.get('overall_mean_expected_tokens', 0.0):.0f}** vs other "
+        f"**{summary.get('overall_mean_other_tokens', 0.0):.0f}** "
+        f"(token precision **{summary.get('overall_mean_token_precision', 0.0):.3f}**)",
         "",
         "## Per-repo (seed → pool → bundle)",
         "",
-        "| repo | q | seed | pool | bundle | seed_full | pool_full | bundle_full |",
-        "|---|---|---|---|---|---|---|---|",
+        "| repo | q | seed | pool | bundle | prec | tok exp/other | "
+        "seed_full | pool_full | bundle_full |",
+        "|---|---|---|---|---|---|---|---|---|---|",
     ]
     for repo, info in summary["per_repo"].items():
         lines.append(
@@ -855,6 +949,8 @@ def _render_markdown(results: list[QuestionResult], summary: dict[str, Any]) -> 
             f"{info.get('seed_mean_recall', 0.0):.3f} | "
             f"{info.get('pool_mean_recall', 0.0):.3f} | "
             f"{info['mean_recall']:.3f} | "
+            f"{info.get('mean_precision', 0.0):.3f} | "
+            f"{info.get('mean_expected_tokens', 0.0):.0f}/{info.get('mean_other_tokens', 0.0):.0f} | "
             f"{info.get('seed_full_recall', 0)} | "
             f"{info.get('pool_full_recall', 0)} | {info['full_recall']} |"
         )
@@ -913,14 +1009,16 @@ def _render_markdown(results: list[QuestionResult], summary: dict[str, Any]) -> 
             "",
             "`p⚠` = pool expander masks a seed miss · `c⚠` = context expander masks a pool miss",
             "",
-            "| id | repo | seed | pool | bundle | matched/expected | intent | cand | top candidate relations |",
-            "|---|---|---|---|---|---|---|---|---|",
+            "| id | repo | seed | pool | bundle | prec | tok exp/other | "
+            "matched/expected | intent | cand | top candidate relations |",
+            "|---|---|---|---|---|---|---|---|---|---|---|",
         ]
     )
     for r in sorted(results, key=lambda x: (x.repo, x.question_id)):
         if r.skipped_reason:
             lines.append(
-                f"| {r.question_id} | {r.repo} | — | — | — | — | — | skipped: {r.skipped_reason} |"
+                f"| {r.question_id} | {r.repo} | — | — | — | — | — | — | — | — | "
+                f"skipped: {r.skipped_reason} |"
             )
             continue
         intent_str = (
@@ -934,6 +1032,7 @@ def _render_markdown(results: list[QuestionResult], summary: dict[str, Any]) -> 
         lines.append(
             f"| {r.question_id} | {r.repo} | {r.seed_recall:.2f} | "
             f"{r.pool_recall:.2f} | {r.file_recall:.2f}{marks} | "
+            f"{r.bundle_precision:.2f} | {r.expected_tokens}/{r.other_tokens} | "
             f"{len(r.matched_files)}/{len(r.expected_files)} | "
             f"{intent_str} | {r.candidate_count} | "
             f"{_format_histogram(r.candidate_relation_histogram, limit=3)} |"
@@ -1020,6 +1119,17 @@ def _print_comparison(prev_summary: dict[str, Any], summary: dict[str, Any]) -> 
         f"{curr_recall - curr_pool:+.3f} ({ctx_masks} masked)"
     )
 
+    # Precision telemetry deltas — only comparable when the previous summary
+    # already carries the keys (older runs predate them).
+    for label, key in (
+        ("bundle_precision:", "overall_mean_precision"),
+        ("token_precision:", "overall_mean_token_precision"),
+    ):
+        if key in prev_summary:
+            _layer(label, key)
+        elif key in summary:
+            print(f"overall mean {label:13} (n/a) → {float(summary[key]):.3f}")
+
 
 def _format_duration(seconds: float) -> str:
     seconds = max(0.0, seconds)
@@ -1104,6 +1214,8 @@ def _print_progress_done(
         metrics_line = (
             f"    seed={result.seed_recall:.3f} pool={result.pool_recall:.3f} "
             f"bundle={result.file_recall:.3f}{marks} "
+            f"prec={result.bundle_precision:.2f} "
+            f"tok={result.expected_tokens}/{result.other_tokens} "
             f"matched={len(result.matched_files)}/{len(result.expected_files)} "
             f"candidates={result.candidate_count} intent={intent}"
         )
