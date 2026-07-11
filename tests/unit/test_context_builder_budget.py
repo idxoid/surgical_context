@@ -243,7 +243,9 @@ def test_render_ceiling_lifts_to_full_on_leftover_budget():
     # A ``hybrid`` profile used to cap the ladder at hybrid — related symbols
     # stayed signatures forever even with most of the budget unspent. The
     # profile mode shapes initial coverage; the budget is the only ceiling.
-    related = _sym("rel", "def rel():\n    return 42\n", file_path="/rel.py")
+    # The related member shares the seed's file: cross-file members are
+    # body-frozen by design (see the freeze test below).
+    related = _sym("rel", "def rel():\n    return 42\n", file_path="/s.py")
     bundle = ContextBundle(
         role="seeds",
         seed=_sym("s", "def s():\n    return 1\n", file_path="/s.py"),
@@ -255,6 +257,36 @@ def test_render_ceiling_lifts_to_full_on_leftover_budget():
 
     rel_rendered = next(s for s in out[0].all_symbols() if s.uid == "rel")
     assert "return 42" in (rel_rendered.code or "")
+
+
+def test_cross_file_member_bodies_freeze_at_signature():
+    # A related member in a file no seed points at keeps only its signature
+    # on every rung — the symbol (and its file) still reaches the bundle, so
+    # file coverage survives, but its body can't win budget as noise. A
+    # member in another BUNDLE's seed file is not cross-file and still lifts.
+    stranger = _sym("stranger", "def stranger():\n    return 99\n", file_path="/elsewhere.py")
+    neighbour = _sym("nb", "def nb():\n    return 7\n", file_path="/other_seed.py")
+    bundles = [
+        ContextBundle(
+            role="seeds",
+            seed=_sym("s", "def s():\n    return 1\n", file_path="/s.py"),
+            related=(stranger, neighbour),
+            utility_score=1.0,
+        ),
+        ContextBundle(
+            role="seeds",
+            seed=_sym("s2", "def s2():\n    return 2\n", file_path="/other_seed.py"),
+            related=(),
+            utility_score=0.9,
+        ),
+    ]
+
+    out = _apply_render_and_budget(bundles, token_budget=500, render_mode="hybrid")
+
+    symbols = {s.uid: s for b in out for s in b.all_symbols()}
+    assert "return 99" not in (symbols["stranger"].code or "")
+    assert "def stranger" in (symbols["stranger"].code or "")
+    assert "return 7" in (symbols["nb"].code or "")
 
 
 def test_third_wave_upgrades_below_floor_symbols_on_leftover_budget():

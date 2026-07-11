@@ -1738,6 +1738,32 @@ def _selected_credit_rendered_bundles(selected: list[dict[str, object]]) -> list
     ]
 
 
+def _freeze_cross_file_member_bodies(bundles: list[ContextBundle]) -> list[ContextBundle]:
+    """Cap related members outside every seed's file at signature render.
+
+    Expansion members whose file no seed points at are overwhelmingly noise
+    (~5% of their printed tokens land in expected files, vs ~23% for members
+    in seed-covered files — 98q pack), yet ``full``/``hybrid`` renders print
+    their whole bodies. Trimming the source ``code`` here means no ladder rung
+    can re-inflate them, while the symbol (and its file) stays in the bundle,
+    so file-level coverage is unaffected. Seeds themselves are never trimmed.
+    """
+    seed_files = {b.seed.file_path for b in bundles if b.seed.file_path}
+    frozen: list[ContextBundle] = []
+    for bundle in bundles:
+        related = tuple(
+            rel
+            if (rel.file_path or "") in seed_files
+            else cast(ContextSymbol, replace(rel, code=_code_signature(rel.code)))
+            for rel in bundle.related
+        )
+        if related == bundle.related:
+            frozen.append(bundle)
+        else:
+            frozen.append(cast(ContextBundle, replace(bundle, related=related)))
+    return frozen
+
+
 def _apply_token_credit_budget(
     bundles: list[ContextBundle],
     *,
@@ -1772,6 +1798,7 @@ def _apply_token_credit_budget(
     del per_transaction_share  # profile knob; leader % comes from tail noise
 
     bundles = _dedupe_bundles_by_seed_uid(bundles)
+    bundles = _freeze_cross_file_member_bodies(bundles)
     state = _TokenCreditCoverageState(
         file_soft_cap=max(1, int(token_budget * file_soft_cap_share)),
     )
