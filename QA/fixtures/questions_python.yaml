@@ -386,6 +386,7 @@ questions:
   expected_files:
   - django/db/migrations/executor.py
   - django/db/migrations/loader.py
+  - django/db/migrations/operations/base.py
   - django/db/migrations/recorder.py
 - id: django_q05
   repo: django
@@ -465,9 +466,10 @@ questions:
   - before_request
   - after_request
   - preprocess_request
-  - do_teardown_request
+  - process_response
   expected_files:
   - src/flask/app.py
+  - src/flask/sansio/scaffold.py
 - id: flask_q05
   repo: flask
   core12: false
@@ -531,10 +533,12 @@ questions:
   expected_symbols:
   - Session
   - sessionmaker
-  - Identity
-  - LazyLoader
+  - IdentityMap
+  - _LazyLoader
   expected_files:
   - lib/sqlalchemy/orm/session.py
+  - lib/sqlalchemy/orm/identity.py
+  - lib/sqlalchemy/orm/strategies.py
 - id: sqlalchemy_q04
   repo: sqlalchemy
   core12: false
@@ -547,7 +551,7 @@ questions:
   expected_symbols:
   - relationship
   - RelationshipProperty
-  - Loader
+  - LoaderStrategy
   expected_files:
   - lib/sqlalchemy/orm/relationships.py
   - lib/sqlalchemy/orm/strategies.py
@@ -639,6 +643,7 @@ questions:
   - _embed_phase
   expected_files:
   - context_engine/indexer/fast/pipeline.py
+  - context_engine/indexer/fast/phases.py
 - id: surgical_context_q06
   repo: surgical_context
   core12: false
@@ -751,9 +756,14 @@ questions:
   - MemoryClosureLineageStore
   - PgClosureLineageStore
   - KuzuLineageStore
+  - MemgraphLineageStore
   expected_files:
   - src/dathund_core/lineage/factory.py
   - src/dathund_core/lineage/store.py
+  - src/dathund_core/lineage/memory_store.py
+  - src/dathund_core/lineage/pg_store.py
+  - src/dathund_core/lineage/kuzu_store.py
+  - src/dathund_core/lineage/memgraph_store.py
 - id: dathund_q04
   repo: dathund
   core12: false
@@ -983,12 +993,14 @@ questions:
   - Consumer
   - on_task_request
   - TaskPool
-  - Strategy
+  - default
   - execute
   expected_files:
   - celery/worker/consumer/consumer.py
   - celery/worker/request.py
   - celery/worker/strategy.py
+  - celery/concurrency/base.py
+  - celery/concurrency/prefork.py
 - id: celery_q04
   repo: celery
   core12: false
@@ -1023,6 +1035,7 @@ questions:
   - _create_task_sender
   expected_files:
   - celery/app/task.py
+  - celery/app/amqp.py
   - celery/app/base.py
   - celery/app/routes.py
   - celery/canvas.py
@@ -1033,10 +1046,12 @@ questions:
   expected_symbols:
   - RequestValidationError
   - request_validation_exception_handler
-  - exception_handler
+  - exception_handlers
   expected_files:
   - fastapi/exceptions.py
   - fastapi/exception_handlers.py
+  - fastapi/applications.py
+  - fastapi/routing.py
 - id: fastapi_new_q02
   repo: fastapi
   symbol: BackgroundTasks
@@ -1066,8 +1081,9 @@ questions:
   question: What is the execution order and internal mechanism of BaseHTTPMiddleware compared to standard ASGI middleware?
   expected_symbols:
   - BaseHTTPMiddleware
-  - dispatch
+  - middleware
   - add_middleware
+  - AsyncExitStackMiddleware
   expected_files:
   - fastapi/applications.py
   - fastapi/middleware/asyncexitstack.py
@@ -1077,11 +1093,13 @@ questions:
   question: How does FastAPI handle WebSocket handshakes, acceptance, and connection drops (WebSocketDisconnect)?
   expected_symbols:
   - WebSocket
-  - accept
-  - receive_text
+  - APIWebSocketRoute
+  - get_websocket_app
+  - websocket_session
   - WebSocketDisconnect
   expected_files:
   - fastapi/routing.py
+  - fastapi/websockets.py
 - id: fastapi_new_q06
   repo: fastapi
   symbol: OAuth2PasswordBearer
@@ -1089,9 +1107,12 @@ questions:
   expected_symbols:
   - OAuth2PasswordBearer
   - __call__
-  - security_scopes
+  - SecurityScopes
+  - security_scopes_param_name
   expected_files:
   - fastapi/security/oauth2.py
+  - fastapi/dependencies/utils.py
+  - fastapi/dependencies/models.py
 - id: pydantic_new_q01
   repo: pydantic
   symbol: field_validator
@@ -1109,11 +1130,15 @@ questions:
   question: How are @computed_field properties evaluated during model_dump() serialization?
   expected_symbols:
   - computed_field
-  - computed_field_info
+  - ComputedFieldInfo
+  - _computed_field_schema
   - SchemaSerializer
   expected_files:
+  - pydantic/main.py
   - pydantic/fields.py
   - pydantic/_internal/_decorators.py
+  - pydantic/_internal/_generate_schema.py
+  - pydantic/_internal/_model_construction.py
 - id: pydantic_new_q03
   repo: pydantic
   symbol: ConfigDict
@@ -1121,9 +1146,11 @@ questions:
   expected_symbols:
   - ConfigDict
   - strict
-  - _generate_schema
+  - ConfigWrapper
+  - GenerateSchema
   expected_files:
   - pydantic/config.py
+  - pydantic/_internal/_config.py
   - pydantic/_internal/_generate_schema.py
 - id: pydantic_new_q04
   repo: pydantic
@@ -1142,7 +1169,8 @@ questions:
   expected_symbols:
   - TypeAdapter
   - validate_python
-  - _type_adapter
+  - GenerateSchema
+  - SchemaValidator
   expected_files:
   - pydantic/type_adapter.py
   - pydantic/_internal/_generate_schema.py
@@ -1163,8 +1191,8 @@ questions:
   expected_symbols:
   - F
   - resolve_expression
-  - ExpressionNode
-  - compiler
+  - CombinedExpression
+  - SQLUpdateCompiler
   expected_files:
   - django/db/models/expressions.py
   - django/db/models/sql/compiler.py
@@ -1214,14 +1242,18 @@ questions:
   - django/apps/registry.py
 - id: django_new_q06
   repo: django
-  symbol: TransactionMiddleware
-  question: How does atomic() decorators and transaction middleware wrap database operations in savepoints?
+  symbol: atomic
+  question: How do atomic() decorators and ATOMIC_REQUESTS wrapping use savepoints around database operations?
   expected_symbols:
   - atomic
+  - Atomic
+  - make_view_atomic
+  - ATOMIC_REQUESTS
   - savepoint
   - commit
   - rollback
   expected_files:
+  - django/core/handlers/base.py
   - django/db/transaction.py
   - django/db/backends/base/base.py
 - id: flask_new_q01
@@ -1242,11 +1274,13 @@ questions:
   question: What is the exact scope of the 'g' object, and how is it cleared at the end of the request context?
   expected_symbols:
   - g
-  - _app_ctx_stack
-  - teardown_appcontext
+  - app_ctx
+  - AppContext
+  - do_teardown_appcontext
   expected_files:
   - src/flask/globals.py
   - src/flask/ctx.py
+  - src/flask/app.py
 - id: flask_new_q03
   repo: flask
   symbol: errorhandler
@@ -1257,6 +1291,7 @@ questions:
   - handle_user_exception
   expected_files:
   - src/flask/app.py
+  - src/flask/sansio/scaffold.py
 - id: flask_new_q04
   repo: flask
   symbol: context_processor
@@ -1268,6 +1303,7 @@ questions:
   expected_files:
   - src/flask/app.py
   - src/flask/templating.py
+  - src/flask/sansio/scaffold.py
 - id: flask_new_q05
   repo: flask
   symbol: BaseConverter
@@ -1278,7 +1314,7 @@ questions:
   - to_url
   - url_map
   expected_files:
-  - src/flask/app.py
+  - src/flask/sansio/app.py
 - id: flask_new_q06
   repo: flask
   symbol: AppGroup
@@ -1296,11 +1332,13 @@ questions:
   expected_symbols:
   - select
   - Select
-  - executable
   - execute
+  - SQLCompiler
   expected_files:
+  - lib/sqlalchemy/sql/_selectable_constructors.py
   - lib/sqlalchemy/sql/selectable.py
-  - lib/sqlalchemy/engine/result.py
+  - lib/sqlalchemy/orm/session.py
+  - lib/sqlalchemy/sql/compiler.py
 - id: sqlalchemy_new_q02
   repo: sqlalchemy
   symbol: selectinload
@@ -1320,10 +1358,11 @@ questions:
   expected_symbols:
   - listens_for
   - listen
-  - Dispatch
+  - _Dispatch
   - MapperEvents
   expected_files:
   - lib/sqlalchemy/event/api.py
+  - lib/sqlalchemy/event/base.py
   - lib/sqlalchemy/orm/events.py
 - id: sqlalchemy_new_q04
   repo: sqlalchemy
@@ -1331,7 +1370,7 @@ questions:
   question: How does Table reflection (autoload_with=engine) interrogate the database catalog to build MetaData?
   expected_symbols:
   - autoload_with
-  - reflecttable
+  - reflect_table
   - Inspector
   expected_files:
   - lib/sqlalchemy/sql/schema.py
@@ -1357,15 +1396,17 @@ questions:
   - MapperProperty
   expected_files:
   - lib/sqlalchemy/orm/properties.py
+  - lib/sqlalchemy/orm/_orm_constructors.py
   - lib/sqlalchemy/orm/descriptor_props.py
+  - lib/sqlalchemy/orm/interfaces.py
 - id: click_new_q01
   repo: click
   symbol: prompt
   question: How does click.prompt() handle interactive standard input, hidden passwords, and type casting?
   expected_symbols:
   - prompt
-  - DefaultFormatter
-  - visible_prompt
+  - _build_prompt
+  - visible_prompt_func
   - hide_input
   expected_files:
   - src/click/termui.py
@@ -1420,7 +1461,9 @@ questions:
   - Argument
   - Option
   - parse_args
-  - add_param
+  - add_to_parser
+  - add_argument
+  - add_option
   expected_files:
   - src/click/core.py
   - src/click/parser.py
@@ -1435,11 +1478,12 @@ questions:
   - MaxRetriesExceededError
   expected_files:
   - celery/app/task.py
+  - celery/app/autoretry.py
   - celery/exceptions.py
 - id: celery_new_q02
   repo: celery
-  symbol: CELERY_ROUTES
-  question: How does the Router evaluate CELERY_ROUTES (queues, exchanges, routing_keys) before publishing a task?
+  symbol: task_routes
+  question: How does the Router evaluate task_routes (legacy CELERY_ROUTES) before publishing a task?
   expected_symbols:
   - Router
   - route
@@ -1488,8 +1532,10 @@ questions:
   expected_symbols:
   - SoftTimeLimitExceeded
   - TimeLimitExceeded
-  - set_process_title
+  - on_timeout
+  - soft_timeout
   expected_files:
   - celery/exceptions.py
   - celery/worker/state.py
+  - celery/worker/request.py
   - celery/concurrency/prefork.py
