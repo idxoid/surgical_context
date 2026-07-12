@@ -93,6 +93,18 @@ _SCHEMA = [
         FOR (a:DocAnchor) ON (a.chunk_id, a.workspace_id)
         """,
     ),
+    # External-boundary MERGE key. Every phase that routes an edge to an
+    # upstream symbol (external_boundary, instantiations, extends_external)
+    # runs ``MERGE (e:ExternalSymbol {uid, workspace_id})`` — without this
+    # index each row is a full ExternalSymbol label scan, which turns those
+    # phases O(rows × label) on dense repos.
+    (
+        "external_symbol_uid_workspace",
+        """
+        CREATE INDEX external_symbol_uid_workspace IF NOT EXISTS
+        FOR (e:ExternalSymbol) ON (e.uid, e.workspace_id)
+        """,
+    ),
     # Text index on File.path specifically to accelerate the
     # ``target.path ENDS WITH $suffix`` predicate in
     # ``_create_import_relations``. Without this the query does a full

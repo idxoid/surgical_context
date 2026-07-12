@@ -86,37 +86,83 @@ class Neo4jGraphContextProbe(GraphContextProbe):
         self._proxy_topology_cache: dict[str, bool] = {}
         self._inherits_proxy_object_cache: dict[str, bool] = {}
         self._metadata_bridge_keys_by_uid: dict[str, tuple[str, ...]] | None = None
+        # Lazy whole-workspace materializations. The classifier consults the
+        # probe once per symbol during the embed phase; answering each call
+        # with its own Cypher round-trip made that phase O(symbols) in
+        # network latency. Each map below is one aggregate scan, loaded on
+        # first use so phase ordering (edges materialized before classify)
+        # is unchanged. ``None`` = not loaded yet.
+        self._handles_counts: dict[str, int] | None = None
+        self._injects_counts: dict[str, int] | None = None
+        self._event_signal_uids: set[str] | None = None
+        self._proxy_topology_uids: set[str] | None = None
+        self._marker_qns_by_uid: dict[str, tuple[str, ...]] | None = None
+        self._exception_class_names: set[str] | None = None
+        self._lance_kind_ancestors: dict[str, set[str]] | None = None
 
-    def has_proxy_object_topology(self, symbol_uid: str) -> bool:
-        cached = self._proxy_topology_cache.get(symbol_uid)
-        if cached is not None:
-            return cached
-        query = """
-        MATCH (:File {workspace_id: $workspace_id})-[:CONTAINS]->(s:Symbol {uid: $symbol_uid})
-        OPTIONAL MATCH (s)-[proxy_rel:PROXY_OF|RESOLVES_ATTR]->(:Symbol)
-        WHERE coalesce(proxy_rel.workspace_id, $workspace_id) = $workspace_id
-        RETURN s.kind AS symbol_kind, count(proxy_rel) AS proxy_rel_count
-        """
+    def _run_workspace_rows(self, query: str) -> list[Any]:
         try:
             with self.db.driver.session() as session:
-                record = session.run(
-                    query,
-                    symbol_uid=symbol_uid,
-                    workspace_id=self.workspace_id,
-                ).single()
+                return list(session.run(query, workspace_id=self.workspace_id))
         except Exception:
-            self._proxy_topology_cache[symbol_uid] = False
-            return False
-        symbol_kind = str((record and record.get("symbol_kind")) or "")
-        proxy_rel_count = int((record and record.get("proxy_rel_count")) or 0)
-        hit = symbol_kind == "proxy_binding" or proxy_rel_count > 0
-        self._proxy_topology_cache[symbol_uid] = hit
-        return hit
+            return []
 
-    def inherits_proxy_object(self, symbol_uid: str) -> bool:
-        cached = self._inherits_proxy_object_cache.get(symbol_uid)
-        if cached is not None:
-            return cached
+    def _load_proxy_topology_uids(self) -> set[str]:
+        if self._proxy_topology_uids is None:
+            binding_rows = self._run_workspace_rows(
+                """
+                MATCH (:File {workspace_id: $workspace_id})-[:CONTAINS]->(s:Symbol)
+                WHERE s.kind = 'proxy_binding'
+                RETURN DISTINCT s.uid AS uid
+                """
+            )
+            edge_rows = self._run_workspace_rows(
+                """
+                MATCH (:File {workspace_id: $workspace_id})-[:CONTAINS]->(s:Symbol)
+                    -[proxy_rel:PROXY_OF|RESOLVES_ATTR]->(:Symbol)
+                WHERE coalesce(proxy_rel.workspace_id, $workspace_id) = $workspace_id
+                RETURN DISTINCT s.uid AS uid
+                """
+            )
+            self._proxy_topology_uids = {
+                str(row["uid"]) for row in binding_rows + edge_rows if row.get("uid")
+            }
+        return self._proxy_topology_uids
+
+    def has_proxy_object_topology(self, symbol_uid: str) -> bool:
+        return symbol_uid in self._load_proxy_topology_uids()
+
+    def _load_lance_kind_ancestors(self) -> dict[str, set[str]]:
+        """One scan of the symbols table → container_kind → workspace uids.
+
+        ``inherits_proxy_object`` / ``inherits_error_dispatch`` used to load
+        the whole table per call. Loading once also lets both methods skip
+        their per-symbol ancestor walk entirely when no symbol in this
+        workspace carries the kind (the common case)."""
+        if self._lance_kind_ancestors is None:
+            by_kind: dict[str, set[str]] = {}
+            try:
+                import lancedb
+
+                table = lancedb.connect("./data/lancedb").open_table("symbols_axis_python_v1")
+                rows = (
+                    table.to_lance()
+                    .to_table(
+                        columns=["uid", "container_kinds", "workspace_id"],
+                    )
+                    .to_pylist()
+                )
+            except Exception:
+                rows = []
+            for r in rows:
+                if r.get("workspace_id") != self.workspace_id:
+                    continue
+                for kind in r.get("container_kinds") or []:
+                    by_kind.setdefault(str(kind), set()).add(str(r.get("uid")))
+            self._lance_kind_ancestors = by_kind
+        return self._lance_kind_ancestors
+
+    def _class_ancestor_uids(self, symbol_uid: str) -> set[str]:
         query = """
         MATCH (s:Symbol {uid: $symbol_uid})-[:DEPENDS_ON*1..6 {workspace_id: $workspace_id}]->(anc:Symbol {kind: 'class'})
         MATCH (:File {workspace_id: $workspace_id})-[:CONTAINS]->(anc)
@@ -131,36 +177,30 @@ class Neo4jGraphContextProbe(GraphContextProbe):
                     workspace_id=self.workspace_id,
                 ).single()
         except Exception:
-            self._inherits_proxy_object_cache[symbol_uid] = False
-            return False
-        ancestor_uids = [
-            str(uid) for uid in ((record and record.get("ancestor_uids")) or []) if uid
-        ]
-        if not ancestor_uids:
-            self._inherits_proxy_object_cache[symbol_uid] = False
-            return False
-        try:
-            import lancedb
+            return set()
+        return {str(uid) for uid in ((record and record.get("ancestor_uids")) or []) if uid}
 
-            table = lancedb.connect("./data/lancedb").open_table("symbols_axis_python_v1")
-            rows = (
-                table.to_lance()
-                .to_table(
-                    columns=["uid", "container_kinds", "workspace_id"],
-                )
-                .to_pylist()
-            )
-        except Exception:
-            self._inherits_proxy_object_cache[symbol_uid] = False
+    def _inherits_container_kind(
+        self,
+        symbol_uid: str,
+        kind: str,
+        cache: dict[str, bool],
+    ) -> bool:
+        cached = cache.get(symbol_uid)
+        if cached is not None:
+            return cached
+        kind_uids = self._load_lance_kind_ancestors().get(kind) or set()
+        if not kind_uids:
+            cache[symbol_uid] = False
             return False
-        hit = any(
-            str(r.get("uid")) in ancestor_uids
-            and r.get("workspace_id") == self.workspace_id
-            and "proxy_object" in (r.get("container_kinds") or [])
-            for r in rows
-        )
-        self._inherits_proxy_object_cache[symbol_uid] = hit
+        hit = bool(self._class_ancestor_uids(symbol_uid) & kind_uids)
+        cache[symbol_uid] = hit
         return hit
+
+    def inherits_proxy_object(self, symbol_uid: str) -> bool:
+        return self._inherits_container_kind(
+            symbol_uid, "proxy_object", self._inherits_proxy_object_cache
+        )
 
     def metadata_bridge_keys(self, symbol_uid: str) -> tuple[str, ...]:
         """Return metadata keys for bridge endpoints in this workspace.
@@ -187,83 +227,29 @@ class Neo4jGraphContextProbe(GraphContextProbe):
                 self._metadata_bridge_keys_by_uid = {}
         return self._metadata_bridge_keys_by_uid.get(symbol_uid, ())
 
+    def _load_exception_class_names(self) -> set[str]:
+        if self._exception_class_names is None:
+            rows = self._run_workspace_rows(
+                """
+                MATCH (:File {workspace_id: $workspace_id})-[:CONTAINS]->(c:Symbol {kind: 'class'})
+                WHERE coalesce(c.inherits_builtin_exception, false) = true
+                RETURN DISTINCT c.name AS name
+                """
+            )
+            self._exception_class_names = {str(row["name"]) for row in rows if row.get("name")}
+        return self._exception_class_names
+
     def is_error_model_type_name(self, key_name: str, symbol_uid: str) -> bool:
         if not key_name:
             return False
         if is_builtin_exception_type_name(key_name):
             return True
-        cached = self._exception_key_cache.get(key_name)
-        if cached is not None:
-            return cached
-        query = """
-        MATCH (:File {workspace_id: $workspace_id})-[:CONTAINS]->(c:Symbol {name: $key_name, kind: 'class'})
-        WHERE coalesce(c.inherits_builtin_exception, false) = true
-        RETURN count(c) AS n
-        """
-        try:
-            with self.db.driver.session() as session:
-                record = session.run(
-                    query,
-                    key_name=key_name,
-                    workspace_id=self.workspace_id,
-                ).single()
-        except Exception:
-            self._exception_key_cache[key_name] = False
-            return False
-        hit = int((record and record.get("n")) or 0) > 0
-        self._exception_key_cache[key_name] = hit
-        return hit
+        return key_name in self._load_exception_class_names()
 
     def inherits_error_dispatch(self, symbol_uid: str) -> bool:
-        cached = self._inherits_error_dispatch_cache.get(symbol_uid)
-        if cached is not None:
-            return cached
-        query = """
-        MATCH (s:Symbol {uid: $symbol_uid})-[:DEPENDS_ON*1..6 {workspace_id: $workspace_id}]->(anc:Symbol {kind: 'class'})
-        MATCH (:File {workspace_id: $workspace_id})-[:CONTAINS]->(anc)
-        WHERE anc.uid <> $symbol_uid
-        RETURN collect(DISTINCT anc.uid) AS ancestor_uids
-        """
-        try:
-            with self.db.driver.session() as session:
-                record = session.run(
-                    query,
-                    symbol_uid=symbol_uid,
-                    workspace_id=self.workspace_id,
-                ).single()
-        except Exception:
-            self._inherits_error_dispatch_cache[symbol_uid] = False
-            return False
-        ancestor_uids = [
-            str(uid) for uid in ((record and record.get("ancestor_uids")) or []) if uid
-        ]
-        if not ancestor_uids:
-            self._inherits_error_dispatch_cache[symbol_uid] = False
-            return False
-        try:
-            import lancedb
-
-            table = lancedb.connect("./data/lancedb").open_table("symbols_axis_python_v1")
-            rows = (
-                table.to_lance()
-                .to_table(
-                    columns=["uid", "container_kinds", "workspace_id"],
-                )
-                .to_pylist()
-            )
-        except Exception:
-            self._inherits_error_dispatch_cache[symbol_uid] = False
-            return False
-        error_dispatch_ancestors = {
-            str(r["uid"])
-            for r in rows
-            if r.get("workspace_id") == self.workspace_id
-            and str(r.get("uid")) in ancestor_uids
-            and "error_dispatch" in (r.get("container_kinds") or [])
-        }
-        hit = bool(error_dispatch_ancestors)
-        self._inherits_error_dispatch_cache[symbol_uid] = hit
-        return hit
+        return self._inherits_container_kind(
+            symbol_uid, "error_dispatch", self._inherits_error_dispatch_cache
+        )
 
     def outgoing_kind_edges(
         self,
@@ -307,6 +293,22 @@ class Neo4jGraphContextProbe(GraphContextProbe):
         """Container kinds the probe can answer for via graph topology."""
         return set(_KIND_NEIGHBOUR_CYPHER)
 
+    def _load_marker_qns_by_uid(self) -> dict[str, tuple[str, ...]]:
+        if self._marker_qns_by_uid is None:
+            rows = self._run_workspace_rows(
+                """
+                MATCH (s:Symbol)-[r:EXTENDS_EXTERNAL|INSTANTIATES_EXTERNAL]->(e:ExternalSymbol)
+                WHERE coalesce(r.workspace_id, $workspace_id) = $workspace_id
+                RETURN s.uid AS uid, collect(DISTINCT e.qualified_name) AS qns
+                """
+            )
+            self._marker_qns_by_uid = {
+                str(row["uid"]): tuple(str(qn) for qn in (row["qns"] or []) if qn)
+                for row in rows
+                if row.get("uid")
+            }
+        return self._marker_qns_by_uid
+
     def library_marker_kinds(self, symbol_uid: str) -> set[str]:
         cached = self._marker_cache.get(symbol_uid)
         if cached is not None:
@@ -325,25 +327,10 @@ class Neo4jGraphContextProbe(GraphContextProbe):
         #    Both edges carry the upstream qualified_name on the
         #    ExternalSymbol node, which the catalogue filter consumes
         #    locally; no name list lives in this probe.
-        catalogue_query = """
-        MATCH (s:Symbol {uid: $symbol_uid})-[r:EXTENDS_EXTERNAL|INSTANTIATES_EXTERNAL]->(e:ExternalSymbol)
-        WHERE coalesce(r.workspace_id, $workspace_id) = $workspace_id
-        RETURN collect(DISTINCT e.qualified_name) AS qns
-        """
-        try:
-            with self.db.driver.session() as session:
-                record = session.run(
-                    catalogue_query,
-                    symbol_uid=symbol_uid,
-                    workspace_id=self.workspace_id,
-                ).single()
-        except Exception:
-            record = None
-        if record:
-            for qn in record.get("qns") or []:
-                kind = kind_for_external_qualified_name(str(qn))
-                if kind:
-                    kinds.add(kind)
+        for qn in self._load_marker_qns_by_uid().get(symbol_uid, ()):
+            kind = kind_for_external_qualified_name(qn)
+            if kind:
+                kinds.add(kind)
 
         self._marker_cache[symbol_uid] = kinds
         return set(kinds)
@@ -399,21 +386,18 @@ class Neo4jGraphContextProbe(GraphContextProbe):
         (instantiations → decorators → embed/axis-classify), HANDLES edges
         are materialised before this probe is consulted.
         """
-        query = """
-        MATCH (s:Symbol {uid: $symbol_uid})-[r:HANDLES]->(:Symbol)
-        WHERE coalesce(r.workspace_id, $workspace_id) = $workspace_id
-        RETURN count(r) AS n
-        """
-        try:
-            with self.db.driver.session() as session:
-                record = session.run(
-                    query,
-                    symbol_uid=symbol_uid,
-                    workspace_id=self.workspace_id,
-                ).single()
-        except Exception:
-            return 0
-        return int((record and record.get("n")) or 0)
+        if self._handles_counts is None:
+            rows = self._run_workspace_rows(
+                """
+                MATCH (s:Symbol)-[r:HANDLES]->(:Symbol)
+                WHERE coalesce(r.workspace_id, $workspace_id) = $workspace_id
+                RETURN s.uid AS uid, count(r) AS n
+                """
+            )
+            self._handles_counts = {
+                str(row["uid"]): int(row["n"] or 0) for row in rows if row.get("uid")
+            }
+        return self._handles_counts.get(symbol_uid, 0)
 
     def is_event_signal(self, symbol_uid: str) -> bool:
         """True when ``symbol_uid`` is the target of an EVENT_SUB / EVENT_PUB edge.
@@ -425,21 +409,16 @@ class Neo4jGraphContextProbe(GraphContextProbe):
         marker-only ``signal_register`` classifier was waiting for. Hook/event
         phase (4.669b) materialises these before the axis classify (stage 5).
         """
-        query = """
-        MATCH (s:Symbol {uid: $symbol_uid})<-[r:EVENT_SUB|EVENT_PUB]-(:Symbol)
-        WHERE coalesce(r.workspace_id, $workspace_id) = $workspace_id
-        RETURN count(r) AS n
-        """
-        try:
-            with self.db.driver.session() as session:
-                record = session.run(
-                    query,
-                    symbol_uid=symbol_uid,
-                    workspace_id=self.workspace_id,
-                ).single()
-        except Exception:
-            return False
-        return int((record and record.get("n")) or 0) > 0
+        if self._event_signal_uids is None:
+            rows = self._run_workspace_rows(
+                """
+                MATCH (s:Symbol)<-[r:EVENT_SUB|EVENT_PUB]-(:Symbol)
+                WHERE coalesce(r.workspace_id, $workspace_id) = $workspace_id
+                RETURN DISTINCT s.uid AS uid
+                """
+            )
+            self._event_signal_uids = {str(row["uid"]) for row in rows if row.get("uid")}
+        return symbol_uid in self._event_signal_uids
 
     def outgoing_injects_count(self, symbol_uid: str) -> int:
         """Count outgoing ``INJECTS`` edges out of ``symbol_uid``.
@@ -451,21 +430,18 @@ class Neo4jGraphContextProbe(GraphContextProbe):
         ``dependency_injection_binding`` contract uses that as cross-symbol
         DFG proof.
         """
-        query = """
-        MATCH (s:Symbol {uid: $symbol_uid})-[r:INJECTS]->(:Symbol)
-        WHERE coalesce(r.workspace_id, $workspace_id) = $workspace_id
-        RETURN count(r) AS n
-        """
-        try:
-            with self.db.driver.session() as session:
-                record = session.run(
-                    query,
-                    symbol_uid=symbol_uid,
-                    workspace_id=self.workspace_id,
-                ).single()
-        except Exception:
-            return 0
-        return int((record and record.get("n")) or 0)
+        if self._injects_counts is None:
+            rows = self._run_workspace_rows(
+                """
+                MATCH (s:Symbol)-[r:INJECTS]->(:Symbol)
+                WHERE coalesce(r.workspace_id, $workspace_id) = $workspace_id
+                RETURN s.uid AS uid, count(r) AS n
+                """
+            )
+            self._injects_counts = {
+                str(row["uid"]): int(row["n"] or 0) for row in rows if row.get("uid")
+            }
+        return self._injects_counts.get(symbol_uid, 0)
 
     def peer_container_kinds_for(self, qualified_name_prefix: str) -> set[str]:
         return set()
