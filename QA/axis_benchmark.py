@@ -1091,6 +1091,56 @@ def _render_markdown(results: list[QuestionResult], summary: dict[str, Any]) -> 
     return "\n".join(lines) + "\n"
 
 
+def _print_per_repo_table(summary: dict[str, Any]) -> None:
+    """Print a fixed-width console table: rows = repos, columns = metrics."""
+    per_repo = summary.get("per_repo") or {}
+    if not per_repo:
+        return
+
+    headers = (
+        "repo",
+        "q",
+        "seed",
+        "pool",
+        "bundle",
+        "prec",
+        "tok exp/other",
+        "seed_full",
+        "pool_full",
+        "bundle_full",
+    )
+    rows: list[tuple[str, ...]] = []
+    for repo, info in per_repo.items():
+        rows.append(
+            (
+                str(repo),
+                str(info["questions"]),
+                f"{info.get('seed_mean_recall', 0.0):.3f}",
+                f"{info.get('pool_mean_recall', 0.0):.3f}",
+                f"{info['mean_recall']:.3f}",
+                f"{info.get('mean_precision', 0.0):.3f}",
+                f"{info.get('mean_expected_tokens', 0.0):.0f}/"
+                f"{info.get('mean_other_tokens', 0.0):.0f}",
+                str(info.get("seed_full_recall", 0)),
+                str(info.get("pool_full_recall", 0)),
+                str(info["full_recall"]),
+            )
+        )
+
+    widths = [
+        max(len(headers[i]), *(len(row[i]) for row in rows)) for i in range(len(headers))
+    ]
+
+    def _fmt(cells: tuple[str, ...]) -> str:
+        return "  ".join(cell.ljust(widths[i]) for i, cell in enumerate(cells))
+
+    print("\nPer-repo summary")
+    print(_fmt(headers))
+    print(_fmt(tuple("-" * w for w in widths)))
+    for row in rows:
+        print(_fmt(row))
+
+
 def _print_comparison(prev_summary: dict[str, Any], summary: dict[str, Any]) -> None:
     prev_recall = float(prev_summary.get("overall_mean_recall", 0.0))
     curr_recall = float(summary.get("overall_mean_recall", 0.0))
@@ -1438,6 +1488,7 @@ def main() -> None:
     print(json.dumps(summary, indent=2, sort_keys=True, default=str))
     print(f"\nfull report → {args.out}/")
     print(f"Report JSON: {summary_path}")
+    _print_per_repo_table(summary)
 
     if args.compare and args.compare.exists():
         prev = json.loads(args.compare.read_text(encoding="utf-8"))
