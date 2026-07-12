@@ -322,7 +322,8 @@ class StructuralEdgesMixin:
             WITH referrer, d, typ
             ORDER BY
               CASE WHEN typ.qualified_name = d.type_qualified_name THEN 0 ELSE 1 END,
-              size(typ.qualified_name) ASC
+              size(typ.qualified_name) ASC,
+              typ.uid ASC
             WITH referrer, d, collect(typ)[0] AS typ
             WHERE typ IS NOT NULL AND referrer <> typ
             MERGE (referrer)-[r:USES_TYPE {workspace_id: $workspace_id}]->(typ)
@@ -397,7 +398,8 @@ class StructuralEdgesMixin:
               CASE WHEN target.qualified_name = d.target_qualified_name THEN 0
                    WHEN target_file.path = d.file_path THEN 1
                    ELSE 2 END,
-              size(coalesce(target.qualified_name, '')) ASC
+              size(coalesce(target.qualified_name, '')) ASC,
+              target.uid ASC
             WITH idx, d, source, collect(target)[0] AS target
             WHERE target IS NOT NULL AND source <> target
             MERGE (source)-[r:REFERENCES {
@@ -487,7 +489,8 @@ class StructuralEdgesMixin:
             WITH initfile, d, sym
             ORDER BY
               CASE WHEN sym.qualified_name = d.export_qualified_name THEN 0 ELSE 1 END,
-              size(sym.qualified_name) ASC
+              size(sym.qualified_name) ASC,
+              sym.uid ASC
             WITH initfile, d, collect(sym)[0] AS sym
             WHERE sym IS NOT NULL
             MERGE (initfile)-[r:RE_EXPORTS {workspace_id: $workspace_id}]->(sym)

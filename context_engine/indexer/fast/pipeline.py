@@ -90,11 +90,16 @@ _silence()
 # Parallelism knobs. Default hash pool is high because hashing is I/O-bound;
 # parse pool tracks CPU count because tree-sitter parsing is CPU-bound but
 # releases the GIL inside the C extension. Axis Python additionally runs a
-# GIL-heavy ast pass — default parse_workers=1 until CPU parsing moves to a
-# process pool (see _parse_phase).
+# GIL-heavy ast pass, so its workers are OS processes (see _parse_phase);
+# AXIS_PARSE_PROCESSES=0 forces the old single-thread parse.
 _DEFAULT_HASH_WORKERS = max(4, (os.cpu_count() or 4) * 2)
 _DEFAULT_PARSE_WORKERS = max(2, os.cpu_count() or 4)
-_AXIS_PARSE_WORKERS = 1
+
+
+def _axis_parse_workers_default() -> int:
+    if os.environ.get("AXIS_PARSE_PROCESSES", "").strip().lower() in {"0", "false", "off", "no"}:
+        return 1
+    return max(2, min(8, os.cpu_count() or 4))
 
 __all__ = [
     "run_fast_indexing",
@@ -752,7 +757,7 @@ def run_fast_indexing(
     profile = resolve_index_profile(index_profile) if index_profile else active_index_profile()
     if parse_workers is None:
         parse_workers = (
-            _AXIS_PARSE_WORKERS
+            _axis_parse_workers_default()
             if profile.name == AXIS_PYTHON_V1_PROFILE
             else _DEFAULT_PARSE_WORKERS
         )

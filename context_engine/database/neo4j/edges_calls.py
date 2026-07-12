@@ -216,7 +216,12 @@ class CallImportEdgesMixin:
         # With one round-trip for file paths + indexed equality, that work happens in
         # a Python dict lookup and the Cypher becomes an index-friendly MATCH.
         # list_file_paths lives on WorkspaceMixin; both compose into Neo4jClient.
-        file_paths = list(self.list_file_paths(workspace_id=workspace_id))  # type: ignore[attr-defined]
+        # Sorted so ambiguous suffix resolution is content-stable: the File
+        # scan comes back in Neo4j store order (insertion/id-reuse dependent),
+        # and the suffix index is first-wins — unsorted, a repo with many
+        # same-named files (django: hundreds of ``/models.py``) resolved
+        # imports differently per reindex, rippling into DEPENDS_ON/AFFECTS.
+        file_paths = sorted(self.list_file_paths(workspace_id=workspace_id))  # type: ignore[attr-defined]
         file_path_set = set(file_paths)
         suffix_index = self._build_import_suffix_index(file_paths)
         resolved: list[dict[str, object]] = []

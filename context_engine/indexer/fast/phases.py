@@ -128,6 +128,95 @@ def _hash_phase(files: list[str], workers: int, reporter: ProgressReporter) -> d
     return hashes
 
 
+# ---------------------------------------------------------------------------
+# Process-pool parsing.
+#
+# ``extract_all`` is side-effect-free (thread-local adapters, no DB access),
+# so parse workers can be OS processes: the CPython AST/axis pass holds the
+# GIL, which is why thread workers never scaled. Everything stateful stays in
+# the parent — the job log (sqlite), Neo4j, Lance and the reporter are never
+# touched from a worker, so there is no lock/retry surface to collide on.
+# Workers are ``spawn``ed (not forked) so they inherit no parent DB handles.
+# ---------------------------------------------------------------------------
+
+# Below this many changed files the pool spin-up (spawned interpreters +
+# module imports) costs more than it saves; incremental updates and small
+# fixtures stay on the in-thread path.
+_PROCESS_POOL_MIN_FILES = 32
+_PROCESS_CHUNK_FILES = 8
+
+_PROC_EXTRACTOR: FastExtractor | None = None
+
+
+def _parse_pool_init(project_root: str, workspace_id: str, include_axis_facts: bool) -> None:
+    global _PROC_EXTRACTOR
+    _PROC_EXTRACTOR = FastExtractor(
+        project_root=project_root,
+        workspace_id=workspace_id,
+        include_axis_facts=include_axis_facts,
+    )
+
+
+def _parse_chunk_in_process(
+    chunk: list[tuple[str, dict[str, dict]]],
+) -> list[tuple[str, FileDiff | None, str]]:
+    """Parse one chunk of files inside a worker process.
+
+    Returns ``(path, diff, error)`` per file; per-file failures are carried
+    back as strings so the parent can record them in the job log without one
+    bad file poisoning the chunk.
+    """
+    out: list[tuple[str, FileDiff | None, str]] = []
+    for path, existing in chunk:
+        try:
+            out.append((path, _parse_one(path, _PROC_EXTRACTOR, existing), ""))
+        except Exception as exc:
+            out.append((path, None, f"{type(exc).__name__}: {exc}"))
+    return out
+
+
+def _parse_phase_process_pool(
+    changed_files: list[str],
+    project_path: str,
+    file_hashes: dict[str, str],
+    existing_by_path: dict[str, dict],
+    workspace_id: str,
+    workers: int,
+    job_log: IndexJobLog,
+    reporter: ProgressReporter,
+    *,
+    include_axis_facts: bool,
+) -> list[FileDiff]:
+    import multiprocessing
+    from concurrent.futures import ProcessPoolExecutor
+
+    chunks = [
+        [
+            (path, existing_by_path.get(path, {}))
+            for path in changed_files[start : start + _PROCESS_CHUNK_FILES]
+        ]
+        for start in range(0, len(changed_files), _PROCESS_CHUNK_FILES)
+    ]
+    results: list[FileDiff] = []
+    with ProcessPoolExecutor(
+        max_workers=workers,
+        mp_context=multiprocessing.get_context("spawn"),
+        initializer=_parse_pool_init,
+        initargs=(project_path, workspace_id, include_axis_facts),
+    ) as pool:
+        for chunk_result in pool.map(_parse_chunk_in_process, chunks):
+            for path, diff, error in chunk_result:
+                job_id = job_log.start_file_job(path, file_hash=file_hashes.get(path, ""))
+                if error:
+                    job_log.mark_failed(job_id, RuntimeError(error))
+                else:
+                    job_log.mark_completed(job_id)
+                if diff is not None:
+                    results.append(diff)
+                reporter.step("parse")
+    return results
+
+
 def _parse_one(
     file_path: str,
     extractor: FastExtractor,
@@ -167,8 +256,11 @@ def _parse_phase(
     """Parallel extraction + diff computation.
 
     Neo4j symbol indexes are preloaded on the main thread so workers stay
-    CPU/I/O bound (and so axis parse_workers=1 does not amplify DB round-trips).
-    Process-pool CPU parsing is the next step once extract_all is side-effect-free.
+    CPU/I/O bound. With ``workers > 1`` and enough changed files the CPU work
+    moves to a spawn-based process pool (the CPython AST/axis pass holds the
+    GIL, so thread workers never scaled); the job log and reporter are always
+    driven from the parent. Results are path-sorted so downstream graph
+    writes see a deterministic file order either way.
     """
     extractor = FastExtractor(
         project_root=project_path,
@@ -185,23 +277,40 @@ def _parse_phase(
             for path in changed_files
         }
 
-    results: list[FileDiff] = []
-
-    def _task(path: str) -> FileDiff | None:
-        digest = file_hashes.get(path, "")
-        with job_log.track_file_job(path, file_hash=digest):
-            return _parse_one(path, extractor, existing_by_path.get(path, {}))
-
+    # Processes only where threads are GIL-bound: the axis profile's CPython
+    # AST pass. Plain tree-sitter profiles keep the thread pool (the C parser
+    # releases the GIL, and their test doubles rely on in-process adapters).
     reporter.stage_start("parse", total=len(changed_files))
-    with ThreadPoolExecutor(max_workers=max(1, workers)) as pool:
-        futures = {pool.submit(_task, p): p for p in changed_files}
-        for fut in as_completed(futures):
-            diff = fut.result()
-            if diff is not None:
-                results.append(diff)
-            reporter.step("parse")
+    if include_axis_facts and workers > 1 and len(changed_files) >= _PROCESS_POOL_MIN_FILES:
+        results = _parse_phase_process_pool(
+            changed_files,
+            project_path,
+            file_hashes,
+            existing_by_path,
+            workspace_id,
+            workers,
+            job_log,
+            reporter,
+            include_axis_facts=include_axis_facts,
+        )
+    else:
+        results = []
+
+        def _task(path: str) -> FileDiff | None:
+            digest = file_hashes.get(path, "")
+            with job_log.track_file_job(path, file_hash=digest):
+                return _parse_one(path, extractor, existing_by_path.get(path, {}))
+
+        with ThreadPoolExecutor(max_workers=max(1, workers)) as pool:
+            futures = {pool.submit(_task, p): p for p in changed_files}
+            for fut in as_completed(futures):
+                diff = fut.result()
+                if diff is not None:
+                    results.append(diff)
+                reporter.step("parse")
     reporter.stage_end("parse")
 
+    results.sort(key=lambda diff: diff.extracted.path)
     return results
 
 

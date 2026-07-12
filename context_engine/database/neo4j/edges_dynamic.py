@@ -967,7 +967,8 @@ class DynamicEdgesMixin:
                 WITH caller, d, cls
                 ORDER BY
                   CASE WHEN cls.qualified_name = d.type_qualified_name THEN 0 ELSE 1 END,
-                  size(cls.qualified_name) ASC
+                  size(cls.qualified_name) ASC,
+                  cls.uid ASC
                 WITH caller, d, collect(cls)[0] AS cls
                 WHERE cls IS NOT NULL AND caller <> cls
                 MERGE (caller)-[r:INSTANTIATES {workspace_id: $workspace_id}]->(cls)
