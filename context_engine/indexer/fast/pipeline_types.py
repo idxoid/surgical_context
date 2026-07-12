@@ -3,12 +3,26 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Protocol
+from typing import Protocol
 
 from context_engine.indexer.fast.extractor import ExtractedFile
 
-if TYPE_CHECKING:
-    pass
+# LanguageAdapter extract_* method → DerivedFileFacts attribute
+_EXTRACT_TO_DERIVED_ATTR: dict[str, str] = {
+    "extract_proxy_bindings": "proxy_bindings",
+    "extract_self_method_proxy_calls": "proxy_return_calls",
+    "extract_decorators": "decorators",
+    "extract_decorator_compositions": "decorator_compositions",
+    "extract_type_references": "type_references",
+    "extract_injections": "injections",
+    "extract_attr_accesses": "attr_accesses",
+    "extract_instantiations": "instantiations",
+    "extract_flow_pairs": "flow_pairs",
+    "extract_hooks": "hooks",
+    "extract_http_endpoints": "http_endpoints",
+    "extract_reexports": "reexports",
+    "extract_metadata_bridges": "metadata_bridges",
+}
 
 
 def _parse_link_phase_result(result, fallback_count: int) -> tuple[int, set[str]]:
@@ -21,6 +35,17 @@ def _parse_link_phase_result(result, fallback_count: int) -> tuple[int, set[str]
     return fallback_count, set()
 
 
+def _derived_facts_for(ex: ExtractedFile, extract_attr: str) -> list | None:
+    """Return precomputed facts when ExtractedFile.derived was filled at parse."""
+    derived = getattr(ex, "derived", None)
+    if derived is None or not derived.computed:
+        return None
+    attr = _EXTRACT_TO_DERIVED_ATTR.get(extract_attr)
+    if not attr:
+        return None
+    return list(getattr(derived, attr, None) or [])
+
+
 def _collect_adapter_facts_from_diffs(
     diffs: list[FileDiff],
     extract_attr: str,
@@ -30,6 +55,10 @@ def _collect_adapter_facts_from_diffs(
     facts: list = []
     for diff in diffs:
         ex = diff.extracted
+        cached = _derived_facts_for(ex, extract_attr)
+        if cached is not None:
+            facts.extend(cached)
+            continue
         try:
             language = REGISTRY.detect_language(ex.path)
             adapter = REGISTRY.get_adapter(language)
@@ -54,6 +83,13 @@ def _collect_decorator_facts(
     compositions: list[dict] = []
     for diff in diffs:
         ex = diff.extracted
+        cached_deco = _derived_facts_for(ex, "extract_decorators")
+        cached_compose = _derived_facts_for(ex, "extract_decorator_compositions")
+        if cached_deco is not None:
+            decorators.extend(cached_deco)
+            if cached_compose is not None:
+                compositions.extend(cached_compose)
+            continue
         if ex.path.endswith((".py", ".pyi")):
             adapter = py_adapter
         elif ex.path.endswith((".ts", ".tsx")):

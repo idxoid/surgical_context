@@ -277,7 +277,7 @@ class MroApiBridgeIndexer:
         """
         with self.db.driver.session() as session:
             rows = list(session.run(query, workspace_id=workspace_id))
-        return [
+        records = [
             ClassRecord(
                 uid=str(row["uid"]),
                 name=str(row["name"]),
@@ -287,34 +287,58 @@ class MroApiBridgeIndexer:
             for row in rows
             if row.get("uid") and row.get("name")
         ]
+        # Content-stable order: Neo4j scan order varies per workspace, and the
+        # api-surface setdefault keeps the first same-name twin it sees.
+        records.sort(key=lambda cls: (cls.file_path, cls.qualified_name, cls.uid))
+        return records
 
     def _load_inheritance(self, workspace_id: str) -> dict[str, list[str]]:
         query = """
         MATCH (sub:Symbol)-[:DEPENDS_ON {workspace_id: $workspace_id}]->(sup:Symbol)
-        RETURN sub.uid AS subclass_uid, sup.uid AS superclass_uid
+        RETURN sub.uid AS subclass_uid,
+               sup.uid AS superclass_uid,
+               coalesce(sup.qualified_name, sup.name, '') AS superclass_qn
         """
         with self.db.driver.session() as session:
             rows = list(session.run(query, workspace_id=workspace_id))
-        graph: dict[str, list[str]] = {}
+        pending: dict[str, list[tuple[str, str]]] = {}
         for row in rows:
             sub_uid = str(row.get("subclass_uid") or "")
             sup_uid = str(row.get("superclass_uid") or "")
             if sub_uid and sup_uid:
-                graph.setdefault(sub_uid, []).append(sup_uid)
-        return graph
+                pending.setdefault(sub_uid, []).append(
+                    (str(row.get("superclass_qn") or ""), sup_uid)
+                )
+        # Superclass traversal order decides which ancestor's method wins the
+        # surface setdefault; sort content-stably (uids reshuffle per workspace).
+        return {
+            sub_uid: [sup_uid for _qn, sup_uid in sorted(sups)]
+            for sub_uid, sups in pending.items()
+        }
 
     def _load_methods(self, workspace_id: str, classes: list[ClassRecord]) -> list[MethodRecord]:
         classes_by_file = _classes_by_file(classes)
         query = """
-        MATCH (f:File {workspace_id: $workspace_id})-[:CONTAINS]->(m:Symbol)
+        MATCH (f:File {workspace_id: $workspace_id})-[rel:CONTAINS]->(m:Symbol)
         WHERE coalesce(m.kind, '') IN ['function', 'method']
         RETURN m.uid AS uid,
                m.name AS name,
                coalesce(m.qualified_name, m.name) AS qualified_name,
-               f.path AS file_path
+               f.path AS file_path,
+               coalesce(rel.start_line, m.range[0], 0) AS start_line
         """
         with self.db.driver.session() as session:
             rows = list(session.run(query, workspace_id=workspace_id))
+        # Source order (file, line) is content-stable and decides which
+        # same-name twin (property setter, @overload) represents the API name.
+        rows.sort(
+            key=lambda row: (
+                str(row.get("file_path") or ""),
+                int(row.get("start_line") or 0),
+                str(row.get("qualified_name") or ""),
+                str(row.get("uid") or ""),
+            )
+        )
         methods: list[MethodRecord] = []
         for row in rows:
             qn = str(row.get("qualified_name") or row.get("name") or "")

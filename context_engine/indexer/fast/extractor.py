@@ -11,11 +11,14 @@ file four times (symbols, calls, imports, inheritance). This module:
    happens exactly once per file. Adapters that don't override
    ``extract_all`` still work — the protocol provides a default that
    falls back to the four legacy methods.
+5. Stashes derived graph facts (instantiations, flow pairs, …) on
+   ``ExtractedFile.derived`` so indexer phases do not re-parse.
 """
 
 import hashlib
 import threading
 
+from context_engine.parser.derived_facts import DerivedFileFacts
 from context_engine.parser.protocol import (
     ImportEdge,
     InheritanceEdge,
@@ -73,6 +76,7 @@ class ExtractedFile:
         "imports",
         "inheritance",
         "axis_facts",
+        "derived",
     )
 
     def __init__(
@@ -85,6 +89,7 @@ class ExtractedFile:
         imports: list[ImportEdge],
         inheritance: list[InheritanceEdge],
         axis_facts: list | None = None,
+        derived: DerivedFileFacts | None = None,
     ):
         self.path = path
         self.source = source
@@ -95,6 +100,7 @@ class ExtractedFile:
         self.inheritance = inheritance
         # ``None`` = not computed during parse; ``[]`` = computed, file has no facts.
         self.axis_facts = axis_facts
+        self.derived = derived if derived is not None else DerivedFileFacts()
 
 
 class FastExtractor:
@@ -148,7 +154,7 @@ class FastExtractor:
         # tree-sitter adapters this means a single parse; for other
         # adapters it falls back to the four legacy methods (no regression).
         with project_root_scope(self.project_root, self.workspace_id):
-            symbols, calls, imports, inheritance, axis_facts = adapter.extract_all(
+            symbols, calls, imports, inheritance, axis_facts, derived = adapter.extract_all(
                 source,
                 file_path,
                 include_axis_facts=self.include_axis_facts,
@@ -168,6 +174,7 @@ class FastExtractor:
             imports=imports,
             inheritance=inheritance,
             axis_facts=axis_facts,
+            derived=derived,
         )
 
 

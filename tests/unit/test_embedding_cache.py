@@ -32,7 +32,7 @@ def test_embedding_cache_roundtrip(tmp_path):
 
     cache.set(key, vector, embedding_hash=compute_embedding_hash(vector))
 
-    assert cache.get(key) == vector
+    assert cache.get(key) == pytest.approx(vector)
     assert cache.stats()["total"] == 1
     assert cache.stats()["models"][0]["model_name"] == "all-MiniLM-L6-v2"
 
@@ -56,6 +56,75 @@ def test_embedding_cache_get_many_roundtrip(tmp_path):
 
     assert hits[key1] == [1.0, 2.0]
     assert hits[key2] == [3.0, 4.0]
+
+
+def test_embedding_cache_set_many_float32_blob(tmp_path):
+    from context_engine.database.embedding_cache import pack_embedding_vector
+
+    cache = EmbeddingCache(str(tmp_path / "embeddings.sqlite3"))
+    key = EmbeddingCacheKey(
+        model_name="all-MiniLM-L6-v2",
+        model_version="2.2",
+        content_hash=compute_chunk_hash("gamma"),
+    )
+    vector = [0.25, -0.5, 1.0]
+    cache.set_many([(key, vector, compute_embedding_hash(vector))])
+
+    assert cache.get(key) == pytest.approx(vector)
+    # Stored as float32 BLOB, not JSON text.
+    import sqlite3
+
+    with sqlite3.connect(cache.db_path) as conn:
+        row = conn.execute("SELECT vector FROM embedding_cache").fetchone()
+    assert isinstance(row[0], (bytes, memoryview))
+    assert bytes(row[0]) == pack_embedding_vector(vector)
+    assert cache.stats()["timings_ms"]["set_many_calls"] == 1
+
+
+def test_embedding_cache_reads_legacy_json_rows(tmp_path):
+    import json
+    import sqlite3
+
+    db_path = tmp_path / "embeddings.sqlite3"
+    key = EmbeddingCacheKey(
+        model_name="all-MiniLM-L6-v2",
+        model_version="2.2",
+        content_hash=compute_chunk_hash("legacy"),
+    )
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            """
+            CREATE TABLE embedding_cache (
+                model_name TEXT NOT NULL,
+                model_version TEXT NOT NULL,
+                content_hash TEXT NOT NULL,
+                embedding_hash TEXT NOT NULL,
+                dimensions INTEGER NOT NULL,
+                vector TEXT NOT NULL,
+                created_at INTEGER NOT NULL,
+                last_used_at INTEGER NOT NULL,
+                PRIMARY KEY (model_name, model_version, content_hash)
+            )
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO embedding_cache VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                key.model_name,
+                key.model_version,
+                key.content_hash,
+                "h",
+                2,
+                json.dumps([9.0, 8.0]),
+                1,
+                1,
+            ),
+        )
+
+    cache = EmbeddingCache(str(db_path))
+    assert cache.get(key) == [9.0, 8.0]
 
 
 def test_lancedb_client_embed_reuses_content_hash_cache(tmp_path):

@@ -8,6 +8,7 @@ from pydantic import BaseModel
 
 if TYPE_CHECKING:
     from context_engine.axis.schema import AxisFact
+    from context_engine.parser.derived_facts import DerivedFileFacts
 
 
 class SymbolMetadata(BaseModel):
@@ -208,6 +209,7 @@ class LanguageAdapter(ABC):
         list[ImportEdge],
         list[InheritanceEdge],
         list["AxisFact"] | None,
+        "DerivedFileFacts",
     ]:
         """One-shot extraction of every per-file artifact.
 
@@ -218,8 +220,12 @@ class LanguageAdapter(ABC):
         free.
 
         When ``include_axis_facts`` is true the fifth return value is the
-        axis fact list; otherwise it is ``None`` (not computed).
+        axis fact list; otherwise it is ``None`` (not computed). The sixth
+        value is ``DerivedFileFacts`` — default leaves ``computed=False``
+        so indexer phases fall back to live extracts.
         """
+        from context_engine.parser.derived_facts import DerivedFileFacts
+
         symbols = self.extract_symbols(source_code, file_path)
         calls = self.extract_calls_from_source(source_code, file_path)
         imports = self.extract_imports(source_code, file_path)
@@ -232,4 +238,4 @@ class LanguageAdapter(ABC):
                 symbols=symbols,
                 project_root=project_root,
             )
-        return symbols, calls, imports, inheritance, axis_facts
+        return symbols, calls, imports, inheritance, axis_facts, DerivedFileFacts()

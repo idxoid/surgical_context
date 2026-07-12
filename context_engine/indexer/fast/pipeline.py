@@ -89,9 +89,12 @@ _silence()
 
 # Parallelism knobs. Default hash pool is high because hashing is I/O-bound;
 # parse pool tracks CPU count because tree-sitter parsing is CPU-bound but
-# releases the GIL inside the C extension.
+# releases the GIL inside the C extension. Axis Python additionally runs a
+# GIL-heavy ast pass — default parse_workers=1 until CPU parsing moves to a
+# process pool (see _parse_phase).
 _DEFAULT_HASH_WORKERS = max(4, (os.cpu_count() or 4) * 2)
 _DEFAULT_PARSE_WORKERS = max(2, os.cpu_count() or 4)
+_AXIS_PARSE_WORKERS = 1
 
 __all__ = [
     "run_fast_indexing",
@@ -290,12 +293,17 @@ def _fast_indexing_initial_stats(
     }
 
 
+def _stamp_total(stats: dict, t0: float) -> None:
+    stats.setdefault("timings_sec", {})["total"] = round(time.perf_counter() - t0, 3)
+
+
 def _finish_no_indexable_files(
     stats: dict,
     db: Neo4jClient,
     *,
     workspace_id: str,
     project_path: str,
+    t0: float,
 ) -> dict:
     _use_repository_profile(
         stats,
@@ -310,6 +318,7 @@ def _finish_no_indexable_files(
         project_path=project_path,
         outcome="no_indexable_files",
     )
+    _stamp_total(stats, t0)
     print(f"❌ No indexable files under {project_path}")
     return stats
 
@@ -324,6 +333,7 @@ def _finish_tombstone_only(
     tombstone_uids: Collection[str],
     skip_affects: bool,
     reporter: ProgressReporter,
+    t0: float,
 ) -> dict:
     if tombstone_uids and not skip_affects:
         t_stage = time.perf_counter()
@@ -338,6 +348,7 @@ def _finish_tombstone_only(
         project_path=project_path,
         outcome="tombstone_only",
     )
+    _stamp_total(stats, t0)
     print(f"🪦 Tombstoned {len(tombstoned_paths)} stale indexed file(s).")
     return stats
 
@@ -354,6 +365,7 @@ def _finish_unchanged_files(
     tombstone_uids: Collection[str],
     skip_affects: bool,
     reporter: ProgressReporter,
+    t0: float,
 ) -> dict:
     if tombstone_uids and not skip_affects:
         t_stage = time.perf_counter()
@@ -394,6 +406,7 @@ def _finish_unchanged_files(
         project_path=project_path,
         outcome="noop_unchanged" if not tombstoned_paths else "tombstone_noop",
     )
+    _stamp_total(stats, t0)
     return stats
 
 
@@ -734,10 +747,15 @@ def run_fast_indexing(
     Pass ``reporter`` to wire up progress bars; defaults to no-op.
     """
     hash_workers = hash_workers or _DEFAULT_HASH_WORKERS
-    parse_workers = parse_workers or _DEFAULT_PARSE_WORKERS
     reporter = reporter or _NullReporter()
 
     profile = resolve_index_profile(index_profile) if index_profile else active_index_profile()
+    if parse_workers is None:
+        parse_workers = (
+            _AXIS_PARSE_WORKERS
+            if profile.name == AXIS_PYTHON_V1_PROFILE
+            else _DEFAULT_PARSE_WORKERS
+        )
     base_workspace_id = workspace_id or WorkspaceResolver().from_project_path(project_path).id
     workspace_id = effective_index_workspace_id(base_workspace_id, profile=profile)
     # Request-scoped view over the process-wide driver (audit-tagged), not a
@@ -799,6 +817,7 @@ def run_fast_indexing(
                 db,
                 workspace_id=workspace_id,
                 project_path=project_path,
+                t0=t0,
             )
 
         if not files and tombstoned_paths:
@@ -811,6 +830,7 @@ def run_fast_indexing(
                 tombstone_uids=tombstone_uids,
                 skip_affects=skip_affects,
                 reporter=reporter,
+                t0=t0,
             )
 
         # Stage 2: parallel hash + diff
@@ -835,6 +855,7 @@ def run_fast_indexing(
                 tombstone_uids=tombstone_uids,
                 skip_affects=skip_affects,
                 reporter=reporter,
+                t0=t0,
             )
         _run_fast_changed_files_pipeline(
             stats=stats,

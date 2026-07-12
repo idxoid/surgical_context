@@ -263,7 +263,13 @@ class LanceDBClient:
             EMBED_THROTTLE_MS, EMBED_LOW_PRIORITY_THROTTLE_MS if EMBED_LOW_PRIORITY else 0
         )
         self._embed_throttle_seconds = throttle_ms / 1000
-        self._embedding_stats = {"cache_hits": 0, "cache_misses": 0, "encoded": 0}
+        self._embedding_stats = {
+            "cache_hits": 0,
+            "cache_misses": 0,
+            "encoded": 0,
+            "cache_read_ms": 0.0,
+            "cache_write_ms": 0.0,
+        }
         self._symbol_axis_columns = (
             AXIS_SYMBOL_REQUIRED_COLUMNS
             if self._index_profile.name == AXIS_PYTHON_V1_PROFILE
@@ -1043,11 +1049,15 @@ class LanceDBClient:
     ) -> tuple[list[list[float] | None], OrderedDict[str, str]]:
         vectors: list[list[float] | None] = [None] * len(texts)
         missing_by_hash: OrderedDict[str, str] = OrderedDict()
+        t_cache = time.perf_counter()
         cached_vectors = (
             self._embedding_cache.get_many(list(cache_keys.values()))
             if self._embedding_cache
             else {}
         )
+        self._embedding_stats["cache_read_ms"] = self._embedding_stats.get(
+            "cache_read_ms", 0.0
+        ) + (time.perf_counter() - t_cache) * 1000
         for index, (text, content_hash) in enumerate(zip(texts, content_hashes, strict=False)):
             key = cache_keys[content_hash]
             cached = cached_vectors.get(key)
@@ -1079,16 +1089,25 @@ class LanceDBClient:
             encoded = self._embedding_model().encode(
                 [text for _, text in batch], show_progress_bar=False
             )
+            cache_writes: list[tuple[EmbeddingCacheKey, list[float], str]] = []
             for (content_hash, _), row in zip(batch, encoded, strict=False):
                 vector = [float(value) for value in row]
                 encoded_by_hash[content_hash] = vector
                 self._embedding_stats["encoded"] += 1
                 if self._embedding_cache:
-                    self._embedding_cache.set(
-                        cache_keys[content_hash],
-                        vector,
-                        embedding_hash=compute_embedding_hash(vector),
+                    cache_writes.append(
+                        (
+                            cache_keys[content_hash],
+                            vector,
+                            compute_embedding_hash(vector),
+                        )
                     )
+            if self._embedding_cache and cache_writes:
+                t_cache = time.perf_counter()
+                self._embedding_cache.set_many(cache_writes)
+                self._embedding_stats["cache_write_ms"] = self._embedding_stats.get(
+                    "cache_write_ms", 0.0
+                ) + (time.perf_counter() - t_cache) * 1000
             if progress_callback:
                 progress_callback(
                     f"encode: {min(start + len(batch), len(missing_items))}/{len(missing_items)}"
@@ -1471,31 +1490,41 @@ class LanceDBClient:
         workspace_id: str = DEFAULT_WORKSPACE_ID,
         progress_callback: Callable[[str], None] | None = None,
     ):
-        """symbols: list of {uid, name, file_path, code}"""
+        """symbols: list of {uid, name, file_path, code}
+
+        Body and signature facets are embedded in streaming chunks so peak
+        memory does not hold both full-batch vector lists at once.
+        """
         if not symbols:
             return
-        codes = [s["code"] for s in symbols]
         if progress_callback:
             progress_callback(f"prepare: symbols={len(symbols)}")
+        chunk_size = max(1, self._embed_batch_size)
+        rows: list[dict] = []
         t0 = time.perf_counter()
-        vectors = self._embed(codes, progress_callback=progress_callback)
+        for start in range(0, len(symbols), chunk_size):
+            batch = symbols[start : start + chunk_size]
+            # Body facet — drop codes from scope after embedding this chunk.
+            body_texts = [s["code"] for s in batch]
+            body_vectors = self._embed(body_texts, progress_callback=progress_callback)
+            del body_texts
+            signature_vectors: list[list[float]] | None = None
+            if self._symbol_axis_columns:
+                signature_vectors = self._embed(
+                    [symbol_signature_text(s["code"]) for s in batch],
+                    progress_callback=progress_callback,
+                )
+            rows.extend(
+                self._symbol_embedding_rows(
+                    batch,
+                    body_vectors,
+                    signature_vectors,
+                    workspace_id=workspace_id,
+                )
+            )
+            del body_vectors, signature_vectors
         if progress_callback:
             progress_callback(f"embed done in {time.perf_counter() - t0:.2f}s")
-        # Signature-facet vectors — axis profile only (the column lives on the
-        # axis schema). Embedded from the header alone so a large body cannot
-        # dilute the API surface; cache dedups identical signatures.
-        signature_vectors: list[list[float]] | None = None
-        if self._symbol_axis_columns:
-            signature_vectors = self._embed(
-                [symbol_signature_text(s["code"]) for s in symbols],
-                progress_callback=progress_callback,
-            )
-        rows = self._symbol_embedding_rows(
-            symbols,
-            vectors,
-            signature_vectors,
-            workspace_id=workspace_id,
-        )
         uids = [s["uid"] for s in symbols]
         existing = self.count_symbols_workspace(workspace_id)
         t0 = time.perf_counter()

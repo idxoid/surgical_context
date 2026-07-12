@@ -151,9 +151,12 @@ class AFFECTSIndexer:
         MATCH (dependent:Symbol)-[r]->(dependency:Symbol)
         WHERE type(r) IN $rel_types
           AND coalesce(r.workspace_id, $workspace_id) = $workspace_id
-        RETURN dependency.uid AS dependency_uid, dependent.uid AS dependent_uid
+        RETURN dependency.uid AS dependency_uid,
+               dependent.uid AS dependent_uid,
+               dependent.qualified_name AS dependent_qn,
+               dependent.hash AS dependent_hash
         """
-        adjacency: dict[str, set[str]] = defaultdict(set)
+        adjacency: dict[str, dict[str, tuple[str, str]]] = defaultdict(dict)
         result = session.run(
             query,
             rel_types=_AFFECTS_REL_TYPES,
@@ -163,10 +166,25 @@ class AFFECTSIndexer:
             dependency_uid = record["dependency_uid"]
             dependent_uid = record["dependent_uid"]
             if dependency_uid and dependent_uid and dependency_uid != dependent_uid:
-                adjacency[dependency_uid].add(dependent_uid)
+                adjacency[dependency_uid][dependent_uid] = (
+                    record.get("dependent_qn") or "",
+                    record.get("dependent_hash") or "",
+                )
+        # Frontier order must be workspace-independent: uids mix workspace_id,
+        # so a uid sort makes the MAX_FANOUT_PER_LEVEL cut keep a different
+        # dependent subset per ref for byte-identical content (measured ±1k
+        # AFFECTS edges across refs of the same repo). qualified_name + content
+        # hash are content-stable; uid stays only as the final tie-break for
+        # true clones (same name, same body).
         return {
-            dependency_uid: sorted(dependent_uids)
-            for dependency_uid, dependent_uids in adjacency.items()
+            dependency_uid: [
+                uid
+                for _key, uid in sorted(
+                    ((qn, content_hash), uid)
+                    for uid, (qn, content_hash) in dependent_keys.items()
+                )
+            ]
+            for dependency_uid, dependent_keys in adjacency.items()
         }
 
     def _compute_affected_pairs(

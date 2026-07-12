@@ -15,7 +15,12 @@ from context_engine.database.session import db_session
 from context_engine.index_profile import effective_index_workspace_id
 from context_engine.indexer.git_delta_poller import GitDeltaRegistry, GitDeltaTarget
 from context_engine.indexer.job_log import IndexJobLog
-from context_engine.indexer.queue import EnqueueResult, IndexBatchQueue, IndexWorkItem
+from context_engine.indexer.queue import (
+    KIND_PROJECT,
+    EnqueueResult,
+    IndexBatchQueue,
+    IndexWorkItem,
+)
 from context_engine.observability.metrics import MetricsRegistry, default_metrics
 from context_engine.overlay import InMemoryOverlay
 
@@ -26,13 +31,21 @@ def _partition_index_batch_paths(
     group: list[IndexWorkItem],
 ) -> tuple[list[str], list[str], list[str], list[str]]:
     from context_engine.indexer.code import is_indexable_file
-    from context_engine.indexer.git_committed import should_index_file
+    from context_engine.indexer.git_committed import (
+        load_git_indexable_snapshot,
+        should_index_file,
+    )
 
     existing_paths = [item.file_path for item in group if os.path.isfile(item.file_path)]
     missing_paths = [item.file_path for item in group if not os.path.isfile(item.file_path)]
     unsupported_paths = [path for path in existing_paths if not is_indexable_file(path)]
-    indexable_paths = [path for path in existing_paths if is_indexable_file(path)]
-    indexable_paths = [path for path in indexable_paths if should_index_file(path)]
+    candidates = [path for path in existing_paths if is_indexable_file(path)]
+    snapshot = None
+    if candidates:
+        snapshot = load_git_indexable_snapshot(os.path.commonpath(candidates))
+    indexable_paths = [
+        path for path in candidates if should_index_file(path, snapshot=snapshot)
+    ]
     return missing_paths, unsupported_paths, indexable_paths, existing_paths
 
 
@@ -283,6 +296,23 @@ class IndexingService:
     ) -> list[EnqueueResult]:
         return [self.enqueue_index_file(path, workspace_id, user_id) for path in file_paths]
 
+    def enqueue_index_project(
+        self,
+        project_path: str,
+        workspace_id: str,
+        user_id: str,
+    ) -> EnqueueResult:
+        result = self.index_queue.enqueue_project(
+            project_path,
+            workspace_id=workspace_id,
+            user_id=user_id,
+        )
+        self.metrics.increment(
+            "context_engine_index_queue_events_total",
+            labels={"status": result.status, "workspace": workspace_id, "kind": "project"},
+        )
+        return result
+
     def summarize_enqueue_results(self, results: list[EnqueueResult]) -> dict[str, int]:
         queued = sum(1 for result in results if result.status == "queued")
         coalesced = sum(1 for result in results if result.status == "coalesced")
@@ -299,7 +329,7 @@ class IndexingService:
         }
 
     def process_index_batch(self, items: list[IndexWorkItem]) -> None:
-        """Process a coalesced file batch and resolve doc anchors once per workspace."""
+        """Process coalesced queue work: project jobs via fast pipeline, files via index_file."""
         if not items:
             return
 
@@ -307,8 +337,17 @@ class IndexingService:
 
         from context_engine.parser.extractor import SymbolExtractor
 
+        project_items = [item for item in items if item.kind == KIND_PROJECT]
+        file_items = [item for item in items if item.kind != KIND_PROJECT]
+
+        for item in project_items:
+            self._process_project_index_job(item)
+
+        if not file_items:
+            return
+
         grouped: dict[tuple[str, str], list[IndexWorkItem]] = defaultdict(list)
-        for item in items:
+        for item in file_items:
             grouped[(item.user_id, item.workspace_id)].append(item)
 
         job_log = self.job_log_factory()
@@ -326,6 +365,31 @@ class IndexingService:
                 vector_db=self.vector_db,
                 db_session=self.db_session,
             )
+
+    def _process_project_index_job(self, item: IndexWorkItem) -> None:
+        """One fast changed-files pipeline with a single finalize after drain."""
+        from context_engine.indexer.fast import run_fast_indexing
+
+        project_path = item.file_path
+        base_workspace_id = item.workspace_id
+        try:
+            stats = run_fast_indexing(
+                project_path,
+                workspace_id=base_workspace_id,
+                user_id=item.user_id,
+            )
+            self.metrics.increment(
+                "context_engine_index_queue_completed_files_total",
+                value=int(stats.get("changed", 0) or 0),
+                labels={"workspace": base_workspace_id, "kind": "project"},
+            )
+        except Exception:
+            logger.exception("Queued project indexing failed for %s", project_path)
+            self.metrics.increment(
+                "context_engine_index_queue_failures_total",
+                labels={"workspace": base_workspace_id, "kind": "project"},
+            )
+            raise
 
     def track_git_delta_target(
         self,

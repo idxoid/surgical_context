@@ -80,34 +80,34 @@ def index(
     with main.db_session(user_id=user_id) as db:
         main._authorize_workspace_project_root(project_root, workspace=workspace, db=db)
         if req.queue:
-            from context_engine.indexer.fast.collector import collect_files
-
-            files = collect_files(str(project_root))
-            safe_files = [
-                main._sandbox_path(
-                    file_path,
-                    workspace_id=workspace_id,
-                    db=db,
-                    workspace_root=project_root,
-                )
-                for file_path in files
-            ]
             from context_engine.retrieval.manifest import register_workspace_project_root
 
+            # Register root immediately so overlay/ask work while the project job runs.
+            # file_count is filled by run_fast_indexing when the job drains.
             register_workspace_project_root(
                 db=db,
                 workspace_id=workspace_id,
                 project_path=str(project_root),
-                file_count=len(safe_files),
+                file_count=0,
             )
-            results = main._enqueue_index_files(safe_files, workspace_id, user_id)
-            summary = main._summarize_enqueue_results(results)
-            status = "queued"
-            if not safe_files:
-                status = "no_files"
-            elif summary["rejected"]:
-                status = "partial_queued"
-            return {"status": status, "path": str(project_root), **summary}
+            result = main._enqueue_index_project(str(project_root), workspace_id, user_id)
+            if not result.accepted:
+                return {
+                    "status": "partial_queued",
+                    "path": str(project_root),
+                    "queued": 0,
+                    "coalesced": 0,
+                    "rejected": 1,
+                    "queue_depth": result.queue_depth,
+                }
+            return {
+                "status": "queued",
+                "path": str(project_root),
+                "queued": 1 if result.status == "queued" else 0,
+                "coalesced": 1 if result.status == "coalesced" else 0,
+                "rejected": 0,
+                "queue_depth": result.queue_depth,
+            }
 
         from context_engine.indexer.code import run_indexing
         from context_engine.indexer.fast.collector import collect_files
@@ -226,8 +226,14 @@ def index_files_endpoint(
     ]
     valid_paths = [file_path for file_path in safe_paths if os.path.isfile(file_path)]
 
-    from context_engine.indexer.git_committed import should_index_file
+    from context_engine.indexer.git_committed import (
+        load_git_indexable_snapshot,
+        should_index_file,
+    )
 
+    snapshot = (
+        load_git_indexable_snapshot(os.path.commonpath(valid_paths)) if valid_paths else None
+    )
     uncommitted = [
         EnqueueResult(
             accepted=False,
@@ -238,9 +244,11 @@ def index_files_endpoint(
             reason="uncommitted_or_untracked",
         )
         for file_path in valid_paths
-        if not should_index_file(file_path)
+        if not should_index_file(file_path, snapshot=snapshot)
     ]
-    indexable_paths = [file_path for file_path in valid_paths if should_index_file(file_path)]
+    indexable_paths = [
+        file_path for file_path in valid_paths if should_index_file(file_path, snapshot=snapshot)
+    ]
 
     if req.queue:
         results = [

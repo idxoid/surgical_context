@@ -110,15 +110,29 @@ class CallImportEdgesMixin:
         with self.driver.session() as session:
             result = session.run(
                 """
-                MATCH (:File {workspace_id: $workspace_id})-[:CONTAINS]->(s:Symbol)
+                MATCH (f:File {workspace_id: $workspace_id})-[rel:CONTAINS]->(s:Symbol)
                 RETURN s.uid AS uid,
                        s.name AS name,
                        coalesce(s.qualified_name, '') AS qn,
-                       coalesce(s.kind, '') AS kind
+                       coalesce(s.kind, '') AS kind,
+                       f.path AS path,
+                       coalesce(rel.start_line, s.range[0], 0) AS line
                 """,
                 workspace_id=workspace_id,
             )
             rows = list(result)
+        # Content-stable order before the setdefault maps: the scan order varies
+        # per workspace, so duplicate-qn twins (@overload, property setter) would
+        # otherwise resolve to a different symbol on every fresh ref. Source
+        # order makes the first definition win, deterministically.
+        rows.sort(
+            key=lambda row: (
+                str(row.get("path") or ""),
+                int(row.get("line") or 0),
+                str(row.get("qn") or ""),
+                str(row.get("uid") or ""),
+            )
+        )
         by_qn, by_name, object_api = self._build_call_resolution_index(rows)
 
         out: list[dict] = []

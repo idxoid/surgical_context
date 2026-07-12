@@ -131,17 +131,12 @@ def _hash_phase(files: list[str], workers: int, reporter: ProgressReporter) -> d
 def _parse_one(
     file_path: str,
     extractor: FastExtractor,
-    db: Neo4jClient,
-    workspace_id: str,
+    existing: dict[str, dict],
 ) -> FileDiff | None:
-    """Runs inside a worker thread. Reads file, parses, computes diff."""
+    """Runs inside a worker thread. Reads file, parses, computes diff vs preload."""
     extracted = extractor.extract_all(file_path)
     if extracted is None:
         return None
-
-    # get_symbol_index_for_file is optional on the client; mirror baseline.
-    get_idx = getattr(db, "get_symbol_index_for_file", None)
-    existing = get_idx(file_path, workspace_id=workspace_id) if callable(get_idx) else {}
 
     current_uids = [s.uid for s in extracted.symbols]
     changed_symbols = [s for s in extracted.symbols if _symbol_needs_upsert(s, existing.get(s.uid))]
@@ -169,21 +164,36 @@ def _parse_phase(
     *,
     include_axis_facts: bool = False,
 ) -> list[FileDiff]:
-    """Parallel extraction + diff computation."""
+    """Parallel extraction + diff computation.
+
+    Neo4j symbol indexes are preloaded on the main thread so workers stay
+    CPU/I/O bound (and so axis parse_workers=1 does not amplify DB round-trips).
+    Process-pool CPU parsing is the next step once extract_all is side-effect-free.
+    """
     extractor = FastExtractor(
         project_root=project_path,
         workspace_id=workspace_id,
         include_axis_facts=include_axis_facts,
     )
+    get_many = getattr(db, "get_symbol_index_for_files", None)
+    if callable(get_many):
+        existing_by_path = get_many(changed_files, workspace_id=workspace_id)
+    else:
+        get_one = getattr(db, "get_symbol_index_for_file", None)
+        existing_by_path = {
+            path: (get_one(path, workspace_id=workspace_id) if callable(get_one) else {})
+            for path in changed_files
+        }
+
     results: list[FileDiff] = []
 
     def _task(path: str) -> FileDiff | None:
         digest = file_hashes.get(path, "")
         with job_log.track_file_job(path, file_hash=digest):
-            return _parse_one(path, extractor, db, workspace_id)
+            return _parse_one(path, extractor, existing_by_path.get(path, {}))
 
     reporter.stage_start("parse", total=len(changed_files))
-    with ThreadPoolExecutor(max_workers=workers) as pool:
+    with ThreadPoolExecutor(max_workers=max(1, workers)) as pool:
         futures = {pool.submit(_task, p): p for p in changed_files}
         for fut in as_completed(futures):
             diff = fut.result()
@@ -413,7 +423,6 @@ def _proxy_binding_phase(
     same variable, orphaning the ``PROXY_OF`` anchor from the imports /
     re-exports that resolve to the variable node.
     """
-    from context_engine.parser.registry import REGISTRY
     from context_engine.parser.uid import project_root_scope
 
     link_proxy = getattr(db, "link_proxy_bindings", None)
@@ -421,20 +430,7 @@ def _proxy_binding_phase(
     bindings: list[dict] = []
     if callable(link_proxy):
         with project_root_scope(project_path or None, workspace_id):
-            for diff in diffs:
-                ex = diff.extracted
-                try:
-                    language = REGISTRY.detect_language(ex.path)
-                    adapter = REGISTRY.get_adapter(language)
-                except Exception:
-                    continue
-                extract_proxy = getattr(adapter, "extract_proxy_bindings", None)
-                if not callable(extract_proxy):
-                    continue
-                try:
-                    bindings.extend(extract_proxy(ex.source, ex.path))
-                except Exception:
-                    continue
+            bindings = _collect_adapter_facts_from_diffs(diffs, "extract_proxy_bindings")
         if bindings:
             link_proxy(bindings, workspace_id=workspace_id)
     reporter.step("proxy_bindings")
@@ -495,24 +491,17 @@ def _proxy_return_call_phase(
     the AFFECTS rebuild (so the new call edge enters the impact closure). Under
     ``project_root_scope`` so the caller uid matches the stored node.
     """
-    from context_engine.parser.adapters.python_adapter import PythonAdapter
     from context_engine.parser.uid import project_root_scope
 
     resolve = getattr(db, "resolve_proxy_return_calls", None)
     reporter.stage_start("proxy_return_calls", total=1)
     created = 0
     if callable(resolve):
-        adapter = PythonAdapter()
-        candidates: list[dict] = []
         with project_root_scope(project_path or None, workspace_id):
-            for diff in diffs:
-                ex = diff.extracted
-                if not ex.path.endswith((".py", ".pyi")):
-                    continue
-                try:
-                    candidates.extend(adapter.extract_self_method_proxy_calls(ex.source, ex.path))
-                except Exception:
-                    continue
+            py_diffs = [d for d in diffs if d.extracted.path.endswith((".py", ".pyi"))]
+            candidates = _collect_adapter_facts_from_diffs(
+                py_diffs, "extract_self_method_proxy_calls"
+            )
         if candidates:
             created = resolve(candidates, workspace_id=workspace_id)
     reporter.step("proxy_return_calls")
@@ -574,7 +563,6 @@ def _hook_phase(
     type references, and the same ``project_root_scope`` requirement so site
     uids match stored nodes. See ``Neo4jClient.link_hooks`` for the two layers.
     """
-    from context_engine.parser.registry import REGISTRY
     from context_engine.parser.uid import project_root_scope
 
     link_hooks = getattr(db, "link_hooks", None)
@@ -582,20 +570,7 @@ def _hook_phase(
     hooks: list[dict] = []
     if callable(link_hooks):
         with project_root_scope(project_path or None, workspace_id):
-            for diff in diffs:
-                ex = diff.extracted
-                try:
-                    language = REGISTRY.detect_language(ex.path)
-                    adapter = REGISTRY.get_adapter(language)
-                except Exception:
-                    continue
-                extract_hooks = getattr(adapter, "extract_hooks", None)
-                if not callable(extract_hooks):
-                    continue
-                try:
-                    hooks.extend(extract_hooks(ex.source, ex.path))
-                except Exception:
-                    continue
+            hooks = _collect_adapter_facts_from_diffs(diffs, "extract_hooks")
             if hooks:
                 link_hooks(hooks, workspace_id=workspace_id)
     reporter.step("hooks")
@@ -618,7 +593,6 @@ def _metadata_bridge_phase(
     Runs after ``_apply_graph`` (site symbols must exist) under
     ``project_root_scope`` so site uids match stored nodes, like hooks.
     """
-    from context_engine.parser.registry import REGISTRY
     from context_engine.parser.uid import project_root_scope
 
     link_bridges = getattr(db, "link_metadata_bridges", None)
@@ -626,20 +600,7 @@ def _metadata_bridge_phase(
     facts: list[dict] = []
     if callable(link_bridges):
         with project_root_scope(project_path or None, workspace_id):
-            for diff in diffs:
-                ex = diff.extracted
-                try:
-                    language = REGISTRY.detect_language(ex.path)
-                    adapter = REGISTRY.get_adapter(language)
-                except Exception:
-                    continue
-                extract_bridges = getattr(adapter, "extract_metadata_bridges", None)
-                if not callable(extract_bridges):
-                    continue
-                try:
-                    facts.extend(extract_bridges(ex.source, ex.path))
-                except Exception:
-                    continue
+            facts = _collect_adapter_facts_from_diffs(diffs, "extract_metadata_bridges")
             if facts:
                 link_bridges(facts, workspace_id=workspace_id)
     reporter.step("metadata_bridges")
@@ -655,7 +616,6 @@ def _http_endpoint_phase(
     project_path: str = "",
 ) -> int:
     """Create CALLS_ENDPOINT / IMPLEMENTS_ENDPOINT edges via shared ApiEndpoint nodes."""
-    from context_engine.parser.registry import REGISTRY
     from context_engine.parser.uid import project_root_scope
 
     link_endpoints = getattr(db, "link_http_endpoints", None)
@@ -663,20 +623,7 @@ def _http_endpoint_phase(
     facts: list[dict] = []
     if callable(link_endpoints):
         with project_root_scope(project_path or None, workspace_id):
-            for diff in diffs:
-                ex = diff.extracted
-                try:
-                    language = REGISTRY.detect_language(ex.path)
-                    adapter = REGISTRY.get_adapter(language)
-                except Exception:
-                    continue
-                extract_endpoints = getattr(adapter, "extract_http_endpoints", None)
-                if not callable(extract_endpoints):
-                    continue
-                try:
-                    facts.extend(extract_endpoints(ex.source, ex.path))
-                except Exception:
-                    continue
+            facts = _collect_adapter_facts_from_diffs(diffs, "extract_http_endpoints")
             if facts:
                 link_endpoints(facts, workspace_id=workspace_id)
     reporter.step("http_endpoints")
@@ -698,7 +645,6 @@ def _attr_access_phase(
     module-level vars) exist. Same ``project_root_scope`` requirement as
     decorators / type references — uids must match stored nodes.
     """
-    from context_engine.parser.registry import REGISTRY
     from context_engine.parser.uid import project_root_scope
 
     link_attr = getattr(db, "link_attr_accesses", None)
@@ -706,20 +652,7 @@ def _attr_access_phase(
     accesses: list[dict] = []
     if callable(link_attr):
         with project_root_scope(project_path or None, workspace_id):
-            for diff in diffs:
-                ex = diff.extracted
-                try:
-                    language = REGISTRY.detect_language(ex.path)
-                    adapter = REGISTRY.get_adapter(language)
-                except Exception:
-                    continue
-                extract_attr = getattr(adapter, "extract_attr_accesses", None)
-                if not callable(extract_attr):
-                    continue
-                try:
-                    accesses.extend(extract_attr(ex.source, ex.path))
-                except Exception:
-                    continue
+            accesses = _collect_adapter_facts_from_diffs(diffs, "extract_attr_accesses")
         if accesses:
             link_attr(accesses, workspace_id=workspace_id)
     reporter.step("attr_accesses")
@@ -740,7 +673,6 @@ def _type_reference_phase(
     decoration. Runs after `_apply_graph` so the referenced class symbols exist,
     and under the same project_root_scope so referrer uids match stored nodes.
     """
-    from context_engine.parser.registry import REGISTRY
     from context_engine.parser.uid import project_root_scope
 
     link_types = getattr(db, "link_type_references", None)
@@ -748,20 +680,7 @@ def _type_reference_phase(
     references: list[dict] = []
     if callable(link_types):
         with project_root_scope(project_path or None, workspace_id):
-            for diff in diffs:
-                ex = diff.extracted
-                try:
-                    language = REGISTRY.detect_language(ex.path)
-                    adapter = REGISTRY.get_adapter(language)
-                except Exception:
-                    continue
-                extract_refs = getattr(adapter, "extract_type_references", None)
-                if not callable(extract_refs):
-                    continue
-                try:
-                    references.extend(extract_refs(ex.source, ex.path))
-                except Exception:
-                    continue
+            references = _collect_adapter_facts_from_diffs(diffs, "extract_type_references")
         if references:
             link_types(references, workspace_id=workspace_id)
     reporter.step("type_refs")
@@ -784,7 +703,6 @@ def _flow_pair_phase(
     stored nodes. Pairs are recorded per caller site, so a reindexed file's
     stale pairs are cleared by its current + removed symbol uids first.
     """
-    from context_engine.parser.registry import REGISTRY
     from context_engine.parser.uid import project_root_scope
 
     link_pairs = getattr(db, "link_flow_pairs", None)
@@ -796,21 +714,9 @@ def _flow_pair_phase(
         stale_caller_uids: list[str] = []
         with project_root_scope(project_path or None, workspace_id):
             for diff in diffs:
-                ex = diff.extracted
                 stale_caller_uids.extend(diff.current_uids)
                 stale_caller_uids.extend(diff.removed_uids)
-                try:
-                    language = REGISTRY.detect_language(ex.path)
-                    adapter = REGISTRY.get_adapter(language)
-                except Exception:
-                    continue
-                extract_pairs = getattr(adapter, "extract_flow_pairs", None)
-                if not callable(extract_pairs):
-                    continue
-                try:
-                    pairs.extend(extract_pairs(ex.source, ex.path))
-                except Exception:
-                    continue
+            pairs = _collect_adapter_facts_from_diffs(diffs, "extract_flow_pairs")
         if callable(delete_pairs) and stale_caller_uids:
             delete_pairs(stale_caller_uids, workspace_id=workspace_id)
         if pairs:
@@ -868,7 +774,6 @@ def _reexport_phase(
     Gives public surface symbols a ``reexport_in`` signal orthogonal to call/type
     fan-in (whose callers live in user code excluded from clustering).
     """
-    from context_engine.parser.registry import REGISTRY
     from context_engine.parser.uid import project_root_scope
 
     link_reexports = getattr(db, "link_reexports", None)
@@ -876,20 +781,7 @@ def _reexport_phase(
     reexports: list[dict] = []
     if callable(link_reexports):
         with project_root_scope(project_path or None, workspace_id):
-            for diff in diffs:
-                ex = diff.extracted
-                try:
-                    language = REGISTRY.detect_language(ex.path)
-                    adapter = REGISTRY.get_adapter(language)
-                except Exception:
-                    continue
-                extract_re = getattr(adapter, "extract_reexports", None)
-                if not callable(extract_re):
-                    continue
-                try:
-                    reexports.extend(extract_re(ex.source, ex.path))
-                except Exception:
-                    continue
+            reexports = _collect_adapter_facts_from_diffs(diffs, "extract_reexports")
         if reexports:
             link_reexports(reexports, workspace_id=workspace_id)
     reporter.step("reexports")
@@ -912,7 +804,6 @@ def _instantiation_phase(
     uids match stored nodes. Feeds the factory_surface role an explicit construction
     signal distinct from a plain caller.
     """
-    from context_engine.parser.registry import REGISTRY
     from context_engine.parser.uid import project_root_scope
 
     link_inst = getattr(db, "link_instantiations", None)
@@ -920,20 +811,7 @@ def _instantiation_phase(
     instantiations: list[dict] = []
     if callable(link_inst):
         with project_root_scope(project_path or None, workspace_id):
-            for diff in diffs:
-                ex = diff.extracted
-                try:
-                    language = REGISTRY.detect_language(ex.path)
-                    adapter = REGISTRY.get_adapter(language)
-                except Exception:
-                    continue
-                extract_inst = getattr(adapter, "extract_instantiations", None)
-                if not callable(extract_inst):
-                    continue
-                try:
-                    instantiations.extend(extract_inst(ex.source, ex.path))
-                except Exception:
-                    continue
+            instantiations = _collect_adapter_facts_from_diffs(diffs, "extract_instantiations")
         if instantiations:
             link_inst(instantiations, workspace_id=workspace_id)
     reporter.step("instantiations")
@@ -953,7 +831,6 @@ def _injection_phase(
     Static DI binding fact, like USES_TYPE. Runs after `_apply_graph` so providers
     exist, under project_root_scope so owner uids match stored nodes.
     """
-    from context_engine.parser.registry import REGISTRY
     from context_engine.parser.uid import project_root_scope
 
     link_inj = getattr(db, "link_injections", None)
@@ -961,20 +838,7 @@ def _injection_phase(
     injections: list[dict] = []
     if callable(link_inj):
         with project_root_scope(project_path or None, workspace_id):
-            for diff in diffs:
-                ex = diff.extracted
-                try:
-                    language = REGISTRY.detect_language(ex.path)
-                    adapter = REGISTRY.get_adapter(language)
-                except Exception:
-                    continue
-                extract_inj = getattr(adapter, "extract_injections", None)
-                if not callable(extract_inj):
-                    continue
-                try:
-                    injections.extend(extract_inj(ex.source, ex.path))
-                except Exception:
-                    continue
+            injections = _collect_adapter_facts_from_diffs(diffs, "extract_injections")
         if injections:
             link_inj(injections, workspace_id=workspace_id)
     reporter.step("injections")

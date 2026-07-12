@@ -13,6 +13,7 @@ from context_engine.indexer.fast.pipeline import (
     FileDiff,
     _apply_graph,
     _embed_phase,
+    _instantiation_phase,
     _NullReporter,
     _property_api_phase,
     _symbol_alias_phase,
@@ -1062,3 +1063,61 @@ class Settings:
         }
         assert finalize_calls
         assert finalize_calls[0]["workspace_id"] == "local/repo@main+axis_python_v1"
+
+    def test_fast_extractor_computes_derived_facts_once(self, tmp_path):
+        from context_engine.indexer.fast.extractor import FastExtractor
+
+        path = tmp_path / "pkg" / "factory.py"
+        path.parent.mkdir()
+        path.write_text(
+            "class Foo:\n    pass\n\ndef make() -> Foo:\n    return Foo()\n",
+            encoding="utf-8",
+        )
+        extracted = FastExtractor(project_root=str(tmp_path)).extract_all(str(path))
+        assert extracted is not None
+        assert extracted.derived.computed is True
+        assert isinstance(extracted.derived.instantiations, list)
+        assert isinstance(extracted.derived.flow_pairs, list)
+
+    def test_instantiation_phase_uses_precomputed_derived_facts(self):
+        from context_engine.parser.derived_facts import DerivedFileFacts
+
+        linked: list[dict] = []
+
+        class FakeDb:
+            def link_instantiations(self, rows, workspace_id):
+                linked.extend(rows)
+
+        derived = DerivedFileFacts(
+            computed=True,
+            instantiations=[
+                {
+                    "caller_uid": "uid:make",
+                    "callee_name": "Foo",
+                    "callee_qualified_name": "pkg.factory.Foo",
+                }
+            ],
+        )
+        diff = FileDiff(
+            extracted=ExtractedFile(
+                "/repo/factory.py",
+                "class Foo: pass\ndef make(): return Foo()\n",
+                "hash",
+                [],
+                [],
+                [],
+                [],
+                derived=derived,
+            )
+        )
+
+        count = _instantiation_phase(
+            [diff],
+            cast(Neo4jClient, FakeDb()),
+            "ws",
+            _NullReporter(),
+            project_path="/repo",
+        )
+
+        assert count == 1
+        assert linked[0]["caller_uid"] == "uid:make"

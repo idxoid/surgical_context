@@ -50,12 +50,50 @@ def _index_file_symbol_delta(
     extractor: SymbolExtractor,
     db: Neo4jClient,
     workspace_id: str,
-) -> tuple[str, list, list, list[str], list[str], list[str], dict, str]:
-    file_hash = hash_file(file_path)
-    symbols = extractor.extract(file_path)
-    for sym in symbols:
-        line_count = sym.end_line - sym.start_line + 1
-        sym.token_estimate = max(1, line_count * 8)
+    *,
+    include_axis_facts: bool = False,
+) -> tuple[str, list, list, list[str], list[str], list[str], dict, str, list, list, list, list | None]:
+    """One-shot extract via FastExtractor when possible; else legacy multi-parse."""
+    from context_engine.indexer.fast.extractor import FastExtractor
+
+    project_root = getattr(extractor, "project_root", None) or str(Path(file_path).resolve().parent)
+    extracted = None
+    # Production callers inject SymbolExtractor; test doubles keep the legacy path.
+    if type(extractor) is SymbolExtractor or isinstance(extractor, FastExtractor):
+        fast = (
+            extractor
+            if isinstance(extractor, FastExtractor)
+            else FastExtractor(
+                project_root=project_root,
+                workspace_id=workspace_id,
+                include_axis_facts=include_axis_facts,
+            )
+        )
+        if isinstance(fast, FastExtractor):
+            extracted = fast.extract_all(file_path)
+
+    if extracted is None:
+        file_hash = hash_file(file_path)
+        symbols = extractor.extract(file_path)
+        for sym in symbols:
+            line_count = sym.end_line - sym.start_line + 1
+            sym.token_estimate = max(1, line_count * 8)
+        with open(file_path, encoding="utf-8") as f:
+            source = f.read()
+        calls = extractor.extract_calls(file_path)
+        imports = extractor.extract_imports(file_path)
+        inheritance = extractor.extract_inheritance(file_path)
+        axis_facts = _axis_facts_for_file(
+            file_path, source, symbols, project_root, include_axis_facts
+        )
+    else:
+        file_hash = extracted.file_hash
+        symbols = extracted.symbols
+        source = extracted.source
+        calls = extracted.calls
+        imports = extracted.imports
+        inheritance = extracted.inheritance
+        axis_facts = extracted.axis_facts
 
     get_symbol_index = getattr(db, "get_symbol_index_for_file", None)
     existing_symbols = (
@@ -66,8 +104,6 @@ def _index_file_symbol_delta(
     changed_uids = [s.uid for s in changed_symbols]
     edge_refresh_uids = changed_uids or current_uids
     removed_uids = sorted(set(existing_symbols) - set(current_uids))
-    with open(file_path, encoding="utf-8") as f:
-        source = f.read()
     return (
         file_hash,
         symbols,
@@ -77,6 +113,10 @@ def _index_file_symbol_delta(
         removed_uids,
         existing_symbols,
         source,
+        calls,
+        imports,
+        inheritance,
+        axis_facts,
     )
 
 
@@ -331,6 +371,7 @@ def _index_file_refresh_embeddings(
     inheritance: list,
     source: str,
     file_hash: str,
+    axis_facts: list | None = None,
 ) -> None:
     include_axis_facts = getattr(lance, "index_profile_name", "") == AXIS_PYTHON_V1_PROFILE
     changed_uid_set = set(changed_uids)
@@ -342,13 +383,14 @@ def _index_file_refresh_embeddings(
     from context_engine.indexer.fast.pipeline import build_symbol_docs_for_extracted
 
     project_root = getattr(extractor, "project_root", None) or str(Path(file_path).resolve().parent)
-    axis_facts = _axis_facts_for_file(
-        file_path,
-        source,
-        symbols,
-        project_root,
-        include_axis_facts,
-    )
+    if axis_facts is None and include_axis_facts:
+        axis_facts = _axis_facts_for_file(
+            file_path,
+            source,
+            symbols,
+            project_root,
+            include_axis_facts,
+        )
     extracted = ExtractedFile(
         file_path,
         source,
@@ -453,6 +495,7 @@ def index_file(
         logger.info("Skipping index for uncommitted or untracked file: %s", file_path)
         return []
 
+    include_axis_facts = getattr(lance, "index_profile_name", "") == AXIS_PYTHON_V1_PROFILE
     (
         file_hash,
         symbols,
@@ -462,11 +505,18 @@ def index_file(
         removed_uids,
         _existing,
         source,
-    ) = _index_file_symbol_delta(file_path, extractor, db, workspace_id)
+        calls,
+        imports,
+        inheritance,
+        axis_facts,
+    ) = _index_file_symbol_delta(
+        file_path,
+        extractor,
+        db,
+        workspace_id,
+        include_axis_facts=include_axis_facts,
+    )
     current_uids = [s.uid for s in symbols]
-    calls = extractor.extract_calls(file_path)
-    imports = extractor.extract_imports(file_path)
-    inheritance = extractor.extract_inheritance(file_path)
 
     degree_neighbors = getattr(db, "degree_neighbor_uids", None)
     pre_neighbor_uids: list[str] = []
@@ -502,6 +552,7 @@ def index_file(
         inheritance=inheritance,
         source=source,
         file_hash=file_hash,
+        axis_facts=axis_facts,
     )
     _index_file_finalize(
         db=db,

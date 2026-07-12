@@ -533,14 +533,26 @@ class StructuralEdgesMixin:
         with self.driver.session() as session:
             result = session.run(
                 """
-                MATCH (:File {workspace_id: $workspace_id})-[:CONTAINS]->(s:Symbol)
+                MATCH (f:File {workspace_id: $workspace_id})-[rel:CONTAINS]->(s:Symbol)
                 RETURN s.uid AS uid,
                        s.name AS name,
-                       coalesce(s.qualified_name, '') AS qn
+                       coalesce(s.qualified_name, '') AS qn,
+                       f.path AS path,
+                       coalesce(rel.start_line, s.range[0], 0) AS line
                 """,
                 workspace_id=workspace_id,
             )
             rows = list(result)
+        # Source order before the setdefault map — same-qn twins must resolve
+        # to the same symbol on every fresh ref (see _resolve_call_callees).
+        rows.sort(
+            key=lambda row: (
+                str(row.get("path") or ""),
+                int(row.get("line") or 0),
+                str(row.get("qn") or ""),
+                str(row.get("uid") or ""),
+            )
+        )
         by_qn: dict[str, str] = {}
         by_name: dict[str, list[str]] = {}
         for row in rows:

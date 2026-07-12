@@ -69,3 +69,27 @@ def test_filter_indexable_paths(tmp_path):
         str(repo),
     )
     assert kept == [str(committed.resolve())]
+
+
+def test_load_git_indexable_snapshot_is_bulk(tmp_path, monkeypatch):
+    from context_engine.indexer import git_committed as gc
+
+    repo = _init_repo(tmp_path)
+    path = repo / "tracked.py"
+    path.write_text("x = 1\n", encoding="utf-8")
+    _git(repo, "add", "tracked.py")
+    _git(repo, "commit", "-m", "init")
+
+    calls = {"n": 0}
+    real_run = subprocess.run
+
+    def counting_run(*args, **kwargs):
+        calls["n"] += 1
+        return real_run(*args, **kwargs)
+
+    monkeypatch.setattr(gc.subprocess, "run", counting_run)
+    snapshot = gc.load_git_indexable_snapshot(repo)
+    # rev-parse + ls-files + diff HEAD (3), not 2*N per file.
+    assert snapshot is not None
+    assert calls["n"] <= 3
+    assert snapshot.is_indexable(path)

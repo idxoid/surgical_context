@@ -315,4 +315,7 @@ class TreeSitterAdapter(LanguageAdapter):
                 symbols=symbols,
                 project_root=project_root,
             )
-        return symbols, calls, imports, inheritance, axis_facts
+        from context_engine.parser.derived_facts import extract_derived_file_facts
+
+        derived = extract_derived_file_facts(self, source_code, file_path, tree=tree)
+        return symbols, calls, imports, inheritance, axis_facts, derived

@@ -8,19 +8,26 @@ from dataclasses import dataclass
 from threading import Condition, Thread
 from typing import Any
 
+KIND_FILE = "file"
+KIND_PROJECT = "project"
+
 
 @dataclass
 class IndexWorkItem:
     file_path: str
     workspace_id: str
     user_id: str = "anonymous"
+    kind: str = KIND_FILE
     enqueued_at: float = 0.0
     updated_at: float = 0.0
     generation: int = 1
 
     @property
-    def key(self) -> tuple[str, str]:
-        return (self.workspace_id, self.file_path)
+    def key(self) -> tuple[str, str, str]:
+        # Project jobs coalesce per workspace (one full-index at a time).
+        if self.kind == KIND_PROJECT:
+            return (self.workspace_id, KIND_PROJECT, "")
+        return (self.workspace_id, KIND_FILE, self.file_path)
 
 
 @dataclass
@@ -32,6 +39,7 @@ class EnqueueResult:
     queue_depth: int
     generation: int = 0
     reason: str = ""
+    kind: str = KIND_FILE
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -42,6 +50,7 @@ class EnqueueResult:
             "queue_depth": self.queue_depth,
             "generation": self.generation,
             "reason": self.reason,
+            "kind": self.kind,
         }
 
 
@@ -66,7 +75,7 @@ class IndexBatchQueue:
         self.max_pending = max_pending
         self.debounce_seconds = max(0, debounce_ms) / 1000
         self.batch_size = batch_size
-        self._pending: dict[tuple[str, str], IndexWorkItem] = {}
+        self._pending: dict[tuple[str, str, str], IndexWorkItem] = {}
         self._processing = 0
         self._closed = False
         self._last_error = ""
@@ -76,6 +85,9 @@ class IndexBatchQueue:
             "rejected": 0,
             "processed": 0,
             "failed_batches": 0,
+            "queue_wait_ms_total": 0.0,
+            "queue_process_ms_total": 0.0,
+            "batches_processed": 0,
         }
         self._condition = Condition()
         self._thread: Thread | None = None
@@ -104,13 +116,52 @@ class IndexBatchQueue:
         workspace_id: str,
         user_id: str = "anonymous",
     ) -> EnqueueResult:
+        return self._enqueue(
+            file_path,
+            workspace_id=workspace_id,
+            user_id=user_id,
+            kind=KIND_FILE,
+        )
+
+    def enqueue_project(
+        self,
+        project_path: str,
+        *,
+        workspace_id: str,
+        user_id: str = "anonymous",
+    ) -> EnqueueResult:
+        """Enqueue one project-level index job (coalesced per workspace)."""
+        return self._enqueue(
+            project_path,
+            workspace_id=workspace_id,
+            user_id=user_id,
+            kind=KIND_PROJECT,
+        )
+
+    def _enqueue(
+        self,
+        file_path: str,
+        *,
+        workspace_id: str,
+        user_id: str,
+        kind: str,
+    ) -> EnqueueResult:
         now = time.monotonic()
-        key = (workspace_id, file_path)
+        item = IndexWorkItem(
+            file_path=file_path,
+            workspace_id=workspace_id,
+            user_id=user_id,
+            kind=kind,
+            enqueued_at=now,
+            updated_at=now,
+        )
+        key = item.key
         with self._condition:
             existing = self._pending.get(key)
             if existing:
                 existing.updated_at = now
                 existing.user_id = user_id
+                existing.file_path = file_path
                 existing.generation += 1
                 self._stats["coalesced"] += 1
                 self._condition.notify_all()
@@ -121,6 +172,7 @@ class IndexBatchQueue:
                     workspace_id=workspace_id,
                     queue_depth=len(self._pending),
                     generation=existing.generation,
+                    kind=kind,
                 )
 
             if len(self._pending) >= self.max_pending:
@@ -132,15 +184,9 @@ class IndexBatchQueue:
                     workspace_id=workspace_id,
                     queue_depth=len(self._pending),
                     reason="queue_full",
+                    kind=kind,
                 )
 
-            item = IndexWorkItem(
-                file_path=file_path,
-                workspace_id=workspace_id,
-                user_id=user_id,
-                enqueued_at=now,
-                updated_at=now,
-            )
             self._pending[key] = item
             self._stats["enqueued"] += 1
             self._condition.notify_all()
@@ -151,6 +197,7 @@ class IndexBatchQueue:
                 workspace_id=workspace_id,
                 queue_depth=len(self._pending),
                 generation=item.generation,
+                kind=kind,
             )
 
     def process_ready_once(self, *, force: bool = False) -> int:
@@ -164,6 +211,7 @@ class IndexBatchQueue:
 
     def snapshot(self) -> dict[str, Any]:
         with self._condition:
+            batches = max(1, int(self._stats["batches_processed"]))
             return {
                 "pending": len(self._pending),
                 "processing": self._processing,
@@ -171,7 +219,25 @@ class IndexBatchQueue:
                 "batch_size": self.batch_size,
                 "debounce_ms": int(self.debounce_seconds * 1000),
                 "last_error": self._last_error,
-                **self._stats,
+                "timings_ms": {
+                    "queue_wait_total": round(self._stats["queue_wait_ms_total"], 3),
+                    "queue_process_total": round(self._stats["queue_process_ms_total"], 3),
+                    "queue_wait_avg_per_batch": round(
+                        self._stats["queue_wait_ms_total"] / batches, 3
+                    ),
+                    "queue_process_avg_per_batch": round(
+                        self._stats["queue_process_ms_total"] / batches, 3
+                    ),
+                },
+                **{
+                    k: v
+                    for k, v in self._stats.items()
+                    if k
+                    not in {
+                        "queue_wait_ms_total",
+                        "queue_process_ms_total",
+                    }
+                },
             }
 
     def _run(self) -> None:
@@ -206,14 +272,27 @@ class IndexBatchQueue:
             for item in self._pending.values()
             if force or item.updated_at + self.debounce_seconds <= now
         ]
-        ready.sort(key=lambda item: (item.updated_at, item.file_path))
-        batch = ready[: self.batch_size]
+        if not ready:
+            return []
+
+        # Project jobs run alone so finalization happens once after drain.
+        project_ready = [item for item in ready if item.kind == KIND_PROJECT]
+        if project_ready:
+            project_ready.sort(key=lambda item: (item.updated_at, item.file_path))
+            batch = project_ready[:1]
+        else:
+            ready.sort(key=lambda item: (item.updated_at, item.file_path))
+            batch = ready[: self.batch_size]
+
         for item in batch:
             self._pending.pop(item.key, None)
         self._processing += len(batch)
         return batch
 
     def _process_batch(self, batch: list[IndexWorkItem]) -> None:
+        now = time.monotonic()
+        wait_ms = sum(max(0.0, (now - item.enqueued_at) * 1000) for item in batch)
+        t0 = time.perf_counter()
         try:
             self.processor(batch)
         except Exception as exc:
@@ -221,7 +300,11 @@ class IndexBatchQueue:
                 self._last_error = str(exc)
                 self._stats["failed_batches"] += 1
         finally:
+            process_ms = (time.perf_counter() - t0) * 1000
             with self._condition:
                 self._processing -= len(batch)
                 self._stats["processed"] += len(batch)
+                self._stats["batches_processed"] += 1
+                self._stats["queue_wait_ms_total"] += wait_ms
+                self._stats["queue_process_ms_total"] += process_ms
                 self._condition.notify_all()

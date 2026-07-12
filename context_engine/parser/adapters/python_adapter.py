@@ -73,9 +73,13 @@ class PythonAdapter(TreeSitterAdapter):
         symbols: list[SymbolMetadata] | None = None,
         project_root: str | None = None,
     ):
-        """Return common symbol facts plus Python AST-physical axis facts."""
-        from context_engine.parser.adapters.python_axis_extractor import PythonAxisExtractor
+        """Return common symbol facts plus Python AST-physical axis facts.
 
+        Default path reuses the tree-sitter tree from ``extract_all`` (no
+        second full parse, partial facts on broken files). Set
+        ``AXIS_TS_EXTRACTOR=0`` to fall back to the ``ast``-based twin —
+        parity between the two is enforced by ``scripts/axis_ts_parity.py``.
+        """
         facts = super().extract_axis_facts(
             source_code,
             file_path,
@@ -83,14 +87,30 @@ class PythonAdapter(TreeSitterAdapter):
             symbols=symbols,
             project_root=project_root,
         )
-        try:
-            py_facts = PythonAxisExtractor().extract_facts(
+        import os
+
+        if os.getenv("AXIS_TS_EXTRACTOR", "1") != "0":
+            from context_engine.parser.adapters.python_axis_extractor_ts import (
+                PythonAxisExtractorTS,
+            )
+
+            py_facts = PythonAxisExtractorTS().extract_facts(
                 source_code,
                 file_path,
                 project_root=project_root,
+                tree=tree,
             )
-        except SyntaxError:
-            py_facts = []
+        else:
+            from context_engine.parser.adapters.python_axis_extractor import PythonAxisExtractor
+
+            try:
+                py_facts = PythonAxisExtractor().extract_facts(
+                    source_code,
+                    file_path,
+                    project_root=project_root,
+                )
+            except SyntaxError:
+                py_facts = []
         return [*facts, *py_facts]
 
     @property

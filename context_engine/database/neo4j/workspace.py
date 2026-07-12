@@ -69,26 +69,39 @@ class WorkspaceMixin:
         self, file_path: str, workspace_id: str = DEFAULT_WORKSPACE_ID
     ) -> dict[str, dict]:
         """Return existing symbol hashes/ranges for one workspace file."""
+        return self.get_symbol_index_for_files([file_path], workspace_id=workspace_id).get(
+            file_path, {}
+        )
+
+    def get_symbol_index_for_files(
+        self, file_paths: list[str], workspace_id: str = DEFAULT_WORKSPACE_ID
+    ) -> dict[str, dict[str, dict]]:
+        """Bulk preload {path: {uid: {hash, start_line, end_line}}} for many files."""
+        if not file_paths:
+            return {}
         with self.driver.session() as session:
             result = session.run(
                 """
-                MATCH (f:File {path: $path, workspace_id: $workspace_id})-[c:CONTAINS]->(s:Symbol)
-                RETURN s.uid AS uid,
+                MATCH (f:File {workspace_id: $workspace_id})-[c:CONTAINS]->(s:Symbol)
+                WHERE f.path IN $paths
+                RETURN f.path AS path,
+                       s.uid AS uid,
                        s.hash AS hash,
                        coalesce(c.start_line, s.range[0], 0) AS start_line,
                        coalesce(c.end_line, s.range[1], 0) AS end_line
                 """,
-                path=file_path,
+                paths=file_paths,
                 workspace_id=workspace_id,
             )
-            return {
-                r["uid"]: {
-                    "hash": r["hash"],
-                    "start_line": r["start_line"],
-                    "end_line": r["end_line"],
+            out: dict[str, dict[str, dict]] = {path: {} for path in file_paths}
+            for row in result:
+                path = row["path"]
+                out.setdefault(path, {})[row["uid"]] = {
+                    "hash": row["hash"],
+                    "start_line": row["start_line"],
+                    "end_line": row["end_line"],
                 }
-                for r in result
-            }
+            return out
 
     def get_workspace_profile_counts(
         self, workspace_id: str = DEFAULT_WORKSPACE_ID

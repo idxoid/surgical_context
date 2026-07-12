@@ -321,6 +321,15 @@ class RouteServices:
     ) -> list[EnqueueResult]:
         return self.indexing_service.enqueue_index_files(file_paths, workspace_id, user_id)
 
+    def _enqueue_index_project(
+        self,
+        project_path: str,
+        workspace_id: str,
+        user_id: str,
+    ) -> EnqueueResult:
+        self.indexing_service.attach_queue(self.index_queue)
+        return self.indexing_service.enqueue_index_project(project_path, workspace_id, user_id)
+
     def _summarize_enqueue_results(self, results: list[EnqueueResult]) -> dict[str, int]:
         return self.indexing_service.summarize_enqueue_results(results)
 

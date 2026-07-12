@@ -828,16 +828,15 @@ def test_queued_index_registers_root_before_overlay_and_index_file(monkeypatch, 
     monkeypatch.setattr(main.route_services, "db_session", manifest_db_session)
     monkeypatch.setattr(
         main.route_services,
-        "_enqueue_index_files",
-        lambda files, workspace_id, user_id: [
-            main.EnqueueResult(
-                accepted=True,
-                status="queued",
-                file_path=files[0],
-                workspace_id=workspace_id,
-                queue_depth=1,
-            )
-        ],
+        "_enqueue_index_project",
+        lambda project_path, workspace_id, user_id: main.EnqueueResult(
+            accepted=True,
+            status="queued",
+            file_path=project_path,
+            workspace_id=workspace_id,
+            queue_depth=1,
+            kind="project",
+        ),
     )
 
     index_body = main.index(
