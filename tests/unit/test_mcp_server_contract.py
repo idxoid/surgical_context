@@ -178,6 +178,141 @@ def test_batch_rejects_oversized_op_list_before_dispatch() -> None:
     assert "at most" in result.structuredContent["markdown"]
 
 
+def test_ask_code_lean_detail_omits_symbols_but_keeps_markdown(monkeypatch) -> None:
+    class FakeAsk:
+        text = "### foo.py :: bar\n```python\npass\n```\n"
+        files = ["/repo/foo.py"]
+        symbols = [
+            {
+                "uid": "u1",
+                "name": "bar",
+                "file_path": "/repo/foo.py",
+                "role": "entrypoint",
+                "kind": "function",
+                "depth": 0,
+                "expansion_step": None,
+                "relevance_score": 0.9,
+                "utility_score": 0.9,
+                "has_code": True,
+                "start_line": 1,
+                "end_line": 2,
+            }
+        ]
+        intent = [("entrypoint", 0.9)]
+        candidate_count = 3
+
+    class FakeEngine:
+        def available_roles(self):
+            return {"entrypoint"}
+
+        def ask(self, *_a, **_k):
+            return FakeAsk()
+
+    monkeypatch.setattr(server, "_engine", FakeEngine())
+    monkeypatch.delenv("SURGICAL_CONTEXT_MCP_DETAIL", raising=False)
+
+    lean = server.ask_code("how does bar work", detail="lean")
+    payload = lean.structuredContent
+    assert payload["detail"] == "lean"
+    assert payload["symbol_count"] == 1
+    assert payload["symbols"] == []
+    assert payload["files"] == ["/repo/foo.py"]
+    assert "pass" in payload["markdown"]
+    assert lean.content[0].text == payload["markdown"]
+
+    full = server.ask_code("how does bar work", detail="full")
+    full_payload = full.structuredContent
+    assert full_payload["detail"] == "full"
+    assert len(full_payload["symbols"]) == 1
+    assert full_payload["symbols"][0]["uid"] == "u1"
+
+
+def test_ask_code_detail_env_defaults_to_full(monkeypatch) -> None:
+    class FakeAsk:
+        text = "x"
+        files = []
+        symbols = [
+            {
+                "uid": "u1",
+                "name": "bar",
+                "file_path": "/repo/foo.py",
+                "role": "",
+                "kind": "",
+                "depth": 0,
+                "expansion_step": None,
+                "relevance_score": 0.0,
+                "utility_score": 0.0,
+                "has_code": False,
+                "start_line": None,
+                "end_line": None,
+            }
+        ]
+        intent: list = []
+        candidate_count = 1
+
+    class FakeEngine:
+        def available_roles(self):
+            return set()
+
+        def ask(self, *_a, **_k):
+            return FakeAsk()
+
+    monkeypatch.setattr(server, "_engine", FakeEngine())
+    monkeypatch.setenv("SURGICAL_CONTEXT_MCP_DETAIL", "full")
+
+    payload = server.ask_code("q").structuredContent
+    assert payload["detail"] == "full"
+    assert len(payload["symbols"]) == 1
+
+
+def test_investigate_lean_omits_symbols_and_blast(monkeypatch) -> None:
+    class FakeInv:
+        context_text = "context body"
+        files = ["/repo/a.py"]
+        symbols = [
+            {
+                "uid": "u1",
+                "name": "a",
+                "file_path": "/repo/a.py",
+                "role": "",
+                "kind": "",
+                "depth": 0,
+                "expansion_step": None,
+                "relevance_score": 0.0,
+                "utility_score": 0.0,
+                "has_code": True,
+                "start_line": 1,
+                "end_line": 2,
+            }
+        ]
+        blast = [
+            {
+                "seed": "a",
+                "name": "b",
+                "file_path": "/repo/b.py",
+                "depth": 1,
+                "kind": "function",
+            }
+        ]
+        intent = [("entrypoint", 0.5)]
+        candidate_count = 2
+
+    class FakeEngine:
+        def investigate(self, *_a, **_k):
+            return FakeInv()
+
+    monkeypatch.setattr(server, "_engine", FakeEngine())
+    monkeypatch.delenv("SURGICAL_CONTEXT_MCP_DETAIL", raising=False)
+
+    payload = server.investigate("q", detail="lean").structuredContent
+    assert payload["detail"] == "lean"
+    assert payload["symbol_count"] == 1
+    assert payload["blast_count"] == 1
+    assert payload["symbols"] == []
+    assert payload["blast"] == []
+    assert "context body" in payload["markdown"]
+
+
 def test_token_budget_default_is_shared_between_server_and_engine() -> None:
     assert inspect.signature(server.ask_code).parameters["token_budget"].default == (
         DEFAULT_TOKEN_BUDGET

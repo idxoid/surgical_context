@@ -23,7 +23,11 @@ from mcp.types import CallToolResult, TextContent
 from pydantic import BaseModel
 
 from surgical_context_mcp import schemas
-from surgical_context_mcp.config import DEFAULT_TOKEN_BUDGET, resolve_workspace_id
+from surgical_context_mcp.config import (
+    DEFAULT_TOKEN_BUDGET,
+    resolve_detail,
+    resolve_workspace_id,
+)
 from surgical_context_mcp.contextbench_log import record_tool_result
 from surgical_context_mcp.engine import AxisEngine, _common_dir_prefix
 
@@ -52,10 +56,12 @@ natural language or navigate by name, and get back ranked, graph-expanded code
 *context* (not an answer) for you to reason over — the way `/graphify query`
 feeds a budgeted block into the calling model. Retrieval is LLM-free.
 
-Every tool returns BOTH a markdown render (read this) and a structured JSON
-payload (`structuredContent`, per the tool's `outputSchema`) with stable symbol
-`uid` IDs, machine-readable scores, and provenance — parse the fields when you
-need to chain calls or sort/filter programmatically.
+Every tool returns a markdown render (the code context to read) plus a structured
+JSON envelope. ask_code / investigate default to detail="lean": structured keeps
+markdown + counts/files but omits the fat symbols[]/blast[] rows — some hosts
+(Claude Code) forward only structuredContent to the model and drop TextContent.
+Pass detail="full" (or set SURGICAL_CONTEXT_MCP_DETAIL=full) when a programmatic
+agent needs uid-level symbol rows.
 
 CHOOSING A TOOL — round-trips dominate cost (each call re-bills the whole
 conversation as cache), so prefer one rich call over many granular drips:
@@ -134,6 +140,7 @@ def ask_code(
     workspace: str | None = None,
     roles: list[str] | None = None,
     render: str = "full",
+    detail: str | None = None,
 ) -> schemas.AskCodeOutput:
     """Semantic, cross-file code retrieval: a natural-language question → ranked,
     graph-expanded code bundles to reason over. Returns *context, not an answer*.
@@ -165,6 +172,10 @@ def ask_code(
         render: "full" (default) = ranked code bundles. "names" = cheap structural
             census (one line per symbol, no code) — use to map "which symbols /
             files touch X" without paying for bodies.
+        detail: structuredContent density. Omit or "lean" (default) keeps
+            markdown + envelope/counts/files but omits symbols[]. "full" includes
+            uid-level symbol rows for agents; env SURGICAL_CONTEXT_MCP_DETAIL=full
+            sets the default when this arg is omitted.
     """
     workspace_id = resolve_workspace_id(workspace)
     token_budget = _bounded_int(
@@ -173,6 +184,21 @@ def ask_code(
         minimum=MIN_TOKEN_BUDGET,
         maximum=MAX_TOKEN_BUDGET,
     )
+    if detail is not None and detail not in ("lean", "full"):
+        md = f"Unknown detail '{detail}'. Use 'lean' (chat-safe) or 'full' (symbol rows)."
+        return _result(
+            md,
+            schemas.AskCodeOutput(
+                tool="ask_code",
+                ok=False,
+                workspace=workspace_id,
+                markdown=md,
+                question=question,
+                render=render,
+                detail=detail,
+            ),
+        )
+    resolved_detail = resolve_detail(detail)
 
     if render not in ("full", "names"):
         md = f"Unknown render '{render}'. Use 'full' (code) or 'names' (census)."
@@ -185,6 +211,7 @@ def ask_code(
                 markdown=md,
                 question=question,
                 render=render,
+                detail=resolved_detail,
             ),
         )
 
@@ -206,6 +233,7 @@ def ask_code(
                     markdown=md,
                     question=question,
                     render=render,
+                    detail=resolved_detail,
                 ),
             )
 
@@ -214,7 +242,8 @@ def ask_code(
     )
     intent = _intent_roles(result.intent)
     roles_str = _intent_str(intent)
-    symbols = [schemas.ContextItem(**row) for row in result.symbols]
+    symbols_full = [schemas.ContextItem(**row) for row in result.symbols]
+    symbols = symbols_full if resolved_detail == "full" else []
 
     if not result.text:
         md = (
@@ -234,9 +263,12 @@ def ask_code(
                 markdown=md,
                 question=question,
                 render=render,
+                detail=resolved_detail,
                 token_budget=token_budget,
                 intent=intent,
                 candidate_count=result.candidate_count,
+                symbol_count=len(symbols_full),
+                symbols=symbols,
             ),
         )
 
@@ -262,10 +294,12 @@ def ask_code(
             markdown=md,
             question=question,
             render=render,
+            detail=resolved_detail,
             token_budget=token_budget,
             intent=intent,
             candidate_count=result.candidate_count,
             files=result.files,
+            symbol_count=len(symbols_full),
             symbols=symbols,
         ),
     )
@@ -277,6 +311,7 @@ def investigate(
     depth: str = "full",
     token_budget: int = DEFAULT_TOKEN_BUDGET,
     workspace: str | None = None,
+    detail: str | None = None,
 ) -> schemas.InvestigateOutput:
     """One-call deep retrieval — a planned pipeline run server-side in ONE
     round-trip: intent → ranked code context → downstream blast surface of the
@@ -290,6 +325,10 @@ def investigate(
     depth="full" (default) = code bundles + impact on the top 5 seeds — a
     self-contained first shot. depth="lean" = names-only context + impact on the
     top 3 (cheaper; may need one follow-up read_symbol).
+
+    detail controls structuredContent size (independent of depth): omit/"lean"
+    omits symbols[]/blast[] rows from the JSON envelope; "full" keeps them for
+    agents (or set SURGICAL_CONTEXT_MCP_DETAIL=full).
     """
     workspace_id = resolve_workspace_id(workspace)
     token_budget = _bounded_int(
@@ -298,6 +337,21 @@ def investigate(
         minimum=MIN_TOKEN_BUDGET,
         maximum=MAX_TOKEN_BUDGET,
     )
+    if detail is not None and detail not in ("lean", "full"):
+        md = f"Unknown detail '{detail}'. Use 'lean' (chat-safe) or 'full' (symbol rows)."
+        return _result(
+            md,
+            schemas.InvestigateOutput(
+                tool="investigate",
+                ok=False,
+                workspace=workspace_id,
+                markdown=md,
+                question=question,
+                depth=depth,
+                detail=detail,
+            ),
+        )
+    resolved_detail = resolve_detail(detail)
     if depth not in ("full", "lean"):
         md = f"Unknown depth '{depth}'. Use 'full' (code + blast) or 'lean' (names + blast)."
         return _result(
@@ -309,14 +363,15 @@ def investigate(
                 markdown=md,
                 question=question,
                 depth=depth,
+                detail=resolved_detail,
             ),
         )
 
     r = _engine.investigate(question, workspace_id, depth=depth, token_budget=token_budget)
     intent = _intent_roles(r.intent)
     roles_str = _intent_str(intent)
-    symbols = [schemas.ContextItem(**row) for row in r.symbols]
-    blast_items = [
+    symbols_full = [schemas.ContextItem(**row) for row in r.symbols]
+    blast_full = [
         schemas.BlastItem(
             seed=str(b.get("seed") or ""),
             name=str(b.get("name") or ""),
@@ -326,6 +381,8 @@ def investigate(
         )
         for b in r.blast
     ]
+    symbols = symbols_full if resolved_detail == "full" else []
+    blast_items = blast_full if resolved_detail == "full" else []
 
     if not r.context_text and not r.blast:
         md = (
@@ -343,8 +400,11 @@ def investigate(
                 markdown=md,
                 question=question,
                 depth=depth,
+                detail=resolved_detail,
                 intent=intent,
                 candidate_count=r.candidate_count,
+                symbol_count=len(symbols_full),
+                blast_count=len(blast_full),
             ),
         )
 
@@ -383,10 +443,13 @@ def investigate(
             markdown=md,
             question=question,
             depth=depth,
+            detail=resolved_detail,
             intent=intent,
             candidate_count=r.candidate_count,
             files=r.files,
+            symbol_count=len(symbols_full),
             symbols=symbols,
+            blast_count=len(blast_full),
             blast=blast_items,
         ),
     )

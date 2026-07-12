@@ -12,7 +12,7 @@ pipeline directly.
 
 ## Tools
 
-- **`ask_code(question, token_budget=4000, workspace=None, roles=None, render="full")`**
+- **`ask_code(question, token_budget=4000, workspace=None, roles=None, render="full", detail=None)`**
   — natural-language question → ranked, graph-expanded code bundles for the host
   model to reason over. Returns *context, not an answer* (LLM-free retrieval).
   `roles=[...]` overrides the embedding intent-classifier (see `list_roles`).
@@ -20,10 +20,15 @@ pipeline directly.
   no code) with eviction disabled, so far more coupling symbols/files surface per
   token (~−40% tokens, ~30% more symbols on coupling questions) — use it to map
   structure/blast surface, `"full"` to read code.
-- **`investigate(question, depth="full", token_budget=4000, workspace=None)`**
+  `detail` controls **structuredContent** size (Claude Code forwards that JSON to
+  the model and drops TextContent): default/`"lean"` keeps markdown + counts/files
+  but omits `symbols[]`; `"full"` includes uid-level rows for agents. Set
+  `SURGICAL_CONTEXT_MCP_DETAIL=full` for ContextBench / programmatic harnesses.
+- **`investigate(question, depth="full", token_budget=4000, workspace=None, detail=None)`**
   — one planned retrieval round-trip: intent → ranked context → downstream
   blast surface of the top seeds. Use `depth="lean"` for a cheaper names-only
-  context plus a smaller blast pass.
+  context plus a smaller blast pass. Same `detail` lean/full contract as
+  `ask_code` (lean omits `symbols[]` and `blast[]` from structured JSON).
 - **`impact(symbol, file_path=None, max_depth=3, workspace=None)`** — downstream
   blast radius of a change to `symbol` (reverse callers, structural
   API/inheritance, AFFECTS closure). The committed index is authoritative;

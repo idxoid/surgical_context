@@ -7,8 +7,10 @@ held by every model here:
 
   * ``tool`` / ``ok`` / ``workspace`` — a stable envelope for programmatic
     dispatch and error handling without parsing prose.
-  * ``markdown`` — the optional human/LLM render (the same block the tools used
-    to return as a bare string). Consumers may ignore it and read the fields.
+  * ``markdown`` — human/LLM render. Mirrored into ``structuredContent`` because
+    some hosts (Claude Code) forward only structured JSON and drop TextContent.
+  * ``detail`` on ask_code/investigate — ``lean`` (default) omits fat ``symbols``/
+    ``blast`` rows from structured JSON; ``full`` keeps uid-level rows for agents.
   * **Stable IDs** — every symbol-shaped row carries the index ``uid`` (or a
     deterministic ``overlay::…`` id for uncommitted-only symbols), so results
     can be joined across calls.
@@ -190,20 +192,25 @@ class RoleItem(BaseModel):
 class AskCodeOutput(_Base):
     question: str
     render: str = "full"
+    detail: str = "lean"
     token_budget: int = 0
     intent: list[IntentRole] = Field(default_factory=list)
     candidate_count: int = 0
     files: list[str] = Field(default_factory=list)
+    symbol_count: int = 0
     symbols: list[ContextItem] = Field(default_factory=list)
 
 
 class InvestigateOutput(_Base):
     question: str
     depth: str = "full"
+    detail: str = "lean"
     intent: list[IntentRole] = Field(default_factory=list)
     candidate_count: int = 0
     files: list[str] = Field(default_factory=list)
+    symbol_count: int = 0
     symbols: list[ContextItem] = Field(default_factory=list)
+    blast_count: int = 0
     blast: list[BlastItem] = Field(default_factory=list)
 
 
