@@ -16,7 +16,14 @@ from context_engine.indexer.external_boundary import (
     build_project_boundary,
     package_manifest_external_roots,
 )
-from context_engine.indexer.external_facts import apply_external_boundary_for_file
+from context_engine.indexer.external_facts import (
+    collect_external_call_links,
+    collect_external_import_links,
+    collect_external_symbol_import_links,
+    external_call_link_rows,
+    external_import_link_rows,
+    external_symbol_import_rows,
+)
 from context_engine.indexer.fast.extractor import FastExtractor, hash_file
 from context_engine.indexer.job_log import IndexJobLog
 
@@ -400,31 +407,64 @@ def _external_boundary_phase(
     indexed_files: list[str],
     reporter: ProgressReporter,
 ) -> tuple[int, int]:
-    """Materialize ``ExternalPkg`` nodes and ``*_EXTERNAL`` edges (C1)."""
+    """Materialize ``ExternalPkg`` nodes and ``*_EXTERNAL`` edges (C1).
+
+    Row collection is per-file CPU; the graph work is batched into one
+    ``link_external_boundary`` call. The per-file variant paid ~5 round-trips
+    per file AND re-ran the two workspace-wide orphan sweeps inside
+    ``link_external_boundary`` once per file — on django that was the whole
+    phase cost.
+    """
     link_boundary = getattr(db, "link_external_boundary", None)
     if not callable(link_boundary):
         return 0, 0
     boundary = build_project_boundary(project_path, file_paths=tuple(indexed_files))
     project_external_roots = package_manifest_external_roots(project_path)
-    calls_created = 0
-    imports_created = 0
     reporter.stage_start("external_boundary", total=len(diffs))
+
+    delete_many = getattr(db, "delete_external_imports_for_files", None)
+    delete_one = getattr(db, "delete_external_imports_for_file", None)
+    if callable(delete_many):
+        delete_many([diff.extracted.path for diff in diffs], workspace_id=workspace_id)
+    elif callable(delete_one):
+        for diff in diffs:
+            delete_one(diff.extracted.path, workspace_id=workspace_id)
+
+    all_call_rows: list[dict] = []
+    all_import_rows: list[dict] = []
+    all_symbol_rows: list[dict] = []
     for diff in diffs:
         ex = diff.extracted
-        created_calls, created_imports = apply_external_boundary_for_file(
-            db,
-            file_path=ex.path,
-            source_code=ex.source,
-            calls=ex.calls,
+        call_links = collect_external_call_links(
+            ex.calls,
             boundary=boundary,
-            workspace_id=workspace_id,
             project_external_roots=project_external_roots,
         )
-        calls_created += created_calls
-        imports_created += created_imports
+        import_links = collect_external_import_links(
+            ex.source,
+            ex.path,
+            boundary=boundary,
+            project_external_roots=project_external_roots,
+        )
+        symbol_import_links = collect_external_symbol_import_links(
+            ex.source,
+            ex.path,
+            boundary=boundary,
+            project_external_roots=project_external_roots,
+        )
+        all_call_rows.extend(external_call_link_rows(call_links, workspace_id))
+        all_import_rows.extend(external_import_link_rows(import_links, workspace_id))
+        all_symbol_rows.extend(external_symbol_import_rows(symbol_import_links, workspace_id))
         reporter.step("external_boundary")
+
+    calls_created, imports_created = link_boundary(
+        all_call_rows,
+        all_import_rows,
+        workspace_id=workspace_id,
+        symbol_import_links=all_symbol_rows,
+    )
     reporter.stage_end("external_boundary")
-    return calls_created, imports_created
+    return int(calls_created or 0), int(imports_created or 0)
 
 
 def _extends_external_phase(

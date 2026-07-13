@@ -262,6 +262,44 @@ class CallImportEdgesMixin:
             workspace_id=workspace_id,
         )
 
+    def delete_external_imports_for_files(
+        self,
+        file_paths: list[str],
+        workspace_id: str = DEFAULT_WORKSPACE_ID,
+    ):
+        """List form of ``delete_external_imports_for_file`` — one UNWIND per
+        edge type instead of two round-trips per file (the fast pipeline
+        refreshes the whole diff set in one call)."""
+        if not file_paths:
+            return
+        with self.driver.session() as session:
+            session.run(
+                f"""
+                UNWIND $paths AS path
+                MATCH (f:File {{path: path, workspace_id: $workspace_id}})-[r:IMPORTS_EXTERNAL]->(:ExternalPkg)
+                WHERE coalesce(r.workspace_id, $workspace_id) = $workspace_id
+                WITH collect(r) AS edges
+                FOREACH (edge IN edges | DELETE edge)
+                WITH size(edges) AS deleted_edges
+                {_WORKSPACE_GRAPH_VERSION_MATCH}
+                WHERE deleted_edges > 0
+                {_WORKSPACE_GRAPH_VERSION_SET}
+                """,
+                paths=file_paths,
+                workspace_id=workspace_id,
+            )
+            session.run(
+                """
+                UNWIND $paths AS path
+                MATCH (f:File {path: path, workspace_id: $workspace_id})
+                      -[r:IMPORTS_EXTERNAL_SYMBOL]->(:ExternalSymbol)
+                WHERE coalesce(r.workspace_id, $workspace_id) = $workspace_id
+                DELETE r
+                """,
+                paths=file_paths,
+                workspace_id=workspace_id,
+            )
+
     def delete_external_imports_for_file(
         self,
         file_path: str,

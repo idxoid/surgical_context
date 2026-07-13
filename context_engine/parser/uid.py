@@ -12,6 +12,7 @@ import os
 import re
 from contextlib import contextmanager
 from contextvars import ContextVar
+from functools import lru_cache
 from pathlib import Path
 
 UNRESOLVED_SIGNATURE = "<unresolved>"
@@ -65,16 +66,22 @@ def current_workspace() -> str | None:
 def module_name_from_path(file_path: str, project_root: str | None = None) -> str:
     """Return a dotted module-ish name without absolute machine-specific roots."""
     project_root = project_root or _DEFAULT_PROJECT_ROOT.get()
-    path = Path(file_path)
     if project_root:
-        try:
-            path = path.resolve().relative_to(Path(project_root).resolve())
-        except (OSError, ValueError):
-            pass
-    else:
-        try:
-            path = path.resolve().relative_to(Path(os.getcwd()).resolve())
-        except (OSError, ValueError):
+        return _module_name_from_path_cached(file_path, project_root, True)
+    # No scope: relative to the cwd at call time; the cwd is part of the key
+    # so a chdir between calls cannot serve a stale name.
+    return _module_name_from_path_cached(file_path, os.getcwd(), False)
+
+
+@lru_cache(maxsize=65536)
+def _module_name_from_path_cached(file_path: str, root: str, explicit_root: bool) -> str:
+    """Pure (path, root) → module name; the parser asks this once per node,
+    which made pathlib.resolve() a top parse-profile entry before caching."""
+    path = Path(file_path)
+    try:
+        path = path.resolve().relative_to(Path(root).resolve())
+    except (OSError, ValueError):
+        if not explicit_root:
             path = Path(path.name)
 
     if path.suffix:
