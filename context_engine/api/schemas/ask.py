@@ -50,6 +50,7 @@ class AskAxisRequest(BaseModel):
     context_per_seed: int = Field(default=4, ge=1, le=20)
     intent_budget: bool = True
     token_budget: int = Field(default=6000, ge=TOKEN_BUDGET_MIN, le=TOKEN_BUDGET_MAX)
+    span_line_rerank: bool = False
 
 
 class AxisIntentMatchResponse(BaseModel):
@@ -83,6 +84,7 @@ class AxisContextSymbolResponse(BaseModel):
     code: str | None
     start_line: int | None = None
     end_line: int | None = None
+    rendered_spans: list[tuple[int, int]] = Field(default_factory=list)
 
 
 class AxisContextBundleResponse(BaseModel):

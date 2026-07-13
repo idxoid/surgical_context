@@ -555,6 +555,11 @@ def _run_axis_retrieval_for_question(
     token_credit_min_utility_per_token: float | None,
     token_credit_freeze_at_plateau: bool,
     token_credit_plateau_upgrade_reserve_share: float,
+    node_semantic_utility_weight: float,
+    span_line_rerank: bool,
+    span_rank_max_symbols: int,
+    span_rank_max_candidates_per_symbol: int,
+    span_rank_max_body_lines: int,
     context_semantic_expansion: bool,
     context_semantic_expansion_alpha: float,
     context_semantic_expansion_structural_reserve: int,
@@ -594,6 +599,11 @@ def _run_axis_retrieval_for_question(
             token_credit_plateau_upgrade_reserve_share=(
                 token_credit_plateau_upgrade_reserve_share
             ),
+            node_semantic_utility_weight=node_semantic_utility_weight,
+            span_line_rerank=span_line_rerank,
+            span_rank_max_symbols=span_rank_max_symbols,
+            span_rank_max_candidates_per_symbol=span_rank_max_candidates_per_symbol,
+            span_rank_max_body_lines=span_rank_max_body_lines,
             context_semantic_expansion=context_semantic_expansion,
             context_semantic_expansion_alpha=context_semantic_expansion_alpha,
             context_semantic_expansion_structural_reserve=(
@@ -632,6 +642,11 @@ def run_question(
     token_credit_min_utility_per_token: float | None = None,
     token_credit_freeze_at_plateau: bool = False,
     token_credit_plateau_upgrade_reserve_share: float = 0.0,
+    node_semantic_utility_weight: float = 0.0,
+    span_line_rerank: bool = False,
+    span_rank_max_symbols: int = 48,
+    span_rank_max_candidates_per_symbol: int = 24,
+    span_rank_max_body_lines: int = 6,
     context_semantic_expansion: bool = True,
     context_semantic_expansion_alpha: float = 0.70,
     context_semantic_expansion_structural_reserve: int = 1,
@@ -686,6 +701,11 @@ def run_question(
         token_credit_plateau_upgrade_reserve_share=(
             token_credit_plateau_upgrade_reserve_share
         ),
+        node_semantic_utility_weight=node_semantic_utility_weight,
+        span_line_rerank=span_line_rerank,
+        span_rank_max_symbols=span_rank_max_symbols,
+        span_rank_max_candidates_per_symbol=span_rank_max_candidates_per_symbol,
+        span_rank_max_body_lines=span_rank_max_body_lines,
         context_semantic_expansion=context_semantic_expansion,
         context_semantic_expansion_alpha=context_semantic_expansion_alpha,
         context_semantic_expansion_structural_reserve=(
@@ -1502,6 +1522,24 @@ def main() -> None:
         help="Budget share reserved for paid upgrades after a frozen coverage plateau.",
     )
     parser.add_argument(
+        "--node-semantic-utility-weight",
+        type=float,
+        default=0.0,
+        help=(
+            "Experimental Token Credit weight for request-local related-symbol "
+            "query similarity; 0 preserves structural-only utility."
+        ),
+    )
+    parser.add_argument(
+        "--span-line-rerank",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Rank and render query-relevant windows inside each selected symbol.",
+    )
+    parser.add_argument("--span-rank-max-symbols", type=int, default=48)
+    parser.add_argument("--span-rank-max-candidates-per-symbol", type=int, default=24)
+    parser.add_argument("--span-rank-max-body-lines", type=int, default=6)
+    parser.add_argument(
         "--context-semantic-expansion",
         action=argparse.BooleanOptionalAction,
         default=True,
@@ -1611,6 +1649,13 @@ def main() -> None:
             token_credit_plateau_upgrade_reserve_share=(
                 args.plateau_upgrade_reserve_share
             ),
+            node_semantic_utility_weight=args.node_semantic_utility_weight,
+            span_line_rerank=args.span_line_rerank,
+            span_rank_max_symbols=args.span_rank_max_symbols,
+            span_rank_max_candidates_per_symbol=(
+                args.span_rank_max_candidates_per_symbol
+            ),
+            span_rank_max_body_lines=args.span_rank_max_body_lines,
             context_semantic_expansion=args.context_semantic_expansion,
             context_semantic_expansion_alpha=args.context_semantic_expansion_alpha,
             context_semantic_expansion_structural_reserve=(
@@ -1665,6 +1710,13 @@ def main() -> None:
         "token_credit_plateau_upgrade_reserve_share": (
             args.plateau_upgrade_reserve_share
         ),
+        "node_semantic_utility_weight": args.node_semantic_utility_weight,
+        "span_line_rerank": args.span_line_rerank,
+        "span_rank_max_symbols": args.span_rank_max_symbols,
+        "span_rank_max_candidates_per_symbol": (
+            args.span_rank_max_candidates_per_symbol
+        ),
+        "span_rank_max_body_lines": args.span_rank_max_body_lines,
         "context_semantic_expansion": args.context_semantic_expansion,
         "context_semantic_expansion_alpha": args.context_semantic_expansion_alpha,
         "context_semantic_expansion_structural_reserve": (

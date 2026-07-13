@@ -143,6 +143,7 @@ def test_ask_axis_request_default_keeps_context_pool_uncapped() -> None:
     assert req.context_seeds_per_role is None
     assert req.intent_budget is True
     assert req.token_budget == 6000
+    assert req.span_line_rerank is False
 
 
 def test_ask_axis_returns_well_formed_payload(patch_axis_pipeline):

@@ -14,6 +14,7 @@ from context_engine.axis.context_builder import (
     ContextSymbol,
     TokenCreditTrace,
     _apply_render_and_budget,
+    _apply_span_line_rerank,
     _bundle_token_count,
     _code_compact,
     _code_impact_surface,
@@ -26,8 +27,10 @@ from context_engine.axis.context_builder import (
     _median,
     _noise_level_from_tail,
     _render_bundle,
+    _span_candidate_oracle_recall,
     _TokenCreditCoverageState,
     _upgrade_exact_delta,
+    _upgrade_semantic_value,
 )
 from context_engine.observability.metrics import estimate_text_tokens
 
@@ -160,6 +163,63 @@ def test_marginal_purchase_and_exact_upgrade_delta_price_first_wins():
         related=(),
     )
     assert _upgrade_exact_delta(selected, 0, first_up) == tok(shared_full) - tok(shared_sig)
+
+
+def test_upgrade_semantic_credit_uses_only_new_first_wins_tokens():
+    shared_sig = "def shared(value):"
+    shared_full = "def shared(value):\n    return value + 1\n"
+    low = ContextSymbol(
+        uid="shared",
+        name="shared",
+        file_path="/s.py",
+        role="r",
+        distance_from_seed=1,
+        expansion_step="binding",
+        code=shared_sig,
+        semantic_excess=0.10,
+        tier_weight=1.0,
+    )
+    high = ContextSymbol(
+        uid="shared",
+        name="shared",
+        file_path="/s.py",
+        role="r",
+        distance_from_seed=1,
+        expansion_step="binding",
+        code=shared_sig,
+        semantic_excess=0.80,
+        tier_weight=0.50,
+    )
+    first = ContextBundle(
+        role="r",
+        seed=_sym("first", "def first():", file_path="/a.py"),
+        related=(low,),
+    )
+    second = ContextBundle(
+        role="r",
+        seed=_sym("second", "def second():", file_path="/b.py"),
+        related=(high,),
+    )
+    selected: list[dict[str, object]] = [
+        {"index": 0, "source": first, "rendered": first, "cost": 0},
+        {"index": 1, "source": second, "rendered": second, "cost": 0},
+    ]
+    second_up = ContextBundle(
+        role="r",
+        seed=second.seed,
+        related=(ContextSymbol(**{**high.to_dict(), "code": shared_full}),),
+    )
+    # Entry 0 owns ``shared`` in prompt order, so enriching entry 1 is free
+    # both in tokens and in semantic utility.
+    assert _upgrade_semantic_value(selected, 1, second_up) == pytest.approx(0.0)
+
+    first_up = ContextBundle(
+        role="r",
+        seed=first.seed,
+        related=(ContextSymbol(**{**high.to_dict(), "code": shared_full}),),
+    )
+    # The added body belongs to the high-relevance first owner: .80 × .50.
+    assert _upgrade_semantic_value(selected, 0, first_up) == pytest.approx(0.40)
 
 
 def test_token_credit_budget_pays_shared_related_symbol_once():
@@ -493,6 +553,204 @@ def test_code_compact_keeps_structure_calls_and_returns():
     assert "return None" in compact
 
 
+def test_signature_render_tracks_only_the_lines_it_keeps():
+    symbol = ContextSymbol(
+        uid="target",
+        name="target",
+        file_path="/f.py",
+        role="r",
+        distance_from_seed=0,
+        expansion_step=None,
+        code="@cached\ndef target():\n    work()\n    return 1\n",
+        start_line=40,
+        end_line=43,
+    )
+
+    rendered = _render_bundle(
+        ContextBundle(role="r", seed=symbol),
+        "signature_only",
+    ).seed
+
+    assert rendered.code == "@cached\ndef target():"
+    assert rendered.effective_rendered_spans() == ((40, 41),)
+
+
+def test_compact_render_tracks_noncontiguous_source_intervals():
+    symbol = ContextSymbol(
+        uid="target",
+        name="target",
+        file_path="/f.py",
+        role="r",
+        distance_from_seed=0,
+        expansion_step=None,
+        code=(
+            "def target(value):\n"
+            '    """Not rendered."""\n'
+            "    prepared = prepare(value)\n"
+            "    if prepared:\n"
+            "        pass\n"
+            "    return finish(prepared)\n"
+        ),
+        start_line=100,
+        end_line=105,
+    )
+
+    rendered = _render_bundle(
+        ContextBundle(role="r", seed=symbol),
+        "hybrid_compact",
+        full_render_max_depth=0,
+    ).seed
+
+    assert "Not rendered" not in (rendered.code or "")
+    assert "pass" not in (rendered.code or "")
+    assert rendered.effective_rendered_spans() == ((100, 100), (102, 103), (105, 105))
+
+
+def test_span_line_rerank_selects_answer_window_over_same_symbol_hard_negatives():
+    body = [
+        "def dispatch(request):",
+        "    noisy_0 = load_metrics()",
+        "    noisy_1 = load_headers()",
+        "    noisy_2 = load_cookies()",
+        "    noisy_3 = load_session()",
+        "    noisy_4 = load_locale()",
+        "    noisy_5 = load_theme()",
+        "    noisy_6 = load_flags()",
+        "    noisy_7 = load_tracing()",
+        "    noisy_8 = load_debug()",
+        "    match = resolve_url_pattern(request.path)",
+        "    handler = bind_resolved_view(match)",
+        "    return handler(request)",
+        "    noisy_tail = unreachable_cleanup()",
+    ]
+    symbol = ContextSymbol(
+        uid="dispatch",
+        name="dispatch",
+        file_path="/router.py",
+        role="routing_surface",
+        distance_from_seed=0,
+        expansion_step=None,
+        code="\n".join(body),
+        start_line=100,
+        end_line=113,
+    )
+    calls: list[list[str]] = []
+
+    def score(texts: list[str]) -> list[float]:
+        calls.append(list(texts))
+        return [0.95 if "resolve_url_pattern" in text else 0.05 for text in texts]
+
+    [rendered_bundle] = _apply_span_line_rerank(
+        [ContextBundle(role="routing_surface", seed=symbol)],
+        query_text="Where is the URL pattern resolved and bound to a view?",
+        score_fn=score,
+        max_candidates_per_symbol=12,
+        max_body_lines=4,
+    )
+    rendered = rendered_bundle.seed
+
+    assert len(calls) == 1
+    assert "resolve_url_pattern" in (rendered.code or "")
+    assert "bind_resolved_view" in (rendered.code or "")
+    assert "noisy_0" not in (rendered.code or "")
+    assert rendered.effective_rendered_spans() != ((100, 113),)
+    assert sum(end - start + 1 for start, end in rendered.effective_rendered_spans()) <= 5
+
+
+def test_span_line_rerank_scores_all_symbols_in_one_embedding_batch():
+    first = _sym(
+        "first",
+        "def first():\n    noise = prepare()\n    return target_alpha()\n",
+        file_path="/a.py",
+    )
+    second = _sym(
+        "second",
+        "def second():\n    noise = prepare()\n    return target_beta()\n",
+        file_path="/b.py",
+    )
+    batches: list[list[str]] = []
+
+    def score(texts: list[str]) -> list[float]:
+        batches.append(list(texts))
+        return [1.0 if "target_" in text else 0.0 for text in texts]
+
+    rendered = _apply_span_line_rerank(
+        [
+            ContextBundle(role="r", seed=first),
+            ContextBundle(role="r", seed=second),
+        ],
+        query_text="target result",
+        score_fn=score,
+        max_candidates_per_symbol=8,
+        max_body_lines=2,
+    )
+
+    assert len(batches) == 1
+    assert "target_alpha" in (rendered[0].seed.code or "")
+    assert "target_beta" in (rendered[1].seed.code or "")
+
+
+def test_span_line_rerank_treats_explicit_source_line_as_dominant_signal():
+    lines = ["def update(instance):"] + [
+        f"    noise_{index} = unrelated_{index}()" for index in range(1, 25)
+    ]
+    lines[20] = "    instance.pk = None"
+    lines[21] = "    return deleted_count"
+    symbol = ContextSymbol(
+        uid="update",
+        name="update",
+        file_path="/deletion.py",
+        role="r",
+        distance_from_seed=0,
+        expansion_step=None,
+        code="\n".join(lines),
+        start_line=100,
+        end_line=124,
+    )
+
+    def misleading_semantic_score(texts: list[str]) -> list[float]:
+        return [1.0 if "noise_2" in text else 0.0 for text in texts]
+
+    [rendered] = _apply_span_line_rerank(
+        [ContextBundle(role="r", seed=symbol)],
+        query_text="The fix belongs in deletion.py:120-121.",
+        score_fn=misleading_semantic_score,
+        max_candidates_per_symbol=12,
+        max_body_lines=4,
+    )
+
+    assert "instance.pk = None" in (rendered.seed.code or "")
+    assert any(start <= 120 <= end for start, end in rendered.seed.effective_rendered_spans())
+
+
+def test_span_candidate_oracle_recall_is_independent_of_window_ranking():
+    lines = ["def update(instance):"] + [
+        f"    noise_{index} = unrelated_{index}()" for index in range(1, 25)
+    ]
+    lines[20] = "    instance.pk = None"
+    lines[21] = "    return deleted_count"
+    symbol = ContextSymbol(
+        uid="update",
+        name="update",
+        file_path="/deletion.py",
+        role="r",
+        distance_from_seed=0,
+        expansion_step=None,
+        code="\n".join(lines),
+        start_line=100,
+        end_line=124,
+    )
+
+    recall = _span_candidate_oracle_recall(
+        symbol,
+        query_text="The fix belongs in deletion.py:120-121.",
+        gold_lines={120, 121},
+        max_candidates=4,
+    )
+
+    assert recall == 1.0
+
+
 # --- _apply_render_and_budget ---------------------------------------------
 
 
@@ -814,6 +1072,40 @@ def test_fold_compact_groups_class_members_as_signatures_only():
 
     assert out.render_mode == "fold_compact"
     assert out.seed.code == ("class Service:\n    def target(self):\n    def helper(self):")
+
+
+def test_fold_compact_unions_member_signature_spans_without_claiming_synthetic_header():
+    seed = ContextSymbol(
+        uid="target",
+        name="target",
+        file_path="/f.py",
+        role="r",
+        distance_from_seed=0,
+        expansion_step=None,
+        code="    def target(self):\n        return self.helper()\n",
+        qualified_name="pkg.mod.Service.target",
+        start_line=10,
+        end_line=11,
+    )
+    sibling = ContextSymbol(
+        uid="helper",
+        name="helper",
+        file_path="/f.py",
+        role="r",
+        distance_from_seed=1,
+        expansion_step="binding",
+        code="    def helper(self):\n        return 1\n",
+        qualified_name="pkg.mod.Service.helper",
+        start_line=20,
+        end_line=21,
+    )
+
+    rendered = _render_bundle(
+        ContextBundle(role="r", seed=seed, related=(sibling,)),
+        "fold_compact",
+    ).seed
+
+    assert rendered.effective_rendered_spans() == ((10, 10), (20, 20))
 
 
 def test_fold_leaves_ambiguous_single_method_alone():

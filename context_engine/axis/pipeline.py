@@ -477,6 +477,13 @@ class _SymbolTargetedRetrievalOptions:
     min_utility_per_token: float | None
     freeze_at_utility_plateau: bool
     plateau_upgrade_reserve_share: float
+    node_semantic_utility_weight: float
+    span_line_rerank: bool
+    span_rank_max_symbols: int
+    span_rank_max_candidates_per_symbol: int
+    span_rank_max_body_lines: int
+    span_query_text: str
+    span_score_fn: Any | None
 
 
 @dataclass(frozen=True)
@@ -498,9 +505,17 @@ class _ContextBuildOptions:
     min_utility_per_token: float | None
     freeze_at_utility_plateau: bool
     plateau_upgrade_reserve_share: float
+    node_semantic_utility_weight: float
     query_scoring: role_retrieval.QueryScoringContext | None
     semantic_expansion_alpha: float
     semantic_expansion_structural_reserve: int
+    semantic_expansion_rerank: bool
+    span_line_rerank: bool
+    span_rank_max_symbols: int
+    span_rank_max_candidates_per_symbol: int
+    span_rank_max_body_lines: int
+    span_query_text: str
+    span_score_fn: Any | None
 
 
 def _build_context_bundles_with_budget(
@@ -517,6 +532,11 @@ def _build_context_bundles_with_budget(
         min_utility_per_token=options.min_utility_per_token,
         freeze_at_utility_plateau=options.freeze_at_utility_plateau,
         plateau_upgrade_reserve_share=options.plateau_upgrade_reserve_share,
+        node_semantic_utility_weight=options.node_semantic_utility_weight,
+        span_line_rerank=options.span_line_rerank,
+        span_rank_max_symbols=options.span_rank_max_symbols,
+        span_rank_max_candidates_per_symbol=options.span_rank_max_candidates_per_symbol,
+        span_rank_max_body_lines=options.span_rank_max_body_lines,
     )
     return context_builder.build_context_for_candidates(
         candidates,
@@ -537,6 +557,9 @@ def _build_context_bundles_with_budget(
         semantic_expansion_structural_reserve=(
             options.semantic_expansion_structural_reserve
         ),
+        semantic_expansion_rerank=options.semantic_expansion_rerank,
+        span_query_text=options.span_query_text,
+        span_score_fn=options.span_score_fn,
     )
 
 
@@ -668,9 +691,19 @@ def _try_symbol_targeted_retrieval(
                     plateau_upgrade_reserve_share=(
                         options.plateau_upgrade_reserve_share
                     ),
+                    node_semantic_utility_weight=options.node_semantic_utility_weight,
                     query_scoring=None,
                     semantic_expansion_alpha=0.70,
                     semantic_expansion_structural_reserve=1,
+                    semantic_expansion_rerank=False,
+                    span_line_rerank=options.span_line_rerank,
+                    span_rank_max_symbols=options.span_rank_max_symbols,
+                    span_rank_max_candidates_per_symbol=(
+                        options.span_rank_max_candidates_per_symbol
+                    ),
+                    span_rank_max_body_lines=options.span_rank_max_body_lines,
+                    span_query_text=options.span_query_text,
+                    span_score_fn=options.span_score_fn,
                 ),
             )
             bundles = _move_anchor_bundle_first(bundles, anchor.uid)
@@ -1173,6 +1206,14 @@ class AxisRetrievalConfig:
     token_credit_min_utility_per_token: float | None = None
     token_credit_freeze_at_plateau: bool = False
     token_credit_plateau_upgrade_reserve_share: float = 0.0
+    node_semantic_utility_weight: float = 0.0
+    # Opt-in within-symbol reranker: body windows compete by query similarity
+    # before Token Credit, so later render upgrades cannot restore discarded
+    # non-answer lines from an otherwise relevant symbol.
+    span_line_rerank: bool = False
+    span_rank_max_symbols: int = 48
+    span_rank_max_candidates_per_symbol: int = 24
+    span_rank_max_body_lines: int = 6
     context_semantic_expansion: bool = True
     context_semantic_expansion_alpha: float = 0.70
     context_semantic_expansion_structural_reserve: int = 1
@@ -1189,6 +1230,33 @@ def _request_embedder(lance: Any):
         return cache[text]
 
     return _embed
+
+
+def _request_span_scorer(lance: Any, query_vector: Any):
+    """Batch cosine scorer for ephemeral within-symbol windows."""
+    cache: dict[str, float] = {}
+
+    def _score(texts: list[str]) -> list[float]:
+        missing = list(dict.fromkeys(text for text in texts if text not in cache))
+        if missing:
+            import numpy as np
+
+            vectors = np.asarray(lance._embed(missing), dtype=float)  # noqa: SLF001
+            query = np.asarray(query_vector, dtype=float)
+            query_norm = float(np.linalg.norm(query))
+            vector_norms = np.linalg.norm(vectors, axis=1)
+            denominator = vector_norms * query_norm
+            similarities = np.divide(
+                vectors @ query,
+                denominator,
+                out=np.zeros(len(vectors), dtype=float),
+                where=denominator > 1e-12,
+            )
+            for text, similarity in zip(missing, similarities, strict=True):
+                cache[text] = float(np.clip(similarity, -1.0, 1.0))
+        return [cache[text] for text in texts]
+
+    return _score
 
 
 def _attach_stage_warnings_to_trace(
@@ -1255,6 +1323,12 @@ def _run_axis_retrieval_impl(
     tr = cfg.trace if cfg.trace is not None else _NullTrace()
     budget_trace = context_builder.TokenCreditTrace() if cfg.capture_budget_trace else None
     embed_fn = _request_embedder(lance)
+    span_score_fn = None
+    if cfg.span_line_rerank:
+        try:
+            span_score_fn = _request_span_scorer(lance, embed_fn(question))
+        except Exception:
+            span_score_fn = None
     intent = _classify_retrieval_intent(
         question,
         embed_fn,
@@ -1287,6 +1361,15 @@ def _run_axis_retrieval_impl(
                 plateau_upgrade_reserve_share=(
                     cfg.token_credit_plateau_upgrade_reserve_share
                 ),
+                node_semantic_utility_weight=cfg.node_semantic_utility_weight,
+                span_line_rerank=cfg.span_line_rerank,
+                span_rank_max_symbols=cfg.span_rank_max_symbols,
+                span_rank_max_candidates_per_symbol=(
+                    cfg.span_rank_max_candidates_per_symbol
+                ),
+                span_rank_max_body_lines=cfg.span_rank_max_body_lines,
+                span_query_text=question,
+                span_score_fn=span_score_fn,
             ),
             intent=list(intent),
             intent_budget=cfg.intent_budget,
@@ -1502,11 +1585,21 @@ def _run_axis_retrieval_impl(
                     plateau_upgrade_reserve_share=(
                         cfg.token_credit_plateau_upgrade_reserve_share
                     ),
-                    query_scoring=(query_scoring if semantic_expansion_enabled else None),
+                    node_semantic_utility_weight=cfg.node_semantic_utility_weight,
+                    query_scoring=query_scoring,
                     semantic_expansion_alpha=cfg.context_semantic_expansion_alpha,
                     semantic_expansion_structural_reserve=(
                         cfg.context_semantic_expansion_structural_reserve
                     ),
+                    semantic_expansion_rerank=semantic_expansion_enabled,
+                    span_line_rerank=cfg.span_line_rerank,
+                    span_rank_max_symbols=cfg.span_rank_max_symbols,
+                    span_rank_max_candidates_per_symbol=(
+                        cfg.span_rank_max_candidates_per_symbol
+                    ),
+                    span_rank_max_body_lines=cfg.span_rank_max_body_lines,
+                    span_query_text=question,
+                    span_score_fn=span_score_fn,
                 ),
             )
 

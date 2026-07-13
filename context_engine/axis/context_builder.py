@@ -22,6 +22,7 @@ consumer's choice (chat format, tool-use schema, etc.).
 from __future__ import annotations
 
 import heapq
+import re
 from collections import namedtuple
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field, replace
@@ -47,12 +48,38 @@ _RENDER_LADDER: tuple[str, ...] = (
 
 _CLASS_DEF_PREFIX = "class "
 
+
 # One expansion hit: a neighbour reached from a seed, tagged with the
-# step that found it. Mirrors the fields the bundle builder reads off the
-# legacy ``AxisGraphHit``.
-_Hit = namedtuple("_Hit", "uid name file_path depth step")
+# step that found it. Semantic fields are request-local annotations; they are
+# never persisted back to the graph or vector index.
+@dataclass(frozen=True)
+class _Hit:
+    uid: str
+    name: str
+    file_path: str
+    depth: int
+    step: str
+    query_similarity: float | None = None
+    semantic_excess: float = 0.0
+    tier_weight: float = 1.0
+    structural_weight: float = 0.0
+    relevance_score: float = 0.0
+
 
 _PayloadRow = dict[str, Any]
+SpanScoreFn = Callable[[list[str]], list[float]]
+
+
+@dataclass(frozen=True)
+class _SpanCandidate:
+    """One within-symbol window competing for rendered body lines."""
+
+    line_indices: tuple[int, ...]
+    text: str
+    lexical_score: float
+    structural_score: float
+    line_anchor_score: float = 0.0
+    anchored_line_indices: tuple[int, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -73,8 +100,23 @@ class ContextSymbol:
     edge_type: str = ""
     relevance_score: float = 0.0
     utility_score: float = 0.0
+    query_similarity: float | None = None
+    semantic_excess: float = 0.0
+    tier_weight: float = 1.0
+    structural_weight: float = 0.0
     start_line: int = 0
     end_line: int = 0
+    # Exact source intervals represented by the current ``code`` render.
+    # ``None`` means the untrimmed symbol body (``start_line..end_line``);
+    # an empty tuple means synthetic text with no honest source attribution.
+    rendered_spans: tuple[tuple[int, int], ...] | None = None
+
+    def effective_rendered_spans(self) -> tuple[tuple[int, int], ...]:
+        if self.rendered_spans is not None:
+            return self.rendered_spans
+        if self.code and self.start_line > 0 and self.end_line >= self.start_line:
+            return ((self.start_line, self.end_line),)
+        return ()
 
     def to_dict(self) -> dict[str, Any]:
         payload = {
@@ -91,11 +133,16 @@ class ContextSymbol:
             "edge_type": self.edge_type,
             "relevance_score": self.relevance_score,
             "utility_score": self.utility_score,
+            "query_similarity": self.query_similarity,
+            "semantic_excess": self.semantic_excess,
+            "tier_weight": self.tier_weight,
+            "structural_weight": self.structural_weight,
         }
         if self.start_line > 0:
             payload["start_line"] = self.start_line
         if self.end_line >= self.start_line > 0:
             payload["end_line"] = self.end_line
+        payload["rendered_spans"] = self.effective_rendered_spans()
         return payload
 
 
@@ -127,6 +174,11 @@ class ContextRenderBudget:
     min_utility_per_token: float | None = None
     freeze_at_utility_plateau: bool = False
     plateau_upgrade_reserve_share: float = 0.0
+    node_semantic_utility_weight: float = 0.0
+    span_line_rerank: bool = False
+    span_rank_max_symbols: int = 48
+    span_rank_max_candidates_per_symbol: int = 24
+    span_rank_max_body_lines: int = 6
 
 
 @dataclass(frozen=True)
@@ -144,6 +196,7 @@ class TokenCreditTransaction:
     effective_utility_per_token: float
     cumulative_utility: float
     cumulative_tokens: int
+    semantic_delta_utility: float = 0.0
     new_files: int = 0
     new_role: bool = False
     new_steps: int = 0
@@ -161,6 +214,7 @@ class TokenCreditTransaction:
             "effective_utility_per_token": self.effective_utility_per_token,
             "cumulative_utility": self.cumulative_utility,
             "cumulative_tokens": self.cumulative_tokens,
+            "semantic_delta_utility": self.semantic_delta_utility,
             "new_files": self.new_files,
             "new_role": self.new_role,
             "new_steps": self.new_steps,
@@ -214,6 +268,7 @@ class TokenCreditTrace:
         new_files: int = 0,
         new_role: bool = False,
         new_steps: int = 0,
+        semantic_delta_utility: float = 0.0,
     ) -> None:
         effective = float(delta_utility if effective_utility is None else effective_utility)
         self.cumulative_utility += float(delta_utility)
@@ -231,6 +286,7 @@ class TokenCreditTrace:
                 effective_utility_per_token=effective / max(1, int(delta_tokens)),
                 cumulative_utility=self.cumulative_utility,
                 cumulative_tokens=self.used_tokens,
+                semantic_delta_utility=semantic_delta_utility,
                 new_files=new_files,
                 new_role=new_role,
                 new_steps=new_steps,
@@ -616,19 +672,80 @@ def _is_callable_header(stripped: str) -> bool:
     return stripped.startswith(("def ", "async def ", _CLASS_DEF_PREFIX))
 
 
-def _code_signature(code: str | None) -> str:
+def _merge_rendered_spans(
+    *span_groups: Iterable[tuple[int, int]],
+) -> tuple[tuple[int, int], ...]:
+    intervals = sorted(
+        (int(start), int(end))
+        for spans in span_groups
+        for start, end in spans
+        if int(start) > 0 and int(end) >= int(start)
+    )
+    merged: list[list[int]] = []
+    for start, end in intervals:
+        if merged and start <= merged[-1][1] + 1:
+            merged[-1][1] = max(merged[-1][1], end)
+        else:
+            merged.append([start, end])
+    return tuple((start, end) for start, end in merged)
+
+
+def _symbol_source_lines(sym: ContextSymbol) -> tuple[int | None, ...]:
+    """Best-effort source line for each line in the current rendered code."""
+    line_count = len((sym.code or "").splitlines())
+    if line_count <= 0:
+        return ()
+    if sym.rendered_spans is None:
+        if sym.start_line <= 0 or sym.end_line < sym.start_line:
+            return (None,) * line_count
+        return tuple(
+            line if line <= sym.end_line else None
+            for line in range(sym.start_line, sym.start_line + line_count)
+        )
+
+    source_lines: list[int | None] = [
+        line
+        for start, end in sym.rendered_spans
+        for line in range(start, end + 1)
+        if start > 0 and end >= start
+    ]
+    if len(source_lines) < line_count:
+        source_lines.extend([None] * (line_count - len(source_lines)))
+    return tuple(source_lines[:line_count])
+
+
+def _replace_symbol_render(
+    sym: ContextSymbol,
+    code: str,
+    selected_line_indices: Iterable[int | None],
+) -> ContextSymbol:
+    source_lines = _symbol_source_lines(sym)
+    selected_source_lines = [
+        source_lines[index]
+        for index in selected_line_indices
+        if index is not None and 0 <= index < len(source_lines) and source_lines[index] is not None
+    ]
+    spans = _merge_rendered_spans(
+        (line, line) for line in selected_source_lines if line is not None
+    )
+    return cast(ContextSymbol, replace(sym, code=code, rendered_spans=spans))
+
+
+def _code_signature_selection(code: str | None) -> tuple[str, tuple[int, ...]]:
     """Best-effort, parser-free trim of a symbol's code to its signature:
     leading decorators plus the ``def``/``class`` header (through the line
     ending in ``:``, so multi-line parameter lists survive). Non-callable
     symbols (a module-level assignment, say) collapse to their first
     non-empty line. Empty in, empty out."""
     if not code:
-        return ""
+        return "", ()
     lines = code.splitlines()
     out: list[str] = []
+    selected: list[int] = []
     i, n = 0, len(lines)
     while i < n and lines[i].strip().startswith("@"):  # decorators
         out.append(lines[i])
+        selected.append(i)
         i += 1
     started = False
     while i < n:
@@ -639,15 +756,21 @@ def _code_signature(code: str | None) -> str:
                 # Not a callable/class — first non-empty line is the "signature".
                 if stripped:
                     out.append(line)
+                    selected.append(i)
                     break
                 i += 1
                 continue
             started = True
         out.append(line)
+        selected.append(i)
         if stripped.endswith(":"):
             break
         i += 1
-    return "\n".join(out)
+    return "\n".join(out), tuple(selected)
+
+
+def _code_signature(code: str | None) -> str:
+    return _code_signature_selection(code)[0]
 
 
 def _code_impact_surface(
@@ -657,11 +780,24 @@ def _code_impact_surface(
     name: str = "",
 ) -> str:
     """One-line blast-radius stub — cheapest render for impact breadth."""
-    sig = _code_signature(code or "")
-    first = next((ln.strip() for ln in sig.splitlines() if ln.strip()), "")
-    if first:
-        return first
-    return (qualified_name or name or "").strip()
+    return _code_impact_surface_selection(
+        code,
+        qualified_name=qualified_name,
+        name=name,
+    )[0]
+
+
+def _code_impact_surface_selection(
+    code: str | None,
+    *,
+    qualified_name: str = "",
+    name: str = "",
+) -> tuple[str, tuple[int, ...]]:
+    signature, indices = _code_signature_selection(code or "")
+    for line, index in zip(signature.splitlines(), indices, strict=True):
+        if line.strip():
+            return line.strip(), (index,)
+    return (qualified_name or name or "").strip(), ()
 
 
 def _collapse_long_line(line: str, *, limit: int = 140) -> str:
@@ -718,16 +854,17 @@ def _advance_docstring_state(stripped: str, in_docstring: bool) -> tuple[bool, b
     return in_docstring, True
 
 
-def _compact_body_lines(
+def _compact_body_selection(
     lines: list[str],
-    signature_lines: list[str],
     *,
+    start_index: int,
     max_body_lines: int,
-) -> list[str]:
+) -> tuple[list[str], tuple[int | None, ...]]:
     out: list[str] = []
+    selected: list[int | None] = []
     kept = 0
     in_docstring = False
-    for line in lines[len(signature_lines) :]:
+    for index, line in enumerate(lines[start_index:], start=start_index):
         stripped = line.strip()
         if not stripped:
             continue
@@ -737,28 +874,442 @@ def _compact_body_lines(
         if not _keep_compact_body_line(stripped):
             continue
         out.append(_collapse_long_line(line))
+        selected.append(index)
         kept += 1
         if kept >= max_body_lines:
             out.append("    ...")
+            selected.append(None)
             break
     if kept == 0:
         out.append("    ...")
-    return out
+        selected.append(None)
+    return out, tuple(selected)
+
+
+def _code_compact_selection(
+    code: str | None,
+    *,
+    max_body_lines: int = 24,
+) -> tuple[str, tuple[int | None, ...]]:
+    signature, signature_indices = _code_signature_selection(code)
+    if not code or not signature:
+        return signature, signature_indices
+    lines = code.splitlines()
+    if not signature_indices or max(signature_indices) >= len(lines) - 1:
+        return signature, signature_indices
+
+    body, body_indices = _compact_body_selection(
+        lines,
+        start_index=max(signature_indices) + 1,
+        max_body_lines=max_body_lines,
+    )
+    return "\n".join([*signature.splitlines(), *body]), (*signature_indices, *body_indices)
 
 
 def _code_compact(code: str | None, *, max_body_lines: int = 24) -> str:
     """Parser-light body compaction: signature + structural/call-bearing lines."""
-    signature = _code_signature(code)
-    if not code or not signature:
-        return signature
-    lines = code.splitlines()
-    signature_lines = signature.splitlines()
-    if not signature_lines or len(signature_lines) >= len(lines):
-        return signature
+    return _code_compact_selection(code, max_body_lines=max_body_lines)[0]
 
-    out = list(signature_lines)
-    out.extend(_compact_body_lines(lines, signature_lines, max_body_lines=max_body_lines))
-    return "\n".join(out)
+
+_SPAN_WORD_RE = re.compile(r"[A-Za-z][A-Za-z0-9_]*")
+_SPAN_CAMEL_BOUNDARY_RE = re.compile(r"(?<=[a-z0-9])(?=[A-Z])")
+_SPAN_LINE_HINT_RE = re.compile(
+    r"(?:\blines?\b|:)[ \t]*(\d{1,7})(?:[ \t]*[-–][ \t]*(\d{1,7}))?",
+    re.IGNORECASE,
+)
+_SPAN_STOP_WORDS = frozenset(
+    {
+        "about",
+        "after",
+        "before",
+        "code",
+        "does",
+        "from",
+        "function",
+        "handle",
+        "handles",
+        "into",
+        "method",
+        "return",
+        "that",
+        "this",
+        "what",
+        "when",
+        "where",
+        "which",
+        "with",
+    }
+)
+
+
+def _span_terms(text: str) -> frozenset[str]:
+    terms: set[str] = set()
+    for token in _SPAN_WORD_RE.findall(text or ""):
+        expanded = _SPAN_CAMEL_BOUNDARY_RE.sub(" ", token).replace("_", " ")
+        for part in expanded.lower().split():
+            if len(part) >= 3 and part not in _SPAN_STOP_WORDS:
+                terms.add(part)
+    return frozenset(terms)
+
+
+def _span_query_line_numbers(text: str, *, max_range: int = 100) -> frozenset[int]:
+    lines: set[int] = set()
+    for match in _SPAN_LINE_HINT_RE.finditer(text or ""):
+        start = int(match.group(1))
+        end = int(match.group(2) or start)
+        if start <= 0 or end < start or end - start > max_range:
+            continue
+        lines.update(range(start, end + 1))
+    return frozenset(lines)
+
+
+def _sample_evenly(values: list[int], limit: int) -> list[int]:
+    if limit <= 0 or not values:
+        return []
+    if len(values) <= limit:
+        return list(values)
+    if limit == 1:
+        return [values[len(values) // 2]]
+    indices = {
+        round(index * (len(values) - 1) / (limit - 1))
+        for index in range(limit)
+    }
+    return [values[index] for index in sorted(indices)]
+
+
+def _span_renderable_body_lines(lines: list[str], *, body_start: int) -> set[int]:
+    renderable: set[int] = set()
+    in_docstring = False
+    for index, line in enumerate(lines[body_start:], start=body_start):
+        stripped = line.strip()
+        if not stripped:
+            continue
+        in_docstring, skip = _advance_docstring_state(stripped, in_docstring)
+        if skip or in_docstring or stripped.startswith("#"):
+            continue
+        renderable.add(index)
+    return renderable
+
+
+def _span_window_start(index: int, *, body_start: int, line_count: int, width: int) -> int:
+    latest = max(body_start, line_count - width)
+    return min(latest, max(body_start, index - width // 2))
+
+
+def _span_candidates(
+    sym: ContextSymbol,
+    *,
+    query_terms: frozenset[str],
+    query_lines: frozenset[int],
+    max_candidates: int,
+    window_lines: int = 6,
+) -> tuple[_SpanCandidate, ...]:
+    code = sym.code or ""
+    lines = code.splitlines()
+    if not lines or max_candidates <= 0:
+        return ()
+    _signature, signature_indices = _code_signature_selection(code)
+    body_start = max(signature_indices, default=-1) + 1
+    if body_start >= len(lines):
+        return ()
+    renderable = _span_renderable_body_lines(lines, body_start=body_start)
+    if not renderable:
+        return ()
+
+    width = max(2, int(window_lines))
+    stride = max(1, width - 2)
+    uniform_starts = list(range(body_start, len(lines), stride))
+    final_start = max(body_start, len(lines) - width)
+    if final_start not in uniform_starts:
+        uniform_starts.append(final_start)
+    uniform_starts = sorted(set(uniform_starts))
+
+    lexical_starts: list[int] = []
+    if query_terms:
+        for index in sorted(renderable):
+            if query_terms & _span_terms(lines[index]):
+                lexical_starts.append(
+                    _span_window_start(
+                        index,
+                        body_start=body_start,
+                        line_count=len(lines),
+                        width=width,
+                    )
+                )
+    if sym.start_line > 0 and query_lines:
+        for source_line in sorted(query_lines):
+            index = source_line - sym.start_line
+            if index in renderable:
+                lexical_starts.append(
+                    _span_window_start(
+                        index,
+                        body_start=body_start,
+                        line_count=len(lines),
+                        width=width,
+                    )
+                )
+    lexical_starts = sorted(set(lexical_starts))
+    if len(lexical_starts) > max_candidates:
+        lexical_starts = _sample_evenly(lexical_starts, max_candidates)
+    remaining = max_candidates - len(lexical_starts)
+    other_starts = [start for start in uniform_starts if start not in set(lexical_starts)]
+    starts = [*lexical_starts, *_sample_evenly(other_starts, remaining)]
+
+    candidates: list[_SpanCandidate] = []
+    seen: set[tuple[int, ...]] = set()
+    for start in starts:
+        indices = tuple(
+            index
+            for index in range(start, min(len(lines), start + width))
+            if index in renderable
+        )
+        if not indices or indices in seen:
+            continue
+        seen.add(indices)
+        text = "\n".join(lines[index] for index in indices)
+        candidate_terms = _span_terms(text)
+        lexical_score = (
+            len(query_terms & candidate_terms) / max(1, len(query_terms))
+            if query_terms
+            else 0.0
+        )
+        structural_score = sum(
+            1.0 for index in indices if _keep_compact_body_line(lines[index].strip())
+        ) / max(1, len(indices))
+        source_lines = {
+            sym.start_line + index for index in indices if sym.start_line > 0
+        }
+        anchored_indices = tuple(
+            index
+            for index in indices
+            if sym.start_line > 0 and sym.start_line + index in query_lines
+        )
+        candidates.append(
+            _SpanCandidate(
+                line_indices=indices,
+                text=text,
+                lexical_score=lexical_score,
+                structural_score=structural_score,
+                line_anchor_score=(
+                    len(source_lines & query_lines) / max(1, len(query_lines))
+                    if query_lines
+                    else 0.0
+                ),
+                anchored_line_indices=anchored_indices,
+            )
+        )
+    return tuple(candidates)
+
+
+def _span_candidate_oracle_recall(
+    sym: ContextSymbol,
+    *,
+    query_text: str,
+    gold_lines: Iterable[int],
+    max_candidates: int = 24,
+) -> float:
+    """Upper-bound line recall before candidate ranking and body truncation."""
+    gold = {int(line) for line in gold_lines if int(line) > 0}
+    if not gold or sym.start_line <= 0 or not sym.code:
+        return 0.0
+    _signature, signature_indices = _code_signature_selection(sym.code)
+    candidates = _span_candidates(
+        sym,
+        query_terms=_span_terms(query_text),
+        query_lines=_span_query_line_numbers(query_text),
+        max_candidates=max(1, int(max_candidates)),
+    )
+    covered_indices = set(signature_indices)
+    for candidate in candidates:
+        covered_indices.update(candidate.line_indices)
+    covered_lines = {sym.start_line + index for index in covered_indices}
+    return len(gold & covered_lines) / len(gold)
+
+
+def _span_semantic_excess(scores: list[float]) -> list[float]:
+    if not scores:
+        return []
+    ordered = sorted(float(score) for score in scores)
+    middle = len(ordered) // 2
+    floor = (
+        ordered[middle]
+        if len(ordered) % 2
+        else (ordered[middle - 1] + ordered[middle]) / 2.0
+    )
+    ceiling = ordered[-1]
+    span = ceiling - floor
+    if span <= 1e-9:
+        return [0.0] * len(scores)
+    return [min(1.0, max(0.0, (float(score) - floor) / span)) for score in scores]
+
+
+def _span_ranked_selection(
+    sym: ContextSymbol,
+    candidates: tuple[_SpanCandidate, ...],
+    semantic_scores: list[float],
+    *,
+    max_body_lines: int,
+    max_selected_spans: int = 3,
+) -> tuple[str, tuple[int | None, ...]]:
+    code = sym.code or ""
+    lines = code.splitlines()
+    signature, signature_indices = _code_signature_selection(code)
+    if not lines or not candidates or max_body_lines <= 0:
+        return signature, signature_indices
+
+    scores = semantic_scores if len(semantic_scores) == len(candidates) else [0.0] * len(candidates)
+    excess = _span_semantic_excess(scores)
+    ranked = sorted(
+        zip(candidates, excess, strict=True),
+        key=lambda row: (
+            1.25 * row[0].line_anchor_score
+            + 0.78 * row[1]
+            + 0.17 * row[0].lexical_score
+            + 0.05 * row[0].structural_score,
+            row[1],
+            row[0].lexical_score,
+            -len(row[0].line_indices),
+            -row[0].line_indices[0],
+        ),
+        reverse=True,
+    )
+    final_scores = [
+        1.25 * candidate.line_anchor_score
+        + 0.78 * semantic
+        + 0.17 * candidate.lexical_score
+        + 0.05 * candidate.structural_score
+        for candidate, semantic in ranked
+    ]
+    best = final_scores[0]
+    cutoff = max(0.08, best * 0.45)
+    selected: set[int] = set(signature_indices)
+    selected_body: set[int] = set()
+    selected_spans = 0
+    for (candidate, _semantic), score in zip(ranked, final_scores, strict=True):
+        if selected_spans > 0 and score < cutoff:
+            break
+        line_priority = [
+            *candidate.anchored_line_indices,
+            *(
+                index
+                for index in candidate.line_indices
+                if index not in candidate.anchored_line_indices
+            ),
+        ]
+        new_lines = [index for index in line_priority if index not in selected]
+        if not new_lines:
+            continue
+        remaining = max_body_lines - len(selected_body)
+        if remaining <= 0:
+            break
+        chosen = new_lines[:remaining]
+        selected.update(chosen)
+        selected_body.update(chosen)
+        selected_spans += 1
+        if selected_spans >= max_selected_spans:
+            break
+
+    if not selected_body:
+        selected_body.update(ranked[0][0].line_indices[:max_body_lines])
+
+    out_lines = signature.splitlines()
+    out_indices: list[int | None] = list(signature_indices)
+    previous = max(signature_indices, default=-1)
+    for index in sorted(selected_body):
+        if previous >= 0 and index > previous + 1:
+            indent = lines[index][: len(lines[index]) - len(lines[index].lstrip())]
+            out_lines.append(indent + "...")
+            out_indices.append(None)
+        out_lines.append(_collapse_long_line(lines[index]))
+        out_indices.append(index)
+        previous = index
+    return "\n".join(out_lines), tuple(out_indices)
+
+
+def _span_symbol_key(sym: ContextSymbol) -> tuple[str, str, int, int]:
+    return (sym.uid, sym.code or "", sym.start_line, sym.end_line)
+
+
+def _apply_span_line_rerank(
+    bundles: list[ContextBundle],
+    *,
+    query_text: str,
+    score_fn: SpanScoreFn | None,
+    max_candidates_per_symbol: int,
+    max_body_lines: int,
+    max_symbols: int = 48,
+) -> list[ContextBundle]:
+    """Replace symbol bodies with their top query-ranked internal windows."""
+    unique: dict[tuple[str, str, int, int], ContextSymbol] = {}
+    for bundle in bundles:
+        for symbol in bundle.all_symbols():
+            if symbol.code:
+                unique.setdefault(_span_symbol_key(symbol), symbol)
+    if not unique:
+        return bundles
+
+    ranked_keys = set(list(unique)[: max(1, int(max_symbols))])
+
+    query_terms = _span_terms(query_text)
+    query_lines = _span_query_line_numbers(query_text)
+    candidates_by_key: dict[tuple[str, str, int, int], tuple[_SpanCandidate, ...]] = {}
+    flat_texts: list[str] = []
+    slices: dict[tuple[str, str, int, int], tuple[int, int]] = {}
+    for key, symbol in unique.items():
+        if key not in ranked_keys:
+            continue
+        candidates = _span_candidates(
+            symbol,
+            query_terms=query_terms,
+            query_lines=query_lines,
+            max_candidates=max(1, int(max_candidates_per_symbol)),
+        )
+        candidates_by_key[key] = candidates
+        start = len(flat_texts)
+        flat_texts.extend(candidate.text for candidate in candidates)
+        slices[key] = (start, len(flat_texts))
+
+    semantic_scores = [0.0] * len(flat_texts)
+    if score_fn is not None and flat_texts:
+        try:
+            scored = [float(score) for score in score_fn(flat_texts)]
+            if len(scored) == len(flat_texts):
+                semantic_scores = scored
+        except Exception:
+            pass
+
+    rendered_by_key: dict[tuple[str, str, int, int], ContextSymbol] = {}
+    for key, symbol in unique.items():
+        if key not in ranked_keys:
+            rendered_by_key[key] = _trim_symbol_for_mode(
+                symbol,
+                "signature_only",
+                full_render_max_depth=0,
+            )
+            continue
+        start, end = slices[key]
+        code, indices = _span_ranked_selection(
+            symbol,
+            candidates_by_key[key],
+            semantic_scores[start:end],
+            max_body_lines=max(1, int(max_body_lines)),
+        )
+        rendered_by_key[key] = _replace_symbol_render(symbol, code, indices)
+
+    return [
+        cast(
+            ContextBundle,
+            replace(
+                bundle,
+                seed=rendered_by_key.get(_span_symbol_key(bundle.seed), bundle.seed),
+                related=tuple(
+                    rendered_by_key.get(_span_symbol_key(symbol), symbol)
+                    for symbol in bundle.related
+                ),
+            ),
+        )
+        for bundle in bundles
+    ]
 
 
 def _class_parent_from_qualified_name(sym: ContextSymbol) -> str | None:
@@ -889,6 +1440,30 @@ def _folded_class_code(parent: str, members: list[ContextSymbol], *, compact: bo
     return "\n".join([class_header, *(body_blocks or ["    ..."])])
 
 
+def _folded_class_spans(
+    parent: str,
+    members: list[ContextSymbol],
+    *,
+    compact: bool,
+) -> tuple[tuple[int, int], ...]:
+    span_groups: list[tuple[tuple[int, int], ...]] = []
+    for member in members:
+        if _is_class_definition_symbol(member, parent):
+            signature, indices = _code_signature_selection(member.code)
+            header = signature.splitlines()[0] if signature else ""
+            rendered = _replace_symbol_render(member, header, indices[:1])
+            span_groups.append(rendered.effective_rendered_spans())
+            continue
+
+        keep_full = not compact and (member.distance_from_seed == 0 or member.name == "__init__")
+        rendered = member
+        if not keep_full:
+            signature, indices = _code_signature_selection(member.code)
+            rendered = _replace_symbol_render(member, signature, indices)
+        span_groups.append(rendered.effective_rendered_spans())
+    return _merge_rendered_spans(*span_groups)
+
+
 def _build_folded_class_symbol(
     parent: str,
     members: list[ContextSymbol],
@@ -905,6 +1480,7 @@ def _build_folded_class_symbol(
             distance_from_seed=min(m.distance_from_seed for m in members),
             expansion_step="fold",
             code=_folded_class_code(parent, members, compact=compact),
+            rendered_spans=_folded_class_spans(parent, members, compact=compact),
         ),
     )
 
@@ -984,16 +1560,19 @@ def _render_impact_tiered(
         if sym.expansion_step == "fold":
             trimmed.append(sym)
         elif sym.distance_from_seed == 0 and _file_tier_from_path(sym.file_path) == "core":
-            trimmed.append(replace(sym, code=_code_signature(sym.code)))
+            trimmed.append(
+                _trim_symbol_for_mode(
+                    sym,
+                    "signature_only",
+                    full_render_max_depth=0,
+                )
+            )
         else:
             trimmed.append(
-                replace(
+                _trim_symbol_for_mode(
                     sym,
-                    code=_code_impact_surface(
-                        sym.code,
-                        qualified_name=sym.qualified_name,
-                        name=sym.name,
-                    ),
+                    "impact_surface",
+                    full_render_max_depth=0,
                 )
             )
     seed = trimmed[0]
@@ -1011,25 +1590,24 @@ def _trim_symbol_for_mode(
     full_render_max_depth: int,
 ) -> ContextSymbol:
     if render_mode == "impact_surface":
-        return cast(
-            ContextSymbol,
-            replace(
-                sym,
-                code=_code_impact_surface(
-                    sym.code,
-                    qualified_name=sym.qualified_name,
-                    name=sym.name,
-                ),
-            ),
+        code, impact_indices = _code_impact_surface_selection(
+            sym.code,
+            qualified_name=sym.qualified_name,
+            name=sym.name,
         )
+        return _replace_symbol_render(sym, code, impact_indices)
     if render_mode == "signature_only":
-        return cast(ContextSymbol, replace(sym, code=_code_signature(sym.code)))
+        code, signature_indices = _code_signature_selection(sym.code)
+        return _replace_symbol_render(sym, code, signature_indices)
     if render_mode == "hybrid_compact":
         if sym.distance_from_seed <= full_render_max_depth:
-            return cast(ContextSymbol, replace(sym, code=_code_compact(sym.code)))
-        return cast(ContextSymbol, replace(sym, code=_code_signature(sym.code)))
+            code, compact_indices = _code_compact_selection(sym.code)
+            return _replace_symbol_render(sym, code, compact_indices)
+        code, compact_signature_indices = _code_signature_selection(sym.code)
+        return _replace_symbol_render(sym, code, compact_signature_indices)
     if render_mode == "hybrid" and sym.distance_from_seed > full_render_max_depth:
-        return cast(ContextSymbol, replace(sym, code=_code_signature(sym.code)))
+        code, hybrid_signature_indices = _code_signature_selection(sym.code)
+        return _replace_symbol_render(sym, code, hybrid_signature_indices)
     return sym
 
 
@@ -1559,12 +2137,40 @@ def _bundle_static_rows(bundles: list[ContextBundle]) -> list[_BundleStatic]:
     ]
 
 
+def _symbol_semantic_value(symbol: ContextSymbol) -> float:
+    """Query-calibrated value carried by one rendered symbol in ``[0, 1]``."""
+    return min(1.0, max(0.0, symbol.semantic_excess * symbol.tier_weight))
+
+
+def _marginal_render_semantic_value(
+    rendered: ContextBundle,
+    *,
+    already_printed: set[str],
+) -> float:
+    """Token-weighted semantic value of UIDs this render newly prints."""
+    seen: set[str] = set()
+    weighted_value = 0.0
+    token_total = 0
+    for symbol in rendered.all_symbols():
+        if symbol.uid in seen or symbol.uid in already_printed:
+            continue
+        seen.add(symbol.uid)
+        tokens = estimate_text_tokens(symbol.code or "")
+        if tokens <= 0:
+            continue
+        weighted_value += tokens * _symbol_semantic_value(symbol)
+        token_total += tokens
+    return weighted_value / max(1, token_total)
+
+
 def _credit_coverage_gain_raw(
     idx: int,
     bundle: ContextBundle,
     *,
     static: list[_BundleStatic],
     state: _TokenCreditCoverageState,
+    rendered: ContextBundle | None = None,
+    node_semantic_utility_weight: float = 0.0,
 ) -> float:
     st = static[idx]
     files = st.files
@@ -1583,6 +2189,11 @@ def _credit_coverage_gain_raw(
     gain += 0.05 if not bundle.passive else -0.03
     gain -= 0.15 * sum(state.file_counts.get(path, 0) for path in files)
     gain -= state.file_saturation_penalty(bundle)
+    if rendered is not None and node_semantic_utility_weight > 0.0:
+        gain += node_semantic_utility_weight * _marginal_render_semantic_value(
+            rendered,
+            already_printed=state.printed_uids,
+        )
     return gain
 
 
@@ -1637,6 +2248,7 @@ def _select_bundles_under_credit_budget(
     token_budget: int,
     credit_trace: TokenCreditTrace | None = None,
     min_utility_per_token: float | None = None,
+    node_semantic_utility_weight: float = 0.0,
 ) -> tuple[list[dict[str, object]], int]:
     selected: list[dict[str, object]] = []
     selected_indices: set[int] = set()
@@ -1652,7 +2264,18 @@ def _select_bundles_under_credit_budget(
         # monotonicity); the budget pays only the marginal price — tokens of
         # uids the prompt's first-wins dedupe will actually print.
         marginal_cost = state.marginal_purchase_cost(rendered)
-        raw_delta_utility = _credit_coverage_gain_raw(idx, source, static=static, state=state)
+        semantic_delta_utility = _marginal_render_semantic_value(
+            rendered,
+            already_printed=state.printed_uids,
+        )
+        raw_delta_utility = _credit_coverage_gain_raw(
+            idx,
+            source,
+            static=static,
+            state=state,
+            rendered=rendered,
+            node_semantic_utility_weight=node_semantic_utility_weight,
+        )
         effective_utility = max(0.001, raw_delta_utility)
         current_value = effective_utility / max(1, marginal_cost)
         best_competing = -initial[0][0] if initial else -1.0
@@ -1696,6 +2319,7 @@ def _select_bundles_under_credit_budget(
                 new_files=len(files - state.covered_files),
                 new_role=source.role not in state.covered_roles,
                 new_steps=len(steps - state.covered_steps),
+                semantic_delta_utility=semantic_delta_utility,
             )
         state.record_selection(source, marginal_cost)
         state.charge_purchase(rendered)
@@ -1725,6 +2349,61 @@ def _first_wins_printed_tokens(selected: list[dict[str, object]]) -> int:
             seen.add(sym.uid)
             total += estimate_text_tokens(sym.code or "")
     return total
+
+
+def _first_wins_printed_symbols(
+    selected: list[dict[str, object]],
+) -> dict[str, ContextSymbol]:
+    """Return the actual prompt owner for every UID in a selected render set.
+
+    Prompt assembly is first-wins by UID.  Upgrade utility must use exactly
+    the same ownership model: an expanded duplicate can be free, while an
+    upgrade that makes an earlier occurrence win can change what the prompt
+    actually contains.
+    """
+    printed: dict[str, ContextSymbol] = {}
+    for entry in selected:
+        rendered = entry.get("rendered")
+        if not isinstance(rendered, ContextBundle):
+            continue
+        for symbol in rendered.all_symbols():
+            printed.setdefault(symbol.uid, symbol)
+    return printed
+
+
+def _upgrade_semantic_value(
+    selected: list[dict[str, object]],
+    entry_index: int,
+    upgraded: ContextBundle,
+) -> float:
+    """Token-weighted query value of text newly printed by one upgrade.
+
+    This is deliberately a *delta*, not the average quality of the upgraded
+    bundle.  A high-similarity symbol that was already printed elsewhere must
+    not receive credit twice; a body expansion receives credit only for its
+    newly visible tokens.  The resulting ``[0, 1]`` value is multiplied by the
+    opt-in budget weight in the same units as the structural credit score.
+    """
+    before = _first_wins_printed_symbols(selected)
+    entry = selected[entry_index]
+    previous = entry.get("rendered")
+    entry["rendered"] = upgraded
+    try:
+        after = _first_wins_printed_symbols(selected)
+    finally:
+        entry["rendered"] = previous
+
+    weighted_value = 0.0
+    added_tokens = 0
+    for uid, symbol in after.items():
+        before_symbol = before.get(uid)
+        before_tokens = estimate_text_tokens(before_symbol.code or "") if before_symbol else 0
+        delta_tokens = estimate_text_tokens(symbol.code or "") - before_tokens
+        if delta_tokens <= 0:
+            continue
+        weighted_value += delta_tokens * _symbol_semantic_value(symbol)
+        added_tokens += delta_tokens
+    return weighted_value / max(1, added_tokens)
 
 
 def _upgrade_exact_delta(
@@ -1771,12 +2450,17 @@ def _credit_upgrade_gain_raw(
     bundle: ContextBundle,
     rendered: ContextBundle,
     state: _TokenCreditCoverageState,
+    *,
+    semantic_delta_utility: float = 0.0,
+    node_semantic_utility_weight: float = 0.0,
 ) -> float:
     mode_bonus = _UPGRADE_MODE_BONUS.get(rendered.render_mode, 0.10)
     gain: float = 0.35 * st.base_utility * st.tier_weight
     gain += mode_bonus
     gain += 0.05 if not bundle.passive else 0.03
     gain -= state.file_saturation_penalty(bundle)
+    if node_semantic_utility_weight > 0.0:
+        gain += node_semantic_utility_weight * semantic_delta_utility
     return gain
 
 
@@ -1785,8 +2469,21 @@ def _credit_upgrade_gain(
     bundle: ContextBundle,
     rendered: ContextBundle,
     state: _TokenCreditCoverageState,
+    *,
+    semantic_delta_utility: float = 0.0,
+    node_semantic_utility_weight: float = 0.0,
 ) -> float:
-    return max(0.001, _credit_upgrade_gain_raw(st, bundle, rendered, state))
+    return max(
+        0.001,
+        _credit_upgrade_gain_raw(
+            st,
+            bundle,
+            rendered,
+            state,
+            semantic_delta_utility=semantic_delta_utility,
+            node_semantic_utility_weight=node_semantic_utility_weight,
+        ),
+    )
 
 
 def _enqueue_credit_upgrade(
@@ -1801,6 +2498,7 @@ def _enqueue_credit_upgrade(
     full_render_max_depth: int,
     render_cache: dict[tuple[int, str], tuple[ContextBundle, int]],
     printed_tokens: int,
+    node_semantic_utility_weight: float,
 ) -> None:
     parts = _credit_upgrade_entry_parts(selected[entry_index])
     if parts is None:
@@ -1826,7 +2524,15 @@ def _enqueue_credit_upgrade(
     exact_delta = _upgrade_exact_delta(
         selected, entry_index, upgraded, printed_before=printed_tokens
     )
-    priority = _credit_upgrade_gain(static[bundle_index], entry_source, upgraded, state) / max(
+    semantic_delta_utility = _upgrade_semantic_value(selected, entry_index, upgraded)
+    priority = _credit_upgrade_gain(
+        static[bundle_index],
+        entry_source,
+        upgraded,
+        state,
+        semantic_delta_utility=semantic_delta_utility,
+        node_semantic_utility_weight=node_semantic_utility_weight,
+    ) / max(
         1, exact_delta
     )
     heapq.heappush(
@@ -1851,6 +2557,7 @@ def _apply_credit_upgrades(
     credit_trace: TokenCreditTrace | None = None,
     min_utility_per_token: float | None = None,
     allow_free_at_ceiling: bool = False,
+    node_semantic_utility_weight: float = 0.0,
 ) -> int:
     upgrade_heap: list[tuple[float, int, int, ContextBundle, int]] = []
     for entry_index in range(len(selected)):
@@ -1867,6 +2574,7 @@ def _apply_credit_upgrades(
             full_render_max_depth=full_render_max_depth,
             render_cache=render_cache,
             printed_tokens=used,
+            node_semantic_utility_weight=node_semantic_utility_weight,
         )
 
     while upgrade_heap and (used < token_budget or allow_free_at_ceiling):
@@ -1888,11 +2596,22 @@ def _apply_credit_upgrades(
         entry_source = entry["source"]
         raw_delta_utility = 0.0
         effective_utility = 0.0
+        semantic_delta_utility = 0.0
         if isinstance(entry_source, ContextBundle):
             bundle_index = entry.get("index")
             if isinstance(bundle_index, int):
+                semantic_delta_utility = _upgrade_semantic_value(
+                    selected,
+                    entry_index,
+                    upgraded,
+                )
                 raw_delta_utility = _credit_upgrade_gain_raw(
-                    static[bundle_index], entry_source, upgraded, state
+                    static[bundle_index],
+                    entry_source,
+                    upgraded,
+                    state,
+                    semantic_delta_utility=semantic_delta_utility,
+                    node_semantic_utility_weight=node_semantic_utility_weight,
                 )
                 effective_utility = max(0.001, raw_delta_utility)
         raw_density = raw_delta_utility / max(1, exact_delta)
@@ -1916,6 +2635,7 @@ def _apply_credit_upgrades(
                     delta_utility=raw_delta_utility,
                     effective_utility=effective_utility,
                     delta_tokens=exact_delta,
+                    semantic_delta_utility=semantic_delta_utility,
                 )
             primary = _primary_file(entry_source)
             if primary:
@@ -1931,6 +2651,7 @@ def _apply_credit_upgrades(
             full_render_max_depth=full_render_max_depth,
             render_cache=render_cache,
             printed_tokens=used,
+            node_semantic_utility_weight=node_semantic_utility_weight,
         )
     return used
 
@@ -1959,7 +2680,11 @@ def _freeze_cross_file_member_bodies(bundles: list[ContextBundle]) -> list[Conte
         related = tuple(
             rel
             if (rel.file_path or "") in seed_files
-            else cast(ContextSymbol, replace(rel, code=_code_signature(rel.code)))
+            else _trim_symbol_for_mode(
+                rel,
+                "signature_only",
+                full_render_max_depth=0,
+            )
             for rel in bundle.related
         )
         if related == bundle.related:
@@ -1982,6 +2707,7 @@ def _apply_token_credit_budget(
     min_utility_per_token: float | None = None,
     freeze_at_utility_plateau: bool = False,
     plateau_upgrade_reserve_share: float = 0.0,
+    node_semantic_utility_weight: float = 0.0,
 ) -> list[ContextBundle]:
     """Token Credit System v2 prototype: coverage-first marginal transactions.
 
@@ -2050,6 +2776,7 @@ def _apply_token_credit_budget(
         token_budget,
         credit_trace=credit_trace,
         min_utility_per_token=min_utility_per_token,
+        node_semantic_utility_weight=node_semantic_utility_weight,
     )
     reserve_tokens = int(
         token_budget * min(1.0, max(0.0, plateau_upgrade_reserve_share))
@@ -2076,6 +2803,7 @@ def _apply_token_credit_budget(
         credit_trace=credit_trace,
         min_utility_per_token=min_utility_per_token,
         allow_free_at_ceiling=freeze_at_utility_plateau,
+        node_semantic_utility_weight=node_semantic_utility_weight,
     )
     # Waves 2 and 3 both run with the whole budget as the per-step limit, so
     # they can share one fresh render cache (the memo key assumes a constant
@@ -2112,6 +2840,7 @@ def _apply_token_credit_budget(
                 credit_trace=credit_trace,
                 min_utility_per_token=min_utility_per_token,
                 allow_free_at_ceiling=freeze_at_utility_plateau,
+                node_semantic_utility_weight=node_semantic_utility_weight,
             )
     if used < upgrade_budget:
         # Third wave: the leader set is saturated and budget still remains.
@@ -2135,6 +2864,7 @@ def _apply_token_credit_budget(
             credit_trace=credit_trace,
             min_utility_per_token=min_utility_per_token,
             allow_free_at_ceiling=freeze_at_utility_plateau,
+            node_semantic_utility_weight=node_semantic_utility_weight,
         )
     return _selected_credit_rendered_bundles(selected)
 
@@ -2152,6 +2882,7 @@ def _apply_render_and_budget(
     min_utility_per_token: float | None = None,
     freeze_at_utility_plateau: bool = False,
     plateau_upgrade_reserve_share: float = 0.0,
+    node_semantic_utility_weight: float = 0.0,
 ) -> list[ContextBundle]:
     """Echelon 2: render-trim then token-pack the assembled bundles.
 
@@ -2186,6 +2917,7 @@ def _apply_render_and_budget(
             min_utility_per_token=min_utility_per_token,
             freeze_at_utility_plateau=freeze_at_utility_plateau,
             plateau_upgrade_reserve_share=plateau_upgrade_reserve_share,
+            node_semantic_utility_weight=node_semantic_utility_weight,
         )
 
     if render_mode in (
@@ -2364,6 +3096,8 @@ def _nearest_expansion_hits(
     query_scoring: QueryScoringContext | None = None,
     semantic_alpha: float = 0.70,
     structural_reserve: int = 1,
+    impact_mode: bool = False,
+    semantic_rerank: bool = True,
 ) -> list[_Hit]:
     """Dedupe expansion hits, then select structural bridges + semantic leaders.
 
@@ -2383,38 +3117,70 @@ def _nearest_expansion_hits(
         nearest_by_uid.values(),
         key=lambda h: (h.depth, (h.name or "").lower(), h.uid),
     )
-    if query_scoring is None or len(structural) <= max_per_seed:
-        return structural[:max_per_seed]
-
     similarities = {
         hit.uid: similarity
         for hit in structural
-        if (similarity := query_scoring.similarity_for(hit.uid)) is not None
+        if query_scoring is not None
+        and (similarity := query_scoring.similarity_for(hit.uid)) is not None
     }
-    if not similarities:
-        return structural[:max_per_seed]
-
     values = list(similarities.values())
-    floor = semantic_noise_floor(values)
+    floor = semantic_noise_floor(values) if values else 0.0
     ordered_values = sorted(values)
-    q95_index = min(len(ordered_values) - 1, round(0.95 * (len(ordered_values) - 1)))
-    ceiling = ordered_values[q95_index]
+    q95_index = (
+        min(len(ordered_values) - 1, round(0.95 * (len(ordered_values) - 1)))
+        if ordered_values
+        else 0
+    )
+    ceiling = ordered_values[q95_index] if ordered_values else floor
     span = max(1e-9, ceiling - floor)
     alpha = min(1.0, max(0.0, semantic_alpha))
 
+    annotated: list[_Hit] = []
+    for hit in structural:
+        similarity = similarities.get(hit.uid)
+        semantic_excess = (
+            min(1.0, max(0.0, (similarity - floor) / span))
+            if similarity is not None
+            else 0.0
+        )
+        tier_weight = _tier_weight_for_path(hit.file_path, impact_mode=impact_mode)
+        structural_weight = 1.0 / max(1, int(hit.depth))
+        weighted_semantic = semantic_excess * tier_weight
+        relevance_score = (
+            alpha * weighted_semantic + (1.0 - alpha) * structural_weight
+            if similarity is not None
+            else structural_weight * tier_weight
+        )
+        annotated.append(
+            replace(
+                hit,
+                query_similarity=similarity,
+                semantic_excess=semantic_excess,
+                tier_weight=tier_weight,
+                structural_weight=structural_weight,
+                relevance_score=relevance_score,
+            )
+        )
+
+    if not semantic_rerank or not similarities or len(annotated) <= max_per_seed:
+        return annotated[:max_per_seed]
+
     reserve_count = min(max_per_seed, max(0, structural_reserve))
-    reserved = structural[:reserve_count]
+    reserved = annotated[:reserve_count]
     reserved_uids = {hit.uid for hit in reserved}
 
     def _semantic_rank(hit: _Hit) -> tuple[float, float, int, str, str]:
-        similarity = similarities.get(hit.uid, -1.0)
-        semantic_excess = min(1.0, max(0.0, (similarity - floor) / span))
-        depth_score = 1.0 / max(1, int(hit.depth))
-        blended = alpha * semantic_excess + (1.0 - alpha) * depth_score
-        return (-blended, -semantic_excess, int(hit.depth), (hit.name or "").lower(), hit.uid)
+        weighted_semantic = hit.semantic_excess * hit.tier_weight
+        return (
+            -hit.relevance_score,
+            -weighted_semantic,
+            int(hit.depth),
+            (hit.name or "").lower(),
+            hit.uid,
+        )
 
     semantic = sorted(
-        (hit for hit in structural if hit.uid not in reserved_uids),
+        (hit for hit in annotated if hit.uid not in reserved_uids),
         key=_semantic_rank,
     )
     return reserved + semantic[: max_per_seed - reserve_count]
@@ -2429,6 +3195,7 @@ def _plan_candidate_expansions(
     query_scoring: QueryScoringContext | None = None,
     semantic_alpha: float = 0.70,
     structural_reserve: int = 1,
+    semantic_rerank: bool = False,
 ) -> tuple[list[tuple[RoleCandidate, list[_Hit]]], set[str]]:
     expansion_per_candidate: list[tuple[RoleCandidate, list[_Hit]]] = []
     uids_to_fetch: set[str] = set()
@@ -2441,6 +3208,8 @@ def _plan_candidate_expansions(
             query_scoring=query_scoring,
             semantic_alpha=semantic_alpha,
             structural_reserve=structural_reserve,
+            impact_mode=cand.role in _MODE_ROLES,
+            semantic_rerank=semantic_rerank,
         )
         expansion_per_candidate.append((cand, ordered))
         for h in ordered:
@@ -2490,6 +3259,12 @@ def _context_symbol_from_hit(
         expansion_step=hit.step,
         code=payload.get("code"),
         qualified_name=str(payload.get("qualified_name") or ""),
+        relevance_score=hit.relevance_score,
+        utility_score=hit.structural_weight * hit.tier_weight,
+        query_similarity=hit.query_similarity,
+        semantic_excess=hit.semantic_excess,
+        tier_weight=hit.tier_weight,
+        structural_weight=hit.structural_weight,
         start_line=_int_payload_value(payload.get("start_line")),
         end_line=_int_payload_value(payload.get("end_line")),
     )
@@ -2563,6 +3338,27 @@ def _apply_overlay_to_context_bundles(
     )
 
 
+def _pack_with_render_budget(
+    bundles: list[ContextBundle],
+    budget: ContextRenderBudget,
+    *,
+    credit_trace: TokenCreditTrace | None,
+) -> list[ContextBundle]:
+    return _apply_render_and_budget(
+        bundles,
+        token_budget=budget.token_budget,
+        render_mode=budget.render_mode,
+        per_transaction_share=budget.per_transaction_share,
+        file_soft_cap_share=budget.file_soft_cap_share,
+        signature_only_initial=budget.signature_only_initial,
+        credit_trace=credit_trace,
+        min_utility_per_token=budget.min_utility_per_token,
+        freeze_at_utility_plateau=budget.freeze_at_utility_plateau,
+        plateau_upgrade_reserve_share=budget.plateau_upgrade_reserve_share,
+        node_semantic_utility_weight=budget.node_semantic_utility_weight,
+    )
+
+
 def build_context_for_candidates(
     candidates: Iterable[RoleCandidate],
     *,
@@ -2578,6 +3374,9 @@ def build_context_for_candidates(
     query_scoring: QueryScoringContext | None = None,
     semantic_expansion_alpha: float = 0.70,
     semantic_expansion_structural_reserve: int = 1,
+    semantic_expansion_rerank: bool = False,
+    span_query_text: str = "",
+    span_score_fn: SpanScoreFn | None = None,
     credit_trace: TokenCreditTrace | None = None,
     overlay: Any | None = None,
     user_id: str = "anonymous",
@@ -2620,7 +3419,7 @@ def build_context_for_candidates(
         traversal_mode=traversal_mode,
         max_per_seed=max_per_seed,
         hook_transparency=hook_transparency,
-        semantic_rerank=query_scoring is not None,
+        semantic_rerank=semantic_expansion_rerank,
     )
     expansion_per_candidate, uids_to_fetch = _plan_candidate_expansions(
         candidates,
@@ -2630,6 +3429,7 @@ def build_context_for_candidates(
         query_scoring=query_scoring,
         semantic_alpha=semantic_expansion_alpha,
         structural_reserve=semantic_expansion_structural_reserve,
+        semantic_rerank=semantic_expansion_rerank,
     )
     payload_by_uid = _resolve_context_payloads(
         lance,
@@ -2651,17 +3451,36 @@ def build_context_for_candidates(
             workspace_id=workspace_id,
             user_id=user_id,
         )
-    return _apply_render_and_budget(
-        bundles,
-        token_budget=budget.token_budget,
-        render_mode=budget.render_mode,
-        per_transaction_share=budget.per_transaction_share,
-        file_soft_cap_share=budget.file_soft_cap_share,
-        signature_only_initial=budget.signature_only_initial,
+    if not budget.span_line_rerank:
+        return _pack_with_render_budget(bundles, budget, credit_trace=credit_trace)
+
+    # Cheap first pass: identify the bundles Token Credit would actually buy.
+    # Embedding every span in the full graph-expanded pool is both wasteful and
+    # slower than retrieval itself. Re-rank only the provisional winners, then
+    # run the real budget pass over their pruned bodies so accounting remains
+    # exact and no later render upgrade can restore discarded source lines.
+    provisional = _pack_with_render_budget(bundles, budget, credit_trace=None)
+    source_by_uid = {
+        bundle.seed.uid: bundle for bundle in _dedupe_bundles_by_seed_uid(bundles)
+    }
+    selected_sources = [
+        source
+        for rendered in provisional
+        if (source := source_by_uid.get(rendered.seed.uid)) is not None
+    ]
+    if selected_sources:
+        selected_sources = _apply_span_line_rerank(
+            selected_sources,
+            query_text=span_query_text,
+            score_fn=span_score_fn,
+            max_symbols=budget.span_rank_max_symbols,
+            max_candidates_per_symbol=budget.span_rank_max_candidates_per_symbol,
+            max_body_lines=budget.span_rank_max_body_lines,
+        )
+    return _pack_with_render_budget(
+        selected_sources or bundles,
+        budget,
         credit_trace=credit_trace,
-        min_utility_per_token=budget.min_utility_per_token,
-        freeze_at_utility_plateau=budget.freeze_at_utility_plateau,
-        plateau_upgrade_reserve_share=budget.plateau_upgrade_reserve_share,
     )
 
 

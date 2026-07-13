@@ -73,6 +73,22 @@ def _add_span(
     spans[file_path].append({"type": "line", "start": start, "end": end})
 
 
+def _add_context_item_spans(
+    spans: dict[str, list[Span]],
+    file_path: str | None,
+    item: dict[str, Any],
+) -> None:
+    """Prefer exact rendered intervals, with legacy symbol-range fallback."""
+    if "rendered_spans" in item:
+        rendered = item.get("rendered_spans")
+        if isinstance(rendered, (list, tuple)):
+            for interval in rendered:
+                if isinstance(interval, (list, tuple)) and len(interval) == 2:
+                    _add_span(spans, file_path, interval[0], interval[1])
+        return
+    _add_span(spans, file_path, item.get("start_line"), item.get("end_line"))
+
+
 def _extract_one(tool: str, raw_result: Any, repo_root: Path | None) -> dict[str, Any]:
     result = _structured_result(raw_result)
     files: set[str] = set()
@@ -95,7 +111,7 @@ def _extract_one(tool: str, raw_result: Any, repo_root: Path | None) -> dict[str
             if path and isinstance(name, str) and name:
                 symbols[path].append(name)
             if include_spans and item.get("has_code", True):
-                _add_span(spans, path, item.get("start_line"), item.get("end_line"))
+                _add_context_item_spans(spans, path, item)
     elif tool == "read_symbol":
         path = _add_file(files, result.get("file_path"), repo_root)
         name = result.get("name")

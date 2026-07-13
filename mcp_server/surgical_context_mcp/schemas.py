@@ -72,6 +72,7 @@ class ContextItem(BaseModel):
     has_code: bool = False
     start_line: int | None = None
     end_line: int | None = None
+    rendered_spans: list[tuple[int, int]] = Field(default_factory=list)
 
 
 class BlastItem(BaseModel):

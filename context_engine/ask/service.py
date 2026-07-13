@@ -687,6 +687,7 @@ class AskService:
                 context_seeds_per_role=req.context_seeds_per_role,
                 intent_budget=req.intent_budget,
                 base_token_budget=req.token_budget,
+                span_line_rerank=req.span_line_rerank,
                 trace=trace,
                 overlay=self.overlay,
                 user_id=user_id,

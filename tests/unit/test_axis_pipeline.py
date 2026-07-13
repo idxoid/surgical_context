@@ -448,6 +448,46 @@ def test_intent_budget_defaults_to_architecture_profile(stub_stages, monkeypatch
     assert result.render_mode == "hybrid"
 
 
+def test_span_line_rerank_threads_batch_scorer_and_budget_knobs(stub_stages, monkeypatch):
+    import context_engine.axis.context_builder as _ctx_mod
+
+    class SpanLance:
+        def _embed(self, texts):
+            return [[1.0, 0.0] for _text in texts]
+
+    captured: dict = {}
+
+    def _capture(_candidates, **kwargs):
+        budget = kwargs["render_budget"]
+        captured["enabled"] = budget.span_line_rerank
+        captured["max_symbols"] = budget.span_rank_max_symbols
+        captured["max_candidates"] = budget.span_rank_max_candidates_per_symbol
+        captured["max_body_lines"] = budget.span_rank_max_body_lines
+        captured["query"] = kwargs["span_query_text"]
+        captured["scores"] = kwargs["span_score_fn"](["alpha", "beta"])
+        return []
+
+    monkeypatch.setattr(_ctx_mod, "build_context_for_candidates", _capture)
+
+    _run(
+        lance=SpanLance(),
+        question="where is alpha handled",
+        span_line_rerank=True,
+        span_rank_max_symbols=7,
+        span_rank_max_candidates_per_symbol=11,
+        span_rank_max_body_lines=5,
+    )
+
+    assert captured == {
+        "enabled": True,
+        "max_symbols": 7,
+        "max_candidates": 11,
+        "max_body_lines": 5,
+        "query": "where is alpha handled",
+        "scores": [1.0, 1.0],
+    }
+
+
 def test_intent_budget_walks_full_scope_no_passive_split(stub_stages, monkeypatch):
     import context_engine.axis.context_builder as _ctx_mod
 

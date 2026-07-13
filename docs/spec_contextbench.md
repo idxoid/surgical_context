@@ -58,6 +58,7 @@ export SURGICAL_CONTEXT_URL=http://host.docker.internal:8000
 export SURGICAL_CONTEXT_WORKSPACE=bench/django@base
 export CONTEXTBENCH_INSTANCE_ID=django__django-14434
 export CONTEXTBENCH_EVENT_LOG=/contextbench/events.jsonl
+export SURGICAL_CONTEXT_SPAN_LINE_RERANK=true  # treatment ablation only
 ```
 
 The bridge uses only the Python standard library, prints retrieved code into
@@ -159,6 +160,30 @@ The generated prediction records have this shape:
 Each MCP result remains a separate trajectory step. Final overlapping or
 adjacent line intervals are merged, while per-step intervals remain unchanged
 for ContextBench AUC and redundancy metrics.
+
+For context tools, each symbol row may carry `rendered_spans`: the exact source
+intervals represented by its current signature/compact/fold render. The adapter
+prefers these intervals over the symbol's original `start_line..end_line` and
+falls back to the original range only for legacy rows without `rendered_spans`.
+An explicit empty list means that the rendered text is synthetic and claims no
+source lines.
+
+## Within-symbol line reranking
+
+The experimental span/line ranker is opt-in. It batches query-similarity scores
+for windows inside the symbols selected by the first Token Credit pass, then
+reruns packing with at most six ranked body lines per symbol. Explicit source
+line references in the question are treated as dominant anchors. Enable it for
+the MCP treatment arm or the HTTP bridge with:
+
+```bash
+export SURGICAL_CONTEXT_SPAN_LINE_RERANK=true
+```
+
+For the internal benchmark, use `--span-line-rerank`; the candidate, symbol,
+and body-line caps are independently configurable with the corresponding
+`--span-rank-*` flags. The feature remains off by default while the ablation is
+expanded beyond the smoke set.
 
 ## Limitations (current)
 

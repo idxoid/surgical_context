@@ -196,6 +196,79 @@ def test_semantic_expansion_falls_back_to_depth_order_without_scores():
     assert [hit.uid for hit in selected] == ["direct"]
 
 
+def test_semantic_expansion_reuses_intent_inverted_test_tier_weight():
+    hits = [
+        _Hit("floor1", "floor1", "/core/floor1.py", 1, "calls"),
+        _Hit("floor2", "floor2", "/core/floor2.py", 1, "calls"),
+        _Hit("floor3", "floor3", "/core/floor3.py", 1, "calls"),
+        _Hit("core", "core", "/core/answer.py", 1, "calls"),
+        _Hit("test", "test", "/tests/test_answer.py", 1, "calls"),
+    ]
+    scoring = _FakeQueryScoring(
+        {"floor1": 0.10, "floor2": 0.11, "floor3": 0.12, "core": 0.70, "test": 0.80}
+    )
+
+    normal = _nearest_expansion_hits(
+        hits,
+        include_tests=True,
+        max_per_seed=1,
+        query_scoring=scoring,  # type: ignore[arg-type]
+        structural_reserve=0,
+        impact_mode=False,
+    )
+    impact = _nearest_expansion_hits(
+        hits,
+        include_tests=True,
+        max_per_seed=1,
+        query_scoring=scoring,  # type: ignore[arg-type]
+        structural_reserve=0,
+        impact_mode=True,
+    )
+
+    assert [hit.uid for hit in normal] == ["core"]
+    assert [hit.uid for hit in impact] == ["test"]
+
+
+def test_related_symbols_keep_request_local_semantic_annotations():
+    candidate = _make_candidate("u:seed", "seed")
+    db = _FakeDB(
+        [
+            [
+                _hit_record(
+                    "u:seed",
+                    "u:test",
+                    "test_helper",
+                    "/tests/test_helper.py",
+                    "binding_structure_expansion",
+                    1,
+                )
+            ],
+            [],
+        ]
+    )
+    lance = _FakeLance(
+        [
+            _lance_row("u:seed", "def seed(): pass"),
+            _lance_row("u:test", "def test_helper(): pass"),
+        ]
+    )
+
+    [bundle] = build_context_for_candidates(
+        [candidate],
+        workspace_id=WORKSPACE,
+        db=db,
+        lance=lance,
+        include_tests=True,
+        query_scoring=_FakeQueryScoring({"u:test": 0.8}),  # type: ignore[arg-type]
+    )
+
+    related = bundle.related[0]
+    assert related.query_similarity == pytest.approx(0.8)
+    assert related.tier_weight == pytest.approx(0.15)
+    assert related.structural_weight == pytest.approx(1.0)
+    assert related.utility_score == pytest.approx(0.15)
+
+
 def test_seed_carries_code_and_zero_depth():
     candidate = _make_candidate("u:seed", "registry")
     # Two queries are issued — one per expansion step in
