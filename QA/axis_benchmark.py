@@ -1159,6 +1159,33 @@ def _render_markdown(results: list[QuestionResult], summary: dict[str, Any]) -> 
     return "\n".join(lines) + "\n"
 
 
+def _ordered_summary_for_console(summary: dict[str, Any]) -> dict[str, Any]:
+    """Put overall_/max_ metrics just before the trailing aggregate counts.
+
+    Default ``sort_keys`` dumps ``overall_*`` above the huge ``per_question``
+    block; keep those headline numbers next to scored/seed/pool counts at the
+    end of the console JSON.
+    """
+    trailing = [
+        "full_recall_questions",
+        "pool_full_recall_questions",
+        "pool_zero_recall_questions",
+        "scored",
+        "seed_full_recall_questions",
+        "seed_zero_recall_questions",
+        "skipped",
+        "skipped_reasons",
+        "zero_recall_questions",
+    ]
+    headline = sorted(
+        key for key in summary if key.startswith(("overall_", "max_"))
+    )
+    trailing_present = [key for key in trailing if key in summary]
+    pinned = set(headline) | set(trailing_present)
+    rest = sorted(key for key in summary if key not in pinned)
+    return {key: summary[key] for key in [*rest, *headline, *trailing_present]}
+
+
 def _print_per_repo_table(summary: dict[str, Any]) -> None:
     """Print a fixed-width console table: rows = repos, columns = metrics."""
     per_repo = summary.get("per_repo") or {}
@@ -1665,7 +1692,7 @@ def main() -> None:
         encoding="utf-8",
     )
 
-    print(json.dumps(summary, indent=2, sort_keys=True, default=str))
+    print(json.dumps(_ordered_summary_for_console(summary), indent=2, default=str))
     print(f"\nfull report → {args.out}/")
     print(f"Report JSON: {summary_path}")
     _print_per_repo_table(summary)
