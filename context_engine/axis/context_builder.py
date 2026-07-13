@@ -22,6 +22,7 @@ consumer's choice (chat format, tool-use schema, etc.).
 from __future__ import annotations
 
 import heapq
+import os
 import re
 from collections import namedtuple
 from collections.abc import Callable, Iterable
@@ -47,6 +48,22 @@ _RENDER_LADDER: tuple[str, ...] = (
 )
 
 _CLASS_DEF_PREFIX = "class "
+
+# DECOUPLED-ALLOCATION experiment (exp/decoupled-allocation) — REFUTED, kept OFF.
+# When ON: force a signature-only coverage floor, then order the token-credit
+# UPGRADE phase by the seed's raw query↔node cosine (semantic-primary) instead of
+# structural utility/cost density. An offline candidate-level sim
+# (candidate_metrics.xlsx) predicted ~2.5–2.9× token_precision from this.
+# RESULT: the benchmark A/B REFUTED it — token_precision got WORSE (fastapi
+# 0.316→0.199, click 0.404→0.345; recall held 1.0). The sim was symbol-level and
+# ignored neighbor-EXPANSION tokens, which dominate the real bundle-level render;
+# seed ordering does not concentrate them, and the forced signature floor discards
+# the profile's precision-tuned rich render + _freeze_cross_file_member_bodies.
+# Left env-gated + OFF as a documented dead-end; do NOT enable. See memory
+# project-ranker-ordering-gold-blind "REFUTED IN THE REAL AUCTION".
+_AUCTION_SEMANTIC_PRIMARY = os.getenv(
+    "AXIS_AUCTION_SEMANTIC_PRIMARY", ""
+).strip().lower() in {"1", "true", "yes", "on"}
 
 
 # One expansion hit: a neighbour reached from a seed, tagged with the
@@ -2525,7 +2542,7 @@ def _enqueue_credit_upgrade(
         selected, entry_index, upgraded, printed_before=printed_tokens
     )
     semantic_delta_utility = _upgrade_semantic_value(selected, entry_index, upgraded)
-    priority = _credit_upgrade_gain(
+    structural_priority = _credit_upgrade_gain(
         static[bundle_index],
         entry_source,
         upgraded,
@@ -2535,6 +2552,20 @@ def _enqueue_credit_upgrade(
     ) / max(
         1, exact_delta
     )
+    if _AUCTION_SEMANTIC_PRIMARY:
+        # Decoupled design: order upgrades by the seed's RAW query↔node cosine so
+        # the budget flows to the most query-relevant bundles first, fully
+        # upgrading the head before the low-relevance tail is touched (which then
+        # stays at its cheap render). We deliberately use raw query_similarity,
+        # NOT the calibrated semantic_excess/_symbol_semantic_value: the
+        # median+MAD noise floor zeroes that signal for ~half the symbols
+        # (measured), destroying the ordering the sim showed works. The structural
+        # density is a bounded tie-break for ladder steps within one bundle.
+        seed_sim = entry_source.seed.query_similarity
+        seed_rank = seed_sim if seed_sim is not None else 0.0
+        priority = seed_rank + 1e-4 * structural_priority
+    else:
+        priority = structural_priority
     heapq.heappush(
         upgrade_heap,
         (-priority, entry_index, current_cost, upgraded, upgraded_cost),
@@ -2731,6 +2762,14 @@ def _apply_token_credit_budget(
         return bundles
 
     del per_transaction_share  # profile knob; leader % comes from tail noise
+
+    if _AUCTION_SEMANTIC_PRIMARY:
+        # Decoupled design needs a CHEAP coverage floor so the token budget is
+        # spent by the UPGRADE phase (where the semantic-primary ordering lives),
+        # not by a rich profile initial render. Force signature-only coverage:
+        # every file still gets a signature (recall-safe), then upgrades flow to
+        # the query-relevant head first.
+        signature_only_initial = True
 
     bundles = _dedupe_bundles_by_seed_uid(bundles)
     bundles = _freeze_cross_file_member_bodies(bundles)
