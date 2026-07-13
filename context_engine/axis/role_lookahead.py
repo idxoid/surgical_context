@@ -37,8 +37,10 @@ from context_engine.axis.graph_walk import EdgeProfile, walk_neighbours
 from context_engine.axis.kind_rows import flat_kinds
 from context_engine.axis.role_resolver import ROLE_EVIDENCE_MAP
 from context_engine.axis.role_retrieval import (
+    QueryScoringContext,
     RoleCandidate,
     _combined_score,
+    _cosine_from_l2_distance,
     _scan_distances,
     _semantic_score,
 )
@@ -267,6 +269,8 @@ def _lookahead_injection_candidate(
         kind_count=len(evidence_kinds),
         vector_distance=distance,
         score=_combined_score(base_score, _semantic_score(distance), distance is not None),
+        query_similarity=_cosine_from_l2_distance(distance),
+        graph_score=base_score,
     )
 
 
@@ -354,6 +358,8 @@ def _auto_promote_lookahead_roles(
                     score=_combined_score(
                         base_score, _semantic_score(distance), distance is not None
                     ),
+                    query_similarity=_cosine_from_l2_distance(distance),
+                    graph_score=base_score,
                 )
             )
         out[target_role] = injected[:max_injected_per_role]
@@ -464,6 +470,7 @@ def expand_candidates_via_neighbourhood(
     prescanned=None,
     query_text: str | None = None,
     embed_fn=None,
+    query_scoring: QueryScoringContext | None = None,
 ) -> dict[str, list[RoleCandidate]]:
     """Walk K hops from every role's candidates and use the
     container_kinds of the reached neighbours two ways:
@@ -500,7 +507,7 @@ def expand_candidates_via_neighbourhood(
     # Query distances for injected candidates, looked up off the prescanned
     # matrix (one vectorised pass; no per-row loops). Neighbours outside the
     # scan (e.g. test-fenced rows) fall back to the flat ``base_score``.
-    distances = (
+    distances = query_scoring.distances if query_scoring is not None else (
         _scan_distances(prescanned, query_text, embed_fn)
         if prescanned is not None and query_text and embed_fn is not None
         else None

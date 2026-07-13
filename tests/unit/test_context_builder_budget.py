@@ -12,6 +12,7 @@ import pytest
 from context_engine.axis.context_builder import (
     ContextBundle,
     ContextSymbol,
+    TokenCreditTrace,
     _apply_render_and_budget,
     _bundle_token_count,
     _code_compact,
@@ -508,6 +509,168 @@ def _bundle(
 def test_no_budget_no_render_is_passthrough():
     bundles = [_bundle("a", "x" * 40, [("b", "y" * 40)])]
     assert _apply_render_and_budget(bundles, token_budget=None, render_mode="full") == bundles
+
+
+def test_token_credit_trace_records_exact_marginal_utility_per_token():
+    bundles = [
+        ContextBundle(
+            role="r1",
+            seed=_sym("a", "def a():\n    return 1\n", file_path="/a.py"),
+            utility_score=0.9,
+        ),
+        ContextBundle(
+            role="r2",
+            seed=_sym("b", "def b():\n    return 2\n", file_path="/b.py"),
+            utility_score=0.5,
+        ),
+    ]
+    trace = TokenCreditTrace()
+
+    out = _apply_render_and_budget(
+        bundles,
+        token_budget=100,
+        render_mode="signature_only",
+        credit_trace=trace,
+    )
+
+    assert len(out) == 2
+    assert trace.transactions
+    assert sum(transaction.phase == "coverage" for transaction in trace.transactions) == 2
+    assert trace.used_tokens == sum(transaction.delta_tokens for transaction in trace.transactions)
+    assert trace.cumulative_utility == pytest.approx(
+        sum(transaction.delta_utility for transaction in trace.transactions)
+    )
+    for transaction in trace.transactions:
+        assert transaction.utility_per_token == pytest.approx(
+            transaction.delta_utility / max(1, transaction.delta_tokens)
+        )
+        assert transaction.effective_utility >= 0.001
+        assert transaction.effective_utility_per_token == pytest.approx(
+            transaction.effective_utility / max(1, transaction.delta_tokens)
+        )
+    assert trace.transactions[-1].cumulative_tokens == trace.used_tokens
+    assert trace.transactions[-1].cumulative_utility == pytest.approx(trace.cumulative_utility)
+
+
+def test_token_credit_trace_does_not_change_render_selection_and_records_upgrades():
+    bundle = ContextBundle(
+        role="r",
+        seed=_sym("upgrade", "def upgrade():\n    return 1\n", file_path="/upgrade.py"),
+        utility_score=1.0,
+    )
+    trace = TokenCreditTrace()
+
+    with_trace = _apply_render_and_budget(
+        [bundle], token_budget=100, render_mode="full", credit_trace=trace
+    )
+    without_trace = _apply_render_and_budget([bundle], token_budget=100, render_mode="full")
+
+    assert with_trace == without_trace
+    assert trace.transactions[0].phase == "coverage"
+    assert any(transaction.phase.startswith("upgrade_") for transaction in trace.transactions)
+
+
+def test_token_credit_density_cutoff_rejects_paid_nonpositive_tail_only_when_enabled():
+    bundles = [
+        ContextBundle(
+            role="r",
+            seed=_sym(f"u{i}", f"def u{i}():\n    return {i}\n", file_path="/same.py"),
+            utility_score=0.0,
+        )
+        for i in range(8)
+    ]
+    trace = TokenCreditTrace()
+
+    baseline = _apply_render_and_budget(
+        bundles,
+        token_budget=1_000,
+        render_mode="signature_only",
+    )
+    cut = _apply_render_and_budget(
+        bundles,
+        token_budget=1_000,
+        render_mode="signature_only",
+        min_utility_per_token=0.0,
+        credit_trace=trace,
+    )
+
+    assert len(cut) < len(baseline)
+    assert cut
+    assert trace.cutoff_density == pytest.approx(0.0)
+    assert trace.cutoff_rejections > 0
+    assert all(
+        transaction.delta_utility > 0
+        for transaction in trace.transactions
+        if transaction.phase == "coverage" and transaction.delta_tokens > 0
+    )
+
+
+def test_token_credit_plateau_freeze_leaves_rejected_budget_unspent():
+    bundles = [
+        ContextBundle(
+            role="r",
+            seed=_sym(f"p{i}", f"def p{i}():\n    return {i}\n", file_path="/same.py"),
+            utility_score=0.0,
+        )
+        for i in range(8)
+    ]
+    trace = TokenCreditTrace()
+
+    _apply_render_and_budget(
+        bundles,
+        token_budget=1_000,
+        render_mode="full",
+        min_utility_per_token=0.0,
+        freeze_at_utility_plateau=True,
+        credit_trace=trace,
+    )
+
+    assert trace.cutoff_rejections > 0
+    assert trace.spend_ceiling < trace.token_budget
+    assert trace.used_tokens <= trace.spend_ceiling
+
+
+def test_token_credit_plateau_freeze_can_reserve_budget_for_upgrades():
+    bundles = [
+        ContextBundle(
+            role="r",
+            seed=_sym(
+                f"p{i}",
+                f"def p{i}():\n    return {' + '.join(str(n) for n in range(40))}\n",
+                file_path="/same.py",
+            ),
+            utility_score=0.0,
+        )
+        for i in range(8)
+    ]
+    frozen_trace = TokenCreditTrace()
+    reserve_trace = TokenCreditTrace()
+
+    _apply_render_and_budget(
+        bundles,
+        token_budget=1_000,
+        render_mode="full",
+        min_utility_per_token=0.0,
+        freeze_at_utility_plateau=True,
+        credit_trace=frozen_trace,
+    )
+    _apply_render_and_budget(
+        bundles,
+        token_budget=1_000,
+        render_mode="full",
+        min_utility_per_token=0.0,
+        freeze_at_utility_plateau=True,
+        plateau_upgrade_reserve_share=0.25,
+        credit_trace=reserve_trace,
+    )
+
+    assert frozen_trace.cutoff_rejections > 0
+    assert reserve_trace.cutoff_rejections == frozen_trace.cutoff_rejections
+    assert reserve_trace.spend_ceiling == min(
+        reserve_trace.token_budget,
+        frozen_trace.spend_ceiling + 250,
+    )
+    assert reserve_trace.used_tokens <= reserve_trace.spend_ceiling
 
 
 def test_impact_surface_collapses_multiline_signature_to_one_line():

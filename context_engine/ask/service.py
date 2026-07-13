@@ -721,6 +721,8 @@ class AskService:
                     kind_count=c.kind_count,
                     vector_distance=c.vector_distance,
                     score=c.score,
+                    query_similarity=c.query_similarity,
+                    graph_score=c.graph_score,
                 )
                 for c in candidates
             ]

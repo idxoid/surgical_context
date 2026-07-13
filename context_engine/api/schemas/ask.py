@@ -69,6 +69,8 @@ class AxisCandidateResponse(BaseModel):
     kind_count: int = 0
     vector_distance: float | None
     score: float
+    query_similarity: float | None = None
+    graph_score: float | None = None
 
 
 class AxisContextSymbolResponse(BaseModel):

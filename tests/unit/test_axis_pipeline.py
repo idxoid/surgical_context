@@ -21,7 +21,14 @@ from context_engine.axis.role_retrieval import RoleCandidate, WorkspaceScan
 from context_engine.observability.metrics import RequestTrace
 
 
-def _cand(uid: str, path: str, *, score: float = 0.8) -> RoleCandidate:
+def _cand(
+    uid: str,
+    path: str,
+    *,
+    score: float = 0.8,
+    utility_score: float | None = None,
+    query_similarity: float | None = None,
+) -> RoleCandidate:
     return RoleCandidate(
         uid=uid,
         name=uid,
@@ -33,6 +40,8 @@ def _cand(uid: str, path: str, *, score: float = 0.8) -> RoleCandidate:
         kind_count=0,
         vector_distance=0.5,
         score=score,
+        utility_score=utility_score,
+        query_similarity=query_similarity,
     )
 
 
@@ -477,6 +486,15 @@ def test_intent_budget_threads_proximity_utility_to_context_builder(stub_stages,
     assert utility_score_fn is not None
     assert utility_score_fn(_cand("near", "/x/near.py", score=0.5)) == pytest.approx(0.65)
     assert utility_score_fn(_cand("far", "/elsewhere/far.py", score=0.5)) == pytest.approx(0.5)
+    assert utility_score_fn(
+        _cand(
+            "semantic",
+            "/elsewhere/semantic.py",
+            score=0.25,
+            utility_score=0.9,
+            query_similarity=0.7,
+        )
+    ) == pytest.approx(0.25)
 
 
 def test_seed_files_use_doc_anchor_bridge_not_doc_anchor_owners(stub_stages, monkeypatch):

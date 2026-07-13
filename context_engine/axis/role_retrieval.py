@@ -67,6 +67,15 @@ class RoleCandidate:
     depth: int | None = None
     edge_type: str = ""
     utility_score: float | None = None
+    # Raw query↔node cosine similarity in [-1, 1].  ``None`` means that
+    # semantic relevance has not yet been folded into ``score``.  Keeping
+    # this separate prevents the final pool reranker from applying the same
+    # signal twice to role/vector/lookahead seeds.
+    query_similarity: float | None = None
+    # Structural component before semantic blending, when the producer has
+    # one.  Older/specialised producers may leave it unset; the pool reranker
+    # then treats their current ``score`` as the structural baseline.
+    graph_score: float | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -84,6 +93,8 @@ class RoleCandidate:
             "depth": self.depth,
             "edge_type": self.edge_type,
             "utility_score": self.utility_score,
+            "query_similarity": self.query_similarity,
+            "graph_score": self.graph_score,
         }
 
 
@@ -111,14 +122,23 @@ def _structural_score(
 
 
 def _semantic_score(distance: float | None) -> float:
-    """Map L2 distance to ``[0, 1]`` (1 = exact match, 0 = far).
-    Identity ordering: small distance → high score.
+    """Map unit-vector L2 distance to cosine similarity in ``[0, 1]``.
+
+    SentenceTransformer symbol vectors are L2-normalised, therefore
+    ``cos(a, b) = 1 - ||a-b||²/2``.  The shifted value keeps the public score
+    range stable while preserving cosine ordering.
     """
     if distance is None:
         return 0.0
-    if distance <= 0:
-        return 1.0
-    return max(0.0, 1.0 / (1.0 + float(distance)))
+    cosine = _cosine_from_l2_distance(float(distance))
+    return max(0.0, min(1.0, (1.0 + cosine) / 2.0))
+
+
+def _cosine_from_l2_distance(distance: float | None) -> float | None:
+    """Return raw cosine similarity for L2-normalised embeddings."""
+    if distance is None:
+        return None
+    return max(-1.0, min(1.0, 1.0 - float(distance) ** 2 / 2.0))
 
 
 def _combined_score(
@@ -186,6 +206,8 @@ class WorkspaceScan:
     kind_index: dict[str, tuple[int, ...]] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
+        for index, row in enumerate(self.rows):
+            row.setdefault("_idx", index)
         if not self.rows_by_uid:
             self.rows_by_uid = {
                 str(row.get("uid") or ""): row for row in self.rows if row.get("uid")
@@ -200,6 +222,39 @@ class WorkspaceScan:
                     kind_hits[kind].append(i)
             self.contract_index = {k: tuple(v) for k, v in contract_hits.items()}
             self.kind_index = {k: tuple(v) for k, v in kind_hits.items()}
+
+
+@dataclass(frozen=True)
+class QueryScoringContext:
+    """Request-local query vector and vectorised query↔symbol scores.
+
+    The workspace matrix is scanned once per request.  Every retrieval pass
+    then performs an O(1) uid lookup instead of embedding the same question
+    and recomputing the full distance array independently.
+    """
+
+    scan: WorkspaceScan
+    query_vector: Any
+    distances: Any
+    similarities: Any
+
+    def distance_for(self, uid: str) -> float | None:
+        row = self.scan.rows_by_uid.get(uid)
+        if row is None:
+            return None
+        idx = row.get("_idx")
+        if idx is None:
+            return None
+        return float(self.distances[int(idx)])
+
+    def similarity_for(self, uid: str) -> float | None:
+        row = self.scan.rows_by_uid.get(uid)
+        if row is None:
+            return None
+        idx = row.get("_idx")
+        if idx is None:
+            return None
+        return float(self.similarities[int(idx)])
 
 
 def invalidate_workspace_scan_cache(workspace_id: str | None = None) -> None:
@@ -440,6 +495,7 @@ def _candidate_from_role_row(
         total_kinds,
     )
     semantic = _semantic_score(distance)
+    query_similarity = _cosine_from_l2_distance(distance)
     tier_w = _tier_weight(row.get("file_tier"), impact_mode=impact_mode)
     return RoleCandidate(
         uid=str(row.get("uid") or ""),
@@ -453,6 +509,8 @@ def _candidate_from_role_row(
         kind_count=len(matched_kinds),
         vector_distance=(float(distance) if distance is not None else None),
         score=_combined_score(structural, semantic, has_query) * tier_w,
+        query_similarity=query_similarity,
+        graph_score=structural * tier_w,
     )
 
 
@@ -497,6 +555,7 @@ def find_symbols_by_roles(
     embed_fn=None,
     include_tests: bool = False,
     prescanned: WorkspaceScan | None = None,
+    query_scoring: QueryScoringContext | None = None,
 ) -> dict[str, list[RoleCandidate]]:
     """Batch role retrieval off a single scan.
 
@@ -515,7 +574,11 @@ def find_symbols_by_roles(
         )
     )
     has_query = bool(query_text and embed_fn is not None)
-    distances = _scan_distances(scan, query_text, embed_fn) if has_query else None
+    distances = (
+        query_scoring.distances
+        if has_query and query_scoring is not None
+        else (_scan_distances(scan, query_text, embed_fn) if has_query else None)
+    )
     impact_mode = bool(_MODE_ROLES & set(roles))
     return {
         role: _candidates_for_role(
@@ -582,6 +645,7 @@ def find_seeds_by_vector(
     include_tests: bool = False,
     impact_mode: bool = False,
     prescanned: WorkspaceScan | None = None,
+    query_scoring: QueryScoringContext | None = None,
 ) -> list[RoleCandidate]:
     """Role-AGNOSTIC vector seed retrieval — top-``limit`` symbols by
     embedding similarity, with NO role/kind filter.
@@ -612,7 +676,11 @@ def find_seeds_by_vector(
     )
     if not scan.rows or scan.vectors is None:
         return []
-    distances = _scan_distances(scan, query_text, embed_fn)
+    distances = (
+        query_scoring.distances
+        if query_scoring is not None
+        else _scan_distances(scan, query_text, embed_fn)
+    )
     if distances is None:
         return []
 
@@ -658,6 +726,12 @@ def find_seeds_by_vector(
                 kind_count=0,
                 vector_distance=distance,
                 score=_semantic_score(distance) * tier_w,
+                query_similarity=(
+                    query_scoring.similarity_for(str(row.get("uid") or ""))
+                    if query_scoring is not None
+                    else _cosine_from_l2_distance(distance)
+                ),
+                graph_score=0.0,
             )
         )
     return out
@@ -691,6 +765,93 @@ def _vectorised_distances(vectors, query_text, embed_fn):
         return None
 
 
+def _scan_scores_from_vector(scan: WorkspaceScan, query_vector):
+    """Return dual-facet ``(distance, cosine)`` arrays for one query vector.
+
+    Indexed SentenceTransformer vectors are L2-normalised, so one fast
+    matrix-vector product produces cosine directly; L2 follows as
+    ``sqrt(2 - 2*cos)``.  Non-normalised query vectors (legacy/test embedders)
+    use the general L2 fallback.
+    """
+    if scan.vectors is None or query_vector is None:
+        return None
+    try:
+        import numpy as np
+
+        qv = query_vector.tolist() if hasattr(query_vector, "tolist") else query_vector
+        qv = np.asarray(qv, dtype=scan.vectors.dtype)
+        query_norm = float(np.linalg.norm(qv))
+
+        def _looks_normalised(matrix) -> bool:
+            sample_step = max(1, int(matrix.shape[0]) // 64)
+            sample = matrix[::sample_step][:64]
+            return bool(np.all(np.abs(np.linalg.norm(sample, axis=1) - 1.0) <= 1e-3))
+
+        sig = scan.signature_vectors
+        normalised_facets = _looks_normalised(scan.vectors) and (
+            sig is None or _looks_normalised(sig)
+        )
+        if abs(query_norm - 1.0) <= 1e-3 and normalised_facets:
+            similarities = scan.vectors @ qv
+            if sig is not None and getattr(sig, "shape", (0,))[0] == similarities.shape[0]:
+                similarities = np.maximum(similarities, sig @ qv)
+            similarities = np.clip(similarities, -1.0, 1.0)
+            distances = np.sqrt(np.maximum(0.0, 2.0 - 2.0 * similarities))
+            return distances, similarities
+
+        body_distances = np.linalg.norm(scan.vectors - qv, axis=1)
+        distances = body_distances
+        if sig is not None and getattr(sig, "shape", (0,))[0] == body_distances.shape[0]:
+            sig_distances = np.linalg.norm(sig - qv, axis=1)
+            distances = np.minimum(body_distances, sig_distances)
+        if query_norm <= 1e-12:
+            similarities = np.zeros_like(distances, dtype=float)
+        else:
+            body_norms = np.linalg.norm(scan.vectors, axis=1) * query_norm
+            similarities = np.divide(
+                scan.vectors @ qv,
+                body_norms,
+                out=np.zeros_like(distances, dtype=float),
+                where=body_norms > 1e-12,
+            )
+            if sig is not None and getattr(sig, "shape", (0,))[0] == distances.shape[0]:
+                sig_norms = np.linalg.norm(sig, axis=1) * query_norm
+                sig_similarities = np.divide(
+                    sig @ qv,
+                    sig_norms,
+                    out=np.zeros_like(distances, dtype=float),
+                    where=sig_norms > 1e-12,
+                )
+                similarities = np.maximum(similarities, sig_similarities)
+        return distances, np.clip(similarities, -1.0, 1.0)
+    except Exception:
+        return None
+
+
+def build_query_scoring_context(
+    scan: WorkspaceScan,
+    query_text: str,
+    embed_fn,
+) -> QueryScoringContext | None:
+    """Embed the question once and score the workspace matrices once."""
+    if scan.vectors is None or not query_text or embed_fn is None:
+        return None
+    try:
+        query_vector = embed_fn(query_text)
+    except Exception:
+        return None
+    scores = _scan_scores_from_vector(scan, query_vector)
+    if scores is None:
+        return None
+    distances, similarities = scores
+    return QueryScoringContext(
+        scan=scan,
+        query_vector=query_vector,
+        distances=distances,
+        similarities=similarities,
+    )
+
+
 def _scan_distances(scan: WorkspaceScan, query_text, embed_fn):
     """Dual-facet L2 distance: the element-wise MINIMUM of the body-vector
     distance and the signature-vector distance, embedding the query once.
@@ -700,22 +861,8 @@ def _scan_distances(scan: WorkspaceScan, query_text, embed_fn):
     body diluted the body vector, without weakening behavioural matches.
     Falls back to the body distance when the signature facet is absent
     (pre-facet index)."""
-    if scan.vectors is None or not query_text or embed_fn is None:
-        return None
-    try:
-        import numpy as np
-
-        qv = embed_fn(query_text)
-        if hasattr(qv, "tolist"):
-            qv = qv.tolist()
-        qv = np.asarray(qv, dtype=scan.vectors.dtype)
-        body = np.linalg.norm(scan.vectors - qv, axis=1)
-        sig = scan.signature_vectors
-        if sig is not None and getattr(sig, "shape", (0,))[0] == body.shape[0]:
-            return np.minimum(body, np.linalg.norm(sig - qv, axis=1))
-        return body
-    except Exception:
-        return None
+    context = build_query_scoring_context(scan, query_text, embed_fn)
+    return None if context is None else context.distances
 
 
 def _doc_anchor_lance_client(lance):
@@ -854,6 +1001,8 @@ def _doc_anchor_candidate(
         kind_count=0,
         vector_distance=distance,
         score=_semantic_score(distance) * tier_w,
+        query_similarity=_cosine_from_l2_distance(distance),
+        graph_score=0.0,
     )
 
 
@@ -868,6 +1017,7 @@ def find_seeds_by_doc_anchor(
     impact_mode: bool = False,
     prescanned: WorkspaceScan | None = None,
     lance=None,
+    query_scoring: QueryScoringContext | None = None,
 ) -> list[RoleCandidate]:
     """Vector-search in-code docstring anchors → owner symbol seeds."""
     if not query_text or embed_fn is None:
@@ -890,7 +1040,10 @@ def find_seeds_by_doc_anchor(
         )
     )
 
-    qv_arr = _doc_anchor_query_vector(query_text, embed_fn)
+    qv_arr = _doc_anchor_query_vector(
+        query_text,
+        (lambda _text: query_scoring.query_vector) if query_scoring is not None else embed_fn,
+    )
     if qv_arr is None:
         return []
 
@@ -909,8 +1062,10 @@ def find_seeds_by_doc_anchor(
 
 
 __all__ = [
+    "QueryScoringContext",
     "RoleCandidate",
     "WorkspaceScan",
+    "build_query_scoring_context",
     "find_seeds_by_doc_anchor",
     "find_seeds_by_vector",
     "find_symbols_by_role",

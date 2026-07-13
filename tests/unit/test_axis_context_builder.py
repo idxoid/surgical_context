@@ -7,11 +7,24 @@ from typing import Any
 
 import pytest
 
-from context_engine.axis.context_builder import ContextRenderBudget, build_context_for_candidates
+from context_engine.axis.context_builder import (
+    ContextRenderBudget,
+    _Hit,
+    _nearest_expansion_hits,
+    build_context_for_candidates,
+)
 from context_engine.axis.role_retrieval import RoleCandidate
 from tests.unit.axis_helpers import axis_test_file_path
 
 WORKSPACE = "qa_repo/test@axis"
+
+
+class _FakeQueryScoring:
+    def __init__(self, similarities: dict[str, float]):
+        self._similarities = similarities
+
+    def similarity_for(self, uid: str) -> float | None:
+        return self._similarities.get(uid)
 
 
 class _Result:
@@ -146,6 +159,41 @@ def test_empty_candidates_returns_empty():
     db = _FakeDB([])
     lance = _FakeLance([])
     assert build_context_for_candidates([], workspace_id=WORKSPACE, db=db, lance=lance) == []
+
+
+def test_semantic_expansion_can_select_relevant_depth_two_over_depth_one_noise():
+    hits = [
+        _Hit("bridge", "a_bridge", "/bridge.py", 1, "calls"),
+        _Hit("noise", "b_noise", "/noise.py", 1, "calls"),
+        _Hit("relevant", "z_relevant", "/relevant.py", 2, "calls"),
+    ]
+    scoring = _FakeQueryScoring({"bridge": 0.10, "noise": 0.11, "relevant": 0.80})
+
+    selected = _nearest_expansion_hits(
+        hits,
+        include_tests=True,
+        max_per_seed=2,
+        query_scoring=scoring,  # type: ignore[arg-type]
+        structural_reserve=1,
+    )
+
+    assert [hit.uid for hit in selected] == ["bridge", "relevant"]
+
+
+def test_semantic_expansion_falls_back_to_depth_order_without_scores():
+    hits = [
+        _Hit("deep", "a_deep", "/deep.py", 2, "calls"),
+        _Hit("direct", "z_direct", "/direct.py", 1, "calls"),
+    ]
+
+    selected = _nearest_expansion_hits(
+        hits,
+        include_tests=True,
+        max_per_seed=1,
+        query_scoring=_FakeQueryScoring({}),  # type: ignore[arg-type]
+    )
+
+    assert [hit.uid for hit in selected] == ["direct"]
 
 
 def test_seed_carries_code_and_zero_depth():

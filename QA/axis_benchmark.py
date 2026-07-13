@@ -543,6 +543,21 @@ def _run_axis_retrieval_for_question(
     render_mode_override: str | None,
     ignore_anchor: bool,
     hook_transparency: bool,
+    query_node_rerank: bool,
+    query_node_semantic_weight: float,
+    query_node_mode_semantic_weight: float,
+    query_node_ordering_mode: str,
+    query_node_blend_alpha: float,
+    query_node_mode_blend_alpha: float,
+    query_node_rrf_weight: float,
+    query_node_mode_rrf_weight: float,
+    query_node_rrf_k: int,
+    token_credit_min_utility_per_token: float | None,
+    token_credit_freeze_at_plateau: bool,
+    token_credit_plateau_upgrade_reserve_share: float,
+    context_semantic_expansion: bool,
+    context_semantic_expansion_alpha: float,
+    context_semantic_expansion_structural_reserve: int,
 ) -> Any:
     return run_axis_retrieval(
         result.question,
@@ -565,6 +580,25 @@ def _run_axis_retrieval_for_question(
             ),
             anchor_symbol=(str(question_entry.get("symbol") or "") or None),
             hook_transparency=hook_transparency,
+            query_node_rerank=query_node_rerank,
+            query_node_semantic_weight=query_node_semantic_weight,
+            query_node_mode_semantic_weight=query_node_mode_semantic_weight,
+            query_node_ordering_mode=query_node_ordering_mode,
+            query_node_blend_alpha=query_node_blend_alpha,
+            query_node_mode_blend_alpha=query_node_mode_blend_alpha,
+            query_node_rrf_weight=query_node_rrf_weight,
+            query_node_mode_rrf_weight=query_node_mode_rrf_weight,
+            query_node_rrf_k=query_node_rrf_k,
+            token_credit_min_utility_per_token=token_credit_min_utility_per_token,
+            token_credit_freeze_at_plateau=token_credit_freeze_at_plateau,
+            token_credit_plateau_upgrade_reserve_share=(
+                token_credit_plateau_upgrade_reserve_share
+            ),
+            context_semantic_expansion=context_semantic_expansion,
+            context_semantic_expansion_alpha=context_semantic_expansion_alpha,
+            context_semantic_expansion_structural_reserve=(
+                context_semantic_expansion_structural_reserve
+            ),
             trace=timer,
         ),
     )
@@ -586,6 +620,21 @@ def run_question(
     render_mode_override: str | None = None,
     ignore_anchor: bool = False,
     hook_transparency: bool = False,
+    query_node_rerank: bool = True,
+    query_node_semantic_weight: float = 0.20,
+    query_node_mode_semantic_weight: float = 0.05,
+    query_node_ordering_mode: str = "calibrated_blend",
+    query_node_blend_alpha: float = 0.40,
+    query_node_mode_blend_alpha: float = 0.10,
+    query_node_rrf_weight: float = 1.0,
+    query_node_mode_rrf_weight: float = 0.25,
+    query_node_rrf_k: int = 60,
+    token_credit_min_utility_per_token: float | None = None,
+    token_credit_freeze_at_plateau: bool = False,
+    token_credit_plateau_upgrade_reserve_share: float = 0.0,
+    context_semantic_expansion: bool = True,
+    context_semantic_expansion_alpha: float = 0.70,
+    context_semantic_expansion_structural_reserve: int = 1,
     workspace_overrides: dict[str, str] | None = None,
 ) -> QuestionResult:
     result = _question_result_from_entry(question_entry)
@@ -623,6 +672,25 @@ def run_question(
         render_mode_override=render_mode_override,
         ignore_anchor=ignore_anchor,
         hook_transparency=hook_transparency,
+        query_node_rerank=query_node_rerank,
+        query_node_semantic_weight=query_node_semantic_weight,
+        query_node_mode_semantic_weight=query_node_mode_semantic_weight,
+        query_node_ordering_mode=query_node_ordering_mode,
+        query_node_blend_alpha=query_node_blend_alpha,
+        query_node_mode_blend_alpha=query_node_mode_blend_alpha,
+        query_node_rrf_weight=query_node_rrf_weight,
+        query_node_mode_rrf_weight=query_node_mode_rrf_weight,
+        query_node_rrf_k=query_node_rrf_k,
+        token_credit_min_utility_per_token=token_credit_min_utility_per_token,
+        token_credit_freeze_at_plateau=token_credit_freeze_at_plateau,
+        token_credit_plateau_upgrade_reserve_share=(
+            token_credit_plateau_upgrade_reserve_share
+        ),
+        context_semantic_expansion=context_semantic_expansion,
+        context_semantic_expansion_alpha=context_semantic_expansion_alpha,
+        context_semantic_expansion_structural_reserve=(
+            context_semantic_expansion_structural_reserve
+        ),
     )
     # Post-processing cost: the ``context`` stage is the build_context graph
     # expansion + per-uid code fetch; rendered_tokens is the token volume of
@@ -1360,6 +1428,68 @@ def main() -> None:
         "flag is the off-arm for an on/off A/B.",
     )
     parser.add_argument(
+        "--no-query-node-rerank",
+        dest="query_node_rerank",
+        action="store_false",
+        default=True,
+        help="Disable the final query↔node semantic Pool rerank for an A/B baseline.",
+    )
+    parser.add_argument(
+        "--query-node-weight",
+        type=float,
+        default=0.20,
+        help="Semantic boost weight for ordinary graph-only Pool candidates.",
+    )
+    parser.add_argument(
+        "--query-node-mode-weight",
+        type=float,
+        default=0.05,
+        help="Lower semantic boost weight for impact/trace candidates.",
+    )
+    parser.add_argument(
+        "--query-node-ordering",
+        choices=["legacy_boost", "calibrated_blend", "rrf"],
+        default="calibrated_blend",
+        help="Pool ordering strategy after query↔node annotation.",
+    )
+    parser.add_argument("--query-node-blend-alpha", type=float, default=0.40)
+    parser.add_argument("--query-node-mode-blend-alpha", type=float, default=0.10)
+    parser.add_argument("--query-node-rrf-weight", type=float, default=1.0)
+    parser.add_argument("--query-node-mode-rrf-weight", type=float, default=0.25)
+    parser.add_argument("--query-node-rrf-k", type=int, default=60)
+    parser.add_argument(
+        "--min-utility-per-token",
+        type=float,
+        default=None,
+        help="Experimental Token Credit cutoff; unset preserves full-budget selection.",
+    )
+    parser.add_argument(
+        "--freeze-at-utility-plateau",
+        action="store_true",
+        help="Leave budget unused after density cutoff; allow only free/reclaim upgrades.",
+    )
+    parser.add_argument(
+        "--plateau-upgrade-reserve-share",
+        type=float,
+        default=0.0,
+        help="Budget share reserved for paid upgrades after a frozen coverage plateau.",
+    )
+    parser.add_argument(
+        "--context-semantic-expansion",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help=(
+            "Select dependency-solver context neighbours by query similarity with "
+            "a structural reserve."
+        ),
+    )
+    parser.add_argument("--context-semantic-expansion-alpha", type=float, default=0.70)
+    parser.add_argument(
+        "--context-semantic-expansion-structural-reserve",
+        type=int,
+        default=1,
+    )
+    parser.add_argument(
         "--compare",
         type=Path,
         default=None,
@@ -1375,11 +1505,20 @@ def main() -> None:
         default=None,
         help="Run only questions whose ``repo`` field matches this id",
     )
+    parser.add_argument(
+        "--exclude-repo",
+        action="append",
+        default=[],
+        help="Exclude a repository id from the pack; repeat for multiple ids.",
+    )
     args = parser.parse_args()
 
     questions = _load_pack(args.pack)
     if args.repo:
         questions = [q for q in questions if q.get("repo") == args.repo]
+    if args.exclude_repo:
+        excluded_repos = set(args.exclude_repo)
+        questions = [q for q in questions if q.get("repo") not in excluded_repos]
     if not questions:
         target = f"{args.pack}" + (f" repo={args.repo!r}" if args.repo else "")
         print(f"no questions in {target}")
@@ -1431,6 +1570,25 @@ def main() -> None:
             render_mode_override=args.render_mode,
             ignore_anchor=args.no_proximity,
             hook_transparency=args.hook_transparency,
+            query_node_rerank=args.query_node_rerank,
+            query_node_semantic_weight=args.query_node_weight,
+            query_node_mode_semantic_weight=args.query_node_mode_weight,
+            query_node_ordering_mode=args.query_node_ordering,
+            query_node_blend_alpha=args.query_node_blend_alpha,
+            query_node_mode_blend_alpha=args.query_node_mode_blend_alpha,
+            query_node_rrf_weight=args.query_node_rrf_weight,
+            query_node_mode_rrf_weight=args.query_node_mode_rrf_weight,
+            query_node_rrf_k=args.query_node_rrf_k,
+            token_credit_min_utility_per_token=args.min_utility_per_token,
+            token_credit_freeze_at_plateau=args.freeze_at_utility_plateau,
+            token_credit_plateau_upgrade_reserve_share=(
+                args.plateau_upgrade_reserve_share
+            ),
+            context_semantic_expansion=args.context_semantic_expansion,
+            context_semantic_expansion_alpha=args.context_semantic_expansion_alpha,
+            context_semantic_expansion_structural_reserve=(
+                args.context_semantic_expansion_structural_reserve
+            ),
         )
         results.append(res)
         question_seconds = time.monotonic() - question_started
@@ -1466,9 +1624,31 @@ def main() -> None:
         "max_impacted": args.max_impacted,
         "context_seeds_per_role": args.context_seeds_per_role,
         "intent_budget": args.intent_budget,
+        "query_node_rerank": args.query_node_rerank,
+        "query_node_semantic_weight": args.query_node_weight,
+        "query_node_mode_semantic_weight": args.query_node_mode_weight,
+        "query_node_ordering_mode": args.query_node_ordering,
+        "query_node_blend_alpha": args.query_node_blend_alpha,
+        "query_node_mode_blend_alpha": args.query_node_mode_blend_alpha,
+        "query_node_rrf_weight": args.query_node_rrf_weight,
+        "query_node_mode_rrf_weight": args.query_node_mode_rrf_weight,
+        "query_node_rrf_k": args.query_node_rrf_k,
+        "token_credit_min_utility_per_token": args.min_utility_per_token,
+        "token_credit_freeze_at_plateau": args.freeze_at_utility_plateau,
+        "token_credit_plateau_upgrade_reserve_share": (
+            args.plateau_upgrade_reserve_share
+        ),
+        "context_semantic_expansion": args.context_semantic_expansion,
+        "context_semantic_expansion_alpha": args.context_semantic_expansion_alpha,
+        "context_semantic_expansion_structural_reserve": (
+            args.context_semantic_expansion_structural_reserve
+        ),
+        "context_semantic_expansion_roles": ["dependency_solver"],
     }
     if args.repo:
         summary["repo_filter"] = args.repo
+    if args.exclude_repo:
+        summary["excluded_repos"] = sorted(set(args.exclude_repo))
 
     args.out.mkdir(parents=True, exist_ok=True)
     summary_path = args.out / "summary.json"

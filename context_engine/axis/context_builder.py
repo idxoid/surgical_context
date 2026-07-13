@@ -30,7 +30,8 @@ from pathlib import Path
 from typing import Any, cast
 
 from context_engine.axis.graph_walk import steps_for_mode, walk_neighbours_grouped
-from context_engine.axis.role_retrieval import RoleCandidate
+from context_engine.axis.query_node_ranking import semantic_noise_floor
+from context_engine.axis.role_retrieval import QueryScoringContext, RoleCandidate
 from context_engine.axis.test_file_filter import is_test_path
 from context_engine.observability.metrics import estimate_text_tokens
 
@@ -123,6 +124,132 @@ class ContextRenderBudget:
     per_transaction_share: float = 0.10
     file_soft_cap_share: float = 0.25
     signature_only_initial: bool = False
+    min_utility_per_token: float | None = None
+    freeze_at_utility_plateau: bool = False
+    plateau_upgrade_reserve_share: float = 0.0
+
+
+@dataclass(frozen=True)
+class TokenCreditTransaction:
+    """One accepted marginal purchase in the Token Credit packer."""
+
+    phase: str
+    uid: str
+    role: str
+    render_mode: str
+    delta_utility: float
+    effective_utility: float
+    delta_tokens: int
+    utility_per_token: float
+    effective_utility_per_token: float
+    cumulative_utility: float
+    cumulative_tokens: int
+    new_files: int = 0
+    new_role: bool = False
+    new_steps: int = 0
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "phase": self.phase,
+            "uid": self.uid,
+            "role": self.role,
+            "render_mode": self.render_mode,
+            "delta_utility": self.delta_utility,
+            "effective_utility": self.effective_utility,
+            "delta_tokens": self.delta_tokens,
+            "utility_per_token": self.utility_per_token,
+            "effective_utility_per_token": self.effective_utility_per_token,
+            "cumulative_utility": self.cumulative_utility,
+            "cumulative_tokens": self.cumulative_tokens,
+            "new_files": self.new_files,
+            "new_role": self.new_role,
+            "new_steps": self.new_steps,
+        }
+
+
+@dataclass
+class TokenCreditTrace:
+    """Opt-in transaction curve for plateau analysis; never changes selection."""
+
+    token_budget: int = 0
+    noise_level: float = 0.0
+    leader_count: int = 0
+    transaction_limit: int = 0
+    transactions: list[TokenCreditTransaction] = field(default_factory=list)
+    cumulative_utility: float = 0.0
+    used_tokens: int = 0
+    cutoff_density: float | None = None
+    cutoff_rejections: int = 0
+    spend_ceiling: int = 0
+
+    def begin(
+        self,
+        *,
+        token_budget: int,
+        noise_level: float,
+        leader_count: int,
+        transaction_limit: int,
+        cutoff_density: float | None = None,
+    ) -> None:
+        self.token_budget = token_budget
+        self.noise_level = noise_level
+        self.leader_count = leader_count
+        self.transaction_limit = transaction_limit
+        self.transactions.clear()
+        self.cumulative_utility = 0.0
+        self.used_tokens = 0
+        self.cutoff_density = cutoff_density
+        self.cutoff_rejections = 0
+        self.spend_ceiling = token_budget
+
+    def record(
+        self,
+        *,
+        phase: str,
+        bundle: ContextBundle,
+        render_mode: str,
+        delta_utility: float,
+        effective_utility: float | None = None,
+        delta_tokens: int,
+        new_files: int = 0,
+        new_role: bool = False,
+        new_steps: int = 0,
+    ) -> None:
+        effective = float(delta_utility if effective_utility is None else effective_utility)
+        self.cumulative_utility += float(delta_utility)
+        self.used_tokens += int(delta_tokens)
+        self.transactions.append(
+            TokenCreditTransaction(
+                phase=phase,
+                uid=bundle.seed.uid,
+                role=bundle.role,
+                render_mode=render_mode,
+                delta_utility=float(delta_utility),
+                effective_utility=effective,
+                delta_tokens=int(delta_tokens),
+                utility_per_token=float(delta_utility) / max(1, int(delta_tokens)),
+                effective_utility_per_token=effective / max(1, int(delta_tokens)),
+                cumulative_utility=self.cumulative_utility,
+                cumulative_tokens=self.used_tokens,
+                new_files=new_files,
+                new_role=new_role,
+                new_steps=new_steps,
+            )
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "token_budget": self.token_budget,
+            "noise_level": self.noise_level,
+            "leader_count": self.leader_count,
+            "transaction_limit": self.transaction_limit,
+            "used_tokens": self.used_tokens,
+            "cumulative_utility": self.cumulative_utility,
+            "cutoff_density": self.cutoff_density,
+            "cutoff_rejections": self.cutoff_rejections,
+            "spend_ceiling": self.spend_ceiling,
+            "transactions": [transaction.to_dict() for transaction in self.transactions],
+        }
 
 
 @dataclass(frozen=True)
@@ -1383,6 +1510,7 @@ class _TokenCreditCoverageState:
     # printed size from the selected entries directly
     # (``_first_wins_printed_tokens``).
     printed_uids: set[str] = field(default_factory=set)
+    cutoff_rejections: int = 0
 
     def marginal_purchase_cost(self, rendered: ContextBundle) -> int:
         seen: set[str] = set()
@@ -1431,7 +1559,7 @@ def _bundle_static_rows(bundles: list[ContextBundle]) -> list[_BundleStatic]:
     ]
 
 
-def _credit_coverage_gain(
+def _credit_coverage_gain_raw(
     idx: int,
     bundle: ContextBundle,
     *,
@@ -1455,7 +1583,17 @@ def _credit_coverage_gain(
     gain += 0.05 if not bundle.passive else -0.03
     gain -= 0.15 * sum(state.file_counts.get(path, 0) for path in files)
     gain -= state.file_saturation_penalty(bundle)
-    return max(0.001, gain)
+    return gain
+
+
+def _credit_coverage_gain(
+    idx: int,
+    bundle: ContextBundle,
+    *,
+    static: list[_BundleStatic],
+    state: _TokenCreditCoverageState,
+) -> float:
+    return max(0.001, _credit_coverage_gain_raw(idx, bundle, static=static, state=state))
 
 
 def _credit_optimistic_value(st: _BundleStatic, bundle: ContextBundle, cost: int) -> float:
@@ -1497,6 +1635,8 @@ def _select_bundles_under_credit_budget(
     static: list[_BundleStatic],
     state: _TokenCreditCoverageState,
     token_budget: int,
+    credit_trace: TokenCreditTrace | None = None,
+    min_utility_per_token: float | None = None,
 ) -> tuple[list[dict[str, object]], int]:
     selected: list[dict[str, object]] = []
     selected_indices: set[int] = set()
@@ -1512,12 +1652,23 @@ def _select_bundles_under_credit_budget(
         # monotonicity); the budget pays only the marginal price — tokens of
         # uids the prompt's first-wins dedupe will actually print.
         marginal_cost = state.marginal_purchase_cost(rendered)
-        current_value = _credit_coverage_gain(idx, source, static=static, state=state) / max(
-            1, marginal_cost
-        )
+        raw_delta_utility = _credit_coverage_gain_raw(idx, source, static=static, state=state)
+        effective_utility = max(0.001, raw_delta_utility)
+        current_value = effective_utility / max(1, marginal_cost)
         best_competing = -initial[0][0] if initial else -1.0
         if current_value + 1e-12 < best_competing:
             heapq.heappush(initial, (-current_value, idx, cost, rendered))
+            continue
+        raw_density = raw_delta_utility / max(1, marginal_cost)
+        if (
+            min_utility_per_token is not None
+            and marginal_cost > 0
+            and raw_density <= min_utility_per_token
+        ):
+            skipped_indices.add(idx)
+            state.cutoff_rejections += 1
+            if credit_trace is not None:
+                credit_trace.cutoff_rejections += 1
             continue
         if selected and used + marginal_cost > token_budget:
             skipped_indices.add(idx)
@@ -1532,6 +1683,20 @@ def _select_bundles_under_credit_budget(
         )
         selected_indices.add(idx)
         used += marginal_cost
+        if credit_trace is not None:
+            files = static[idx].files
+            steps = static[idx].steps
+            credit_trace.record(
+                phase="coverage",
+                bundle=source,
+                render_mode=rendered.render_mode,
+                delta_utility=raw_delta_utility,
+                effective_utility=effective_utility,
+                delta_tokens=marginal_cost,
+                new_files=len(files - state.covered_files),
+                new_role=source.role not in state.covered_roles,
+                new_steps=len(steps - state.covered_steps),
+            )
         state.record_selection(source, marginal_cost)
         state.charge_purchase(rendered)
         if used >= token_budget:
@@ -1601,7 +1766,7 @@ def _credit_upgrade_entry_parts(
     return entry_source, current, current_cost, bundle_index
 
 
-def _credit_upgrade_gain(
+def _credit_upgrade_gain_raw(
     st: _BundleStatic,
     bundle: ContextBundle,
     rendered: ContextBundle,
@@ -1612,7 +1777,16 @@ def _credit_upgrade_gain(
     gain += mode_bonus
     gain += 0.05 if not bundle.passive else 0.03
     gain -= state.file_saturation_penalty(bundle)
-    return max(0.001, gain)
+    return gain
+
+
+def _credit_upgrade_gain(
+    st: _BundleStatic,
+    bundle: ContextBundle,
+    rendered: ContextBundle,
+    state: _TokenCreditCoverageState,
+) -> float:
+    return max(0.001, _credit_upgrade_gain_raw(st, bundle, rendered, state))
 
 
 def _enqueue_credit_upgrade(
@@ -1673,6 +1847,10 @@ def _apply_credit_upgrades(
     token_budget: int,
     used: int,
     entry_filter: set[int] | None = None,
+    phase: str = "upgrade_capped",
+    credit_trace: TokenCreditTrace | None = None,
+    min_utility_per_token: float | None = None,
+    allow_free_at_ceiling: bool = False,
 ) -> int:
     upgrade_heap: list[tuple[float, int, int, ContextBundle, int]] = []
     for entry_index in range(len(selected)):
@@ -1691,7 +1869,7 @@ def _apply_credit_upgrades(
             printed_tokens=used,
         )
 
-    while upgrade_heap and used < token_budget:
+    while upgrade_heap and (used < token_budget or allow_free_at_ceiling):
         _neg_priority, entry_index, expected_cost, upgraded, upgraded_cost = heapq.heappop(
             upgrade_heap
         )
@@ -1707,11 +1885,38 @@ def _apply_credit_upgrades(
         exact_delta = _upgrade_exact_delta(selected, entry_index, upgraded, printed_before=used)
         if used + exact_delta > token_budget:
             continue
+        entry_source = entry["source"]
+        raw_delta_utility = 0.0
+        effective_utility = 0.0
+        if isinstance(entry_source, ContextBundle):
+            bundle_index = entry.get("index")
+            if isinstance(bundle_index, int):
+                raw_delta_utility = _credit_upgrade_gain_raw(
+                    static[bundle_index], entry_source, upgraded, state
+                )
+                effective_utility = max(0.001, raw_delta_utility)
+        raw_density = raw_delta_utility / max(1, exact_delta)
+        if (
+            min_utility_per_token is not None
+            and exact_delta > 0
+            and raw_density <= min_utility_per_token
+        ):
+            if credit_trace is not None:
+                credit_trace.cutoff_rejections += 1
+            continue
         entry["rendered"] = upgraded
         entry["cost"] = upgraded_cost
         used += exact_delta
-        entry_source = entry["source"]
         if isinstance(entry_source, ContextBundle):
+            if credit_trace is not None:
+                credit_trace.record(
+                    phase=phase,
+                    bundle=entry_source,
+                    render_mode=upgraded.render_mode,
+                    delta_utility=raw_delta_utility,
+                    effective_utility=effective_utility,
+                    delta_tokens=exact_delta,
+                )
             primary = _primary_file(entry_source)
             if primary:
                 state.file_tokens[primary] = state.file_tokens.get(primary, 0) + exact_delta
@@ -1773,6 +1978,10 @@ def _apply_token_credit_budget(
     per_transaction_share: float = 0.10,
     file_soft_cap_share: float = 0.25,
     signature_only_initial: bool = False,
+    credit_trace: TokenCreditTrace | None = None,
+    min_utility_per_token: float | None = None,
+    freeze_at_utility_plateau: bool = False,
+    plateau_upgrade_reserve_share: float = 0.0,
 ) -> list[ContextBundle]:
     """Token Credit System v2 prototype: coverage-first marginal transactions.
 
@@ -1810,6 +2019,14 @@ def _apply_token_credit_budget(
         token_budget,
         leader_count=leader_count,
     )
+    if credit_trace is not None:
+        credit_trace.begin(
+            token_budget=token_budget,
+            noise_level=noise_level,
+            leader_count=leader_count,
+            transaction_limit=transaction_limit,
+            cutoff_density=min_utility_per_token,
+        )
     peak_utility = max((st.base_utility for st in static), default=0.0)
     leader_indices = {
         idx
@@ -1831,7 +2048,20 @@ def _apply_token_credit_budget(
         static,
         state,
         token_budget,
+        credit_trace=credit_trace,
+        min_utility_per_token=min_utility_per_token,
     )
+    reserve_tokens = int(
+        token_budget * min(1.0, max(0.0, plateau_upgrade_reserve_share))
+    )
+    upgrade_budget = (
+        min(token_budget, used + reserve_tokens)
+        if freeze_at_utility_plateau
+        and state.cutoff_rejections > 0
+        else token_budget
+    )
+    if credit_trace is not None:
+        credit_trace.spend_ceiling = upgrade_budget
     used = _apply_credit_upgrades(
         selected,
         static,
@@ -1840,14 +2070,18 @@ def _apply_token_credit_budget(
         transaction_limit=transaction_limit,
         full_render_max_depth=full_render_max_depth,
         render_cache=render_cache,
-        token_budget=token_budget,
+        token_budget=upgrade_budget,
         used=used,
+        phase="upgrade_capped",
+        credit_trace=credit_trace,
+        min_utility_per_token=min_utility_per_token,
+        allow_free_at_ceiling=freeze_at_utility_plateau,
     )
     # Waves 2 and 3 both run with the whole budget as the per-step limit, so
     # they can share one fresh render cache (the memo key assumes a constant
     # limit — sharing with the CAPPED pass above would be wrong).
     relaxed_cache: dict[tuple[int, str], tuple[ContextBundle, int]] = {}
-    if used < token_budget:
+    if used < upgrade_budget:
         # Cap relaxation on leftover budget: every capped upgrade has landed
         # or been rejected, so contention — the reason the leader cap exists —
         # is over. Re-run the upgrade sweep with the whole remaining budget as
@@ -1868,14 +2102,18 @@ def _apply_token_credit_budget(
                 static,
                 state,
                 render_mode=render_mode,
-                transaction_limit=token_budget,
+                transaction_limit=upgrade_budget,
                 full_render_max_depth=full_render_max_depth,
                 render_cache=relaxed_cache,
-                token_budget=token_budget,
+                token_budget=upgrade_budget,
                 used=used,
                 entry_filter=relaxed_entries,
+                phase="upgrade_leader_relaxed",
+                credit_trace=credit_trace,
+                min_utility_per_token=min_utility_per_token,
+                allow_free_at_ceiling=freeze_at_utility_plateau,
             )
-    if used < token_budget:
+    if used < upgrade_budget:
         # Third wave: the leader set is saturated and budget still remains.
         # ``_leader_pool_metrics`` promises that symbols below the noise floor
         # "still enter via marginal packer on leftover budget" — deliver that
@@ -1888,11 +2126,15 @@ def _apply_token_credit_budget(
             static,
             state,
             render_mode=render_mode,
-            transaction_limit=token_budget,
+            transaction_limit=upgrade_budget,
             full_render_max_depth=full_render_max_depth,
             render_cache=relaxed_cache,
-            token_budget=token_budget,
+            token_budget=upgrade_budget,
             used=used,
+            phase="upgrade_tail_relaxed",
+            credit_trace=credit_trace,
+            min_utility_per_token=min_utility_per_token,
+            allow_free_at_ceiling=freeze_at_utility_plateau,
         )
     return _selected_credit_rendered_bundles(selected)
 
@@ -1906,6 +2148,10 @@ def _apply_render_and_budget(
     per_transaction_share: float = 0.10,
     file_soft_cap_share: float = 0.25,
     signature_only_initial: bool = False,
+    credit_trace: TokenCreditTrace | None = None,
+    min_utility_per_token: float | None = None,
+    freeze_at_utility_plateau: bool = False,
+    plateau_upgrade_reserve_share: float = 0.0,
 ) -> list[ContextBundle]:
     """Echelon 2: render-trim then token-pack the assembled bundles.
 
@@ -1936,6 +2182,10 @@ def _apply_render_and_budget(
             per_transaction_share=per_transaction_share,
             file_soft_cap_share=file_soft_cap_share,
             signature_only_initial=signature_only_initial,
+            credit_trace=credit_trace,
+            min_utility_per_token=min_utility_per_token,
+            freeze_at_utility_plateau=freeze_at_utility_plateau,
+            plateau_upgrade_reserve_share=plateau_upgrade_reserve_share,
         )
 
     if render_mode in (
@@ -2067,6 +2317,7 @@ def _collect_hits_per_seed(
     traversal_mode: str | None,
     max_per_seed: int,
     hook_transparency: bool,
+    semantic_rerank: bool = False,
 ) -> dict[str, list[_Hit]]:
     """Batch graph walks for every seed; optionally attach hook-transparency hits.
 
@@ -2076,6 +2327,13 @@ def _collect_hits_per_seed(
     hits_per_seed: dict[str, list[_Hit]] = {u: [] for u in seed_uids}
     steps = steps_for_mode(traversal_mode) if traversal_mode is not None else ()
     for step_name, edges, direction, max_hops in steps:
+        # Semantic selection happens after the graph walk.  Keep a much wider
+        # safety reservoir than the historical 4x depth/uid cut so a relevant
+        # depth-2 node is unlikely to disappear before query scoring sees it.
+        # The cap still bounds high-fanout hubs on the Neo4j fallback path.
+        candidate_limit = (
+            max(256, max_per_seed * 32) if semantic_rerank else max_per_seed * 4
+        )
         grouped = walk_neighbours_grouped(
             db,
             workspace_id,
@@ -2083,7 +2341,7 @@ def _collect_hits_per_seed(
             edges=edges,
             direction=direction,
             max_hops=max_hops,
-            limit_per_seed=max_per_seed * 4,
+            limit_per_seed=candidate_limit,
         )
         _merge_grouped_walk_hits(hits_per_seed, grouped, step_name)
 
@@ -2103,8 +2361,17 @@ def _nearest_expansion_hits(
     *,
     include_tests: bool,
     max_per_seed: int,
+    query_scoring: QueryScoringContext | None = None,
+    semantic_alpha: float = 0.70,
+    structural_reserve: int = 1,
 ) -> list[_Hit]:
-    """Dedupe expansion hits by uid (shallowest wins), optionally fence tests."""
+    """Dedupe expansion hits, then select structural bridges + semantic leaders.
+
+    Depth still decides which occurrence represents a duplicated uid and
+    reserves a small number of direct structural neighbours.  The remaining
+    bundle slots are ranked by robustly calibrated query similarity blended
+    with depth decay, so a relevant depth-2 node can beat depth-1 noise.
+    """
     nearest_by_uid: dict[str, _Hit] = {}
     for h in hits:
         if not include_tests and is_test_path(h.file_path or ""):
@@ -2112,10 +2379,45 @@ def _nearest_expansion_hits(
         existing = nearest_by_uid.get(h.uid)
         if existing is None or h.depth < existing.depth:
             nearest_by_uid[h.uid] = h
-    return sorted(
+    structural = sorted(
         nearest_by_uid.values(),
         key=lambda h: (h.depth, (h.name or "").lower(), h.uid),
-    )[:max_per_seed]
+    )
+    if query_scoring is None or len(structural) <= max_per_seed:
+        return structural[:max_per_seed]
+
+    similarities = {
+        hit.uid: similarity
+        for hit in structural
+        if (similarity := query_scoring.similarity_for(hit.uid)) is not None
+    }
+    if not similarities:
+        return structural[:max_per_seed]
+
+    values = list(similarities.values())
+    floor = semantic_noise_floor(values)
+    ordered_values = sorted(values)
+    q95_index = min(len(ordered_values) - 1, round(0.95 * (len(ordered_values) - 1)))
+    ceiling = ordered_values[q95_index]
+    span = max(1e-9, ceiling - floor)
+    alpha = min(1.0, max(0.0, semantic_alpha))
+
+    reserve_count = min(max_per_seed, max(0, structural_reserve))
+    reserved = structural[:reserve_count]
+    reserved_uids = {hit.uid for hit in reserved}
+
+    def _semantic_rank(hit: _Hit) -> tuple[float, float, int, str, str]:
+        similarity = similarities.get(hit.uid, -1.0)
+        semantic_excess = min(1.0, max(0.0, (similarity - floor) / span))
+        depth_score = 1.0 / max(1, int(hit.depth))
+        blended = alpha * semantic_excess + (1.0 - alpha) * depth_score
+        return (-blended, -semantic_excess, int(hit.depth), (hit.name or "").lower(), hit.uid)
+
+    semantic = sorted(
+        (hit for hit in structural if hit.uid not in reserved_uids),
+        key=_semantic_rank,
+    )
+    return reserved + semantic[: max_per_seed - reserve_count]
 
 
 def _plan_candidate_expansions(
@@ -2124,6 +2426,9 @@ def _plan_candidate_expansions(
     *,
     include_tests: bool,
     max_per_seed: int,
+    query_scoring: QueryScoringContext | None = None,
+    semantic_alpha: float = 0.70,
+    structural_reserve: int = 1,
 ) -> tuple[list[tuple[RoleCandidate, list[_Hit]]], set[str]]:
     expansion_per_candidate: list[tuple[RoleCandidate, list[_Hit]]] = []
     uids_to_fetch: set[str] = set()
@@ -2133,6 +2438,9 @@ def _plan_candidate_expansions(
             hits_per_seed.get(cand.uid, []),
             include_tests=include_tests,
             max_per_seed=max_per_seed,
+            query_scoring=query_scoring,
+            semantic_alpha=semantic_alpha,
+            structural_reserve=structural_reserve,
         )
         expansion_per_candidate.append((cand, ordered))
         for h in ordered:
@@ -2267,6 +2575,10 @@ def build_context_for_candidates(
     hook_transparency: bool = False,
     render_budget: ContextRenderBudget | None = None,
     utility_score_fn: Callable[[RoleCandidate], float] | None = None,
+    query_scoring: QueryScoringContext | None = None,
+    semantic_expansion_alpha: float = 0.70,
+    semantic_expansion_structural_reserve: int = 1,
+    credit_trace: TokenCreditTrace | None = None,
     overlay: Any | None = None,
     user_id: str = "anonymous",
 ) -> list[ContextBundle]:
@@ -2276,9 +2588,11 @@ def build_context_for_candidates(
     budget downstream packs the full pool, so there is no active/passive split
     to bound the walk here.
 
-    ``max_per_seed`` caps how many related symbols come back per seed
-    (depth-then-name ordering). ``traversal_mode`` picks the expansion
-    pattern from ``AxisQueryPlan``; defaults to deferred-binding
+    ``max_per_seed`` caps how many related symbols come back per seed. Without
+    ``query_scoring`` it keeps the legacy depth-then-name order; with scoring
+    it reserves direct structural context and fills the remaining slots by a
+    robust query/depth blend. ``traversal_mode`` picks the expansion pattern
+    from ``AxisQueryPlan``; defaults to deferred-binding
     because every current contract uses it. ``None`` keeps explicitly
     supplied impact/trace candidates as a flat, directionally-labelled set
     without expanding them into siblings through a second graph walk.
@@ -2306,12 +2620,16 @@ def build_context_for_candidates(
         traversal_mode=traversal_mode,
         max_per_seed=max_per_seed,
         hook_transparency=hook_transparency,
+        semantic_rerank=query_scoring is not None,
     )
     expansion_per_candidate, uids_to_fetch = _plan_candidate_expansions(
         candidates,
         hits_per_seed,
         include_tests=include_tests,
         max_per_seed=max_per_seed,
+        query_scoring=query_scoring,
+        semantic_alpha=semantic_expansion_alpha,
+        structural_reserve=semantic_expansion_structural_reserve,
     )
     payload_by_uid = _resolve_context_payloads(
         lance,
@@ -2340,6 +2658,10 @@ def build_context_for_candidates(
         per_transaction_share=budget.per_transaction_share,
         file_soft_cap_share=budget.file_soft_cap_share,
         signature_only_initial=budget.signature_only_initial,
+        credit_trace=credit_trace,
+        min_utility_per_token=budget.min_utility_per_token,
+        freeze_at_utility_plateau=budget.freeze_at_utility_plateau,
+        plateau_upgrade_reserve_share=budget.plateau_upgrade_reserve_share,
     )
 
 
@@ -2347,5 +2669,7 @@ __all__ = [
     "ContextBundle",
     "ContextRenderBudget",
     "ContextSymbol",
+    "TokenCreditTrace",
+    "TokenCreditTransaction",
     "build_context_for_candidates",
 ]

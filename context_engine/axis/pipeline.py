@@ -49,6 +49,8 @@ from context_engine.axis import (
     impact_traversal,
     inheritance_ancestors,
     intent_classifier,
+    query_node_ranking,
+    reexport_bridge,
     role_lookahead,
     role_retrieval,
     structural_neighbours,
@@ -104,6 +106,7 @@ class AxisRetrievalResult:
     bundles: list[ContextBundle] = field(default_factory=list)
     render_mode: str = "full"
     stage_warnings: list[dict[str, Any]] = field(default_factory=list)
+    budget_trace: context_builder.TokenCreditTrace | None = None
 
 
 # Synthetic anchor for a symbol that lives only in the editor overlay (typed
@@ -470,6 +473,10 @@ class _SymbolTargetedRetrievalOptions:
     max_impacted: int
     hook_transparency: bool
     include_tests_in_walks: bool
+    budget_trace: context_builder.TokenCreditTrace | None
+    min_utility_per_token: float | None
+    freeze_at_utility_plateau: bool
+    plateau_upgrade_reserve_share: float
 
 
 @dataclass(frozen=True)
@@ -487,6 +494,13 @@ class _ContextBuildOptions:
     include_tests: bool
     overlay: Any | None
     user_id: str
+    credit_trace: context_builder.TokenCreditTrace | None
+    min_utility_per_token: float | None
+    freeze_at_utility_plateau: bool
+    plateau_upgrade_reserve_share: float
+    query_scoring: role_retrieval.QueryScoringContext | None
+    semantic_expansion_alpha: float
+    semantic_expansion_structural_reserve: int
 
 
 def _build_context_bundles_with_budget(
@@ -500,6 +514,9 @@ def _build_context_bundles_with_budget(
         per_transaction_share=profile.per_transaction_share if profile else 0.10,
         file_soft_cap_share=profile.file_soft_cap_share if profile else 0.25,
         signature_only_initial=profile.signature_only_initial if profile else False,
+        min_utility_per_token=options.min_utility_per_token,
+        freeze_at_utility_plateau=options.freeze_at_utility_plateau,
+        plateau_upgrade_reserve_share=options.plateau_upgrade_reserve_share,
     )
     return context_builder.build_context_for_candidates(
         candidates,
@@ -514,6 +531,12 @@ def _build_context_bundles_with_budget(
         overlay=options.overlay,
         user_id=options.user_id,
         utility_score_fn=options.utility_score_fn,
+        credit_trace=options.credit_trace,
+        query_scoring=options.query_scoring,
+        semantic_expansion_alpha=options.semantic_expansion_alpha,
+        semantic_expansion_structural_reserve=(
+            options.semantic_expansion_structural_reserve
+        ),
     )
 
 
@@ -639,6 +662,15 @@ def _try_symbol_targeted_retrieval(
                     include_tests=include_tests,
                     overlay=options.overlay,
                     user_id=options.user_id,
+                    credit_trace=options.budget_trace,
+                    min_utility_per_token=options.min_utility_per_token,
+                    freeze_at_utility_plateau=options.freeze_at_utility_plateau,
+                    plateau_upgrade_reserve_share=(
+                        options.plateau_upgrade_reserve_share
+                    ),
+                    query_scoring=None,
+                    semantic_expansion_alpha=0.70,
+                    semantic_expansion_structural_reserve=1,
                 ),
             )
             bundles = _move_anchor_bundle_first(bundles, anchor.uid)
@@ -651,6 +683,7 @@ def _try_symbol_targeted_retrieval(
         candidates_for_context=context_candidates,
         bundles=list(bundles),
         render_mode=render_mode,
+        budget_trace=options.budget_trace,
     )
 
 
@@ -720,22 +753,19 @@ def _overlay_only_result(
 
 def _classify_retrieval_intent(
     question: str,
-    lance: Any,
+    embed_fn: Any,
     *,
     intent_override: list[IntentMatch] | None,
     top_roles: int,
     intent_threshold: float,
     trace: Any,
 ) -> list[IntentMatch]:
-    def _embed(text: str):
-        return lance._embed([text])[0]  # noqa: SLF001
-
     with trace.stage("intent"):
         if intent_override is not None:
             return list(intent_override)
         return intent_classifier.classify_intent(
             question,
-            _embed,
+            embed_fn,
             top_k=top_roles,
             threshold=intent_threshold,
         )
@@ -748,25 +778,32 @@ def _retrieve_role_seeds(
     workspace_id: str,
     db: Any,
     lance: Any,
+    embed_fn: Any,
     seed_limit: int,
     trace: Any,
 ):
     with trace.stage("retrieval"):
         scanned = role_retrieval.scan_workspace_rows(workspace_id, lance=lance)
+        query_scoring = role_retrieval.build_query_scoring_context(
+            scanned,
+            question,
+            embed_fn,
+        )
         raw_by_role = role_retrieval.find_symbols_by_roles(
             workspace_id,
             [m.role for m in intent],
             query_text=question,
-            embed_fn=lambda text: lance._embed([text])[0],  # noqa: SLF001
+            embed_fn=embed_fn,
             limit=seed_limit,
             prescanned=scanned,
+            query_scoring=query_scoring,
         )
         from context_engine.axis import graph_walk_inproc
 
         if graph_walk_inproc.should_use(workspace_id):
             with trace.stage("adjacency"):
                 graph_walk_inproc.load_adjacency(db, workspace_id)
-    return scanned, raw_by_role
+    return scanned, raw_by_role, query_scoring
 
 
 def _candidate_file_paths(candidates: list[RoleCandidate]) -> set[str]:
@@ -859,6 +896,33 @@ def _run_hook_api_bridge(
     return _candidate_file_paths(raw_by_role.get("hook_api_bridge", []))
 
 
+def _run_reexport_bridge(
+    raw_by_role: dict[str, list[RoleCandidate]],
+    anchor_symbol: str | None,
+    *,
+    db: Any,
+    workspace_id: str,
+    scanned,
+    trace: Any,
+) -> set[str]:
+    """Surface pure-reexport shims that publicly re-export the query anchor.
+
+    Gated entirely on the anchor symbol (the caller's declared focus): fires
+    only when the ask targets a specific type that a shim re-exports, so it is
+    a no-op for the un-anchored /ask path and for anchors with no shim.
+    """
+    if not (anchor_symbol or "").strip():
+        return set()
+    with trace.stage("reexport_bridge"):
+        raw_by_role["reexport_bridge"] = reexport_bridge.expand_reexport_bridge(
+            anchor_symbol,
+            db=db,
+            workspace_id=workspace_id,
+            prescanned=scanned,
+        )
+    return _candidate_file_paths(raw_by_role.get("reexport_bridge", []))
+
+
 def _run_structural_pool_passes(
     raw_by_role: dict[str, list[RoleCandidate]],
     *,
@@ -869,6 +933,7 @@ def _run_structural_pool_passes(
     trace: Any,
     query_text: str | None = None,
     embed_fn: Any | None = None,
+    query_scoring: role_retrieval.QueryScoringContext | None = None,
 ) -> None:
     existing_pool_for_struct = [
         c
@@ -878,7 +943,7 @@ def _run_structural_pool_passes(
     ]
     if not existing_pool_for_struct:
         return
-    distances = (
+    distances = query_scoring.distances if query_scoring is not None else (
         role_retrieval._scan_distances(scanned, query_text, embed_fn)  # noqa: SLF001
         if scanned is not None and query_text and embed_fn is not None
         else None
@@ -1043,12 +1108,18 @@ def _prepare_budgeted_candidates(
     budget_profile = ARCHITECTURE if symbol_targeted else budget_for_intent(intent)
 
     def _budget_utility_score(c: RoleCandidate) -> float:
-        # Walk-derived candidates (impact/trace/pinned) carry a differentiated
-        # utility_score (walk class × depth × reach); flattening them to the
-        # constant expansion `score` erased that ranking right before the
-        # packer, so every impact bundle competed at the same base utility and
-        # selection degenerated to bridge-bonus size.
-        base = c.utility_score if c.utility_score is not None else c.score
+        # Once query-node ranking has annotated a candidate, ``score`` is the
+        # calibrated structural/query blend (the query term is already above
+        # its median+MAD noise floor).  Feed that value into marginal Token
+        # Credit utility as well as ordering; otherwise walk candidates fall
+        # back to their graph-only ``utility_score`` and body upgrades ignore
+        # query relevance.  Without query scoring, retain the differentiated
+        # walk utility (walk class × depth × reach).
+        base = (
+            c.score
+            if c.query_similarity is not None
+            else (c.utility_score if c.utility_score is not None else c.score)
+        )
         return base + proximity_boost(c.file_path, anchor_path)
 
     utility_score_fn = _budget_utility_score
@@ -1089,6 +1160,35 @@ class AxisRetrievalConfig:
     overlay: Any | None = None
     user_id: str = "anonymous"
     intent_override: list[IntentMatch] | None = None
+    query_node_rerank: bool = True
+    query_node_semantic_weight: float = 0.20
+    query_node_mode_semantic_weight: float = 0.05
+    query_node_ordering_mode: str = "calibrated_blend"
+    query_node_blend_alpha: float = 0.40
+    query_node_mode_blend_alpha: float = 0.10
+    query_node_rrf_weight: float = 1.0
+    query_node_mode_rrf_weight: float = 0.25
+    query_node_rrf_k: int = 60
+    capture_budget_trace: bool = False
+    token_credit_min_utility_per_token: float | None = None
+    token_credit_freeze_at_plateau: bool = False
+    token_credit_plateau_upgrade_reserve_share: float = 0.0
+    context_semantic_expansion: bool = True
+    context_semantic_expansion_alpha: float = 0.70
+    context_semantic_expansion_structural_reserve: int = 1
+    context_semantic_expansion_roles: tuple[str, ...] = ("dependency_solver",)
+
+
+def _request_embedder(lance: Any):
+    """Return an embed function with request-local exact-text memoisation."""
+    cache: dict[str, Any] = {}
+
+    def _embed(text: str):
+        if text not in cache:
+            cache[text] = lance._embed([text])[0]  # noqa: SLF001
+        return cache[text]
+
+    return _embed
 
 
 def _attach_stage_warnings_to_trace(
@@ -1153,9 +1253,11 @@ def _run_axis_retrieval_impl(
 
     cfg = config or AxisRetrievalConfig()
     tr = cfg.trace if cfg.trace is not None else _NullTrace()
+    budget_trace = context_builder.TokenCreditTrace() if cfg.capture_budget_trace else None
+    embed_fn = _request_embedder(lance)
     intent = _classify_retrieval_intent(
         question,
-        lance,
+        embed_fn,
         intent_override=cfg.intent_override,
         top_roles=cfg.top_roles,
         intent_threshold=cfg.intent_threshold,
@@ -1179,6 +1281,12 @@ def _run_axis_retrieval_impl(
                 max_impacted=cfg.max_impacted,
                 hook_transparency=cfg.hook_transparency,
                 include_tests_in_walks=False,
+                budget_trace=budget_trace,
+                min_utility_per_token=cfg.token_credit_min_utility_per_token,
+                freeze_at_utility_plateau=cfg.token_credit_freeze_at_plateau,
+                plateau_upgrade_reserve_share=(
+                    cfg.token_credit_plateau_upgrade_reserve_share
+                ),
             ),
             intent=list(intent),
             intent_budget=cfg.intent_budget,
@@ -1192,12 +1300,13 @@ def _run_axis_retrieval_impl(
     impact_mode = any(m.role in _MODE_ROLES for m in intent)
     seed_limit = cfg.per_role_limit * _MODE_SEED_LIMIT_FACTOR if impact_mode else cfg.per_role_limit
 
-    scanned, raw_by_role = _retrieve_role_seeds(
+    scanned, raw_by_role, query_scoring = _retrieve_role_seeds(
         question,
         intent,
         workspace_id=workspace_id,
         db=db,
         lance=lance,
+        embed_fn=embed_fn,
         seed_limit=seed_limit,
         trace=tr,
     )
@@ -1216,26 +1325,29 @@ def _run_axis_retrieval_impl(
                 workspace_id=workspace_id,
                 prescanned=scanned,
                 query_text=question,
-                embed_fn=lambda text: lance._embed([text])[0],  # noqa: SLF001
+                embed_fn=embed_fn,
+                query_scoring=query_scoring,
             )
 
     with tr.stage("vector_seeds"):
         raw_by_role["vector_seed"] = role_retrieval.find_seeds_by_vector(
             workspace_id,
             question,
-            embed_fn=lambda text: lance._embed([text])[0],  # noqa: SLF001
+            embed_fn=embed_fn,
             limit=seed_limit,
             impact_mode=impact_mode,
             prescanned=scanned,
+            query_scoring=query_scoring,
         )
         raw_by_role["doc_anchor"] = role_retrieval.find_seeds_by_doc_anchor(
             workspace_id,
             question,
-            embed_fn=lambda text: lance._embed([text])[0],  # noqa: SLF001
+            embed_fn=embed_fn,
             limit=seed_limit,
             impact_mode=impact_mode,
             prescanned=scanned,
             lance=lance,
+            query_scoring=query_scoring,
         )
 
     seed_files |= _run_doc_anchor_bridge(
@@ -1265,6 +1377,14 @@ def _run_axis_retrieval_impl(
         include_tests=include_tests_in_walks,
         trace=tr,
     )
+    seed_files |= _run_reexport_bridge(
+        raw_by_role,
+        cfg.anchor_symbol,
+        db=db,
+        workspace_id=workspace_id,
+        scanned=scanned,
+        trace=tr,
+    )
 
     _run_structural_pool_passes(
         raw_by_role,
@@ -1274,7 +1394,8 @@ def _run_axis_retrieval_impl(
         scanned=scanned,
         trace=tr,
         query_text=question,
-        embed_fn=lambda text: lance._embed([text])[0],  # noqa: SLF001
+        embed_fn=embed_fn,
+        query_scoring=query_scoring,
     )
     _run_mode_traversal_passes(
         raw_by_role,
@@ -1294,6 +1415,22 @@ def _run_axis_retrieval_impl(
     )
 
     raw_by_role = axis_ranking.apply_intent_axis_boost(raw_by_role, [m.role for m in intent])
+
+    if cfg.query_node_rerank:
+        with tr.stage("query_node_similarity"):
+            raw_by_role = query_node_ranking.apply_query_node_similarity(
+                raw_by_role,
+                query_scoring,
+                semantic_weight=cfg.query_node_semantic_weight,
+                mode_semantic_weight=cfg.query_node_mode_semantic_weight,
+                ordering_mode=cfg.query_node_ordering_mode,
+                blend_alpha=cfg.query_node_blend_alpha,
+                mode_blend_alpha=cfg.query_node_mode_blend_alpha,
+                rrf_weight=cfg.query_node_rrf_weight,
+                mode_rrf_weight=cfg.query_node_mode_rrf_weight,
+                rrf_k=cfg.query_node_rrf_k,
+            )
+
     candidates_for_context = _flatten_candidates_for_context(
         raw_by_role,
         intent,
@@ -1337,6 +1474,11 @@ def _run_axis_retrieval_impl(
 
     bundles: list[ContextBundle] = []
     if cfg.with_context and active:
+        top_intent_role = intent[0].role if intent else ""
+        semantic_expansion_enabled = cfg.context_semantic_expansion and (
+            not cfg.context_semantic_expansion_roles
+            or top_intent_role in cfg.context_semantic_expansion_roles
+        )
         with tr.stage("context"):
             bundles = _build_context_bundles_with_budget(
                 active,
@@ -1354,6 +1496,17 @@ def _run_axis_retrieval_impl(
                     include_tests=include_tests_in_walks,
                     overlay=cfg.overlay,
                     user_id=cfg.user_id,
+                    credit_trace=budget_trace,
+                    min_utility_per_token=cfg.token_credit_min_utility_per_token,
+                    freeze_at_utility_plateau=cfg.token_credit_freeze_at_plateau,
+                    plateau_upgrade_reserve_share=(
+                        cfg.token_credit_plateau_upgrade_reserve_share
+                    ),
+                    query_scoring=(query_scoring if semantic_expansion_enabled else None),
+                    semantic_expansion_alpha=cfg.context_semantic_expansion_alpha,
+                    semantic_expansion_structural_reserve=(
+                        cfg.context_semantic_expansion_structural_reserve
+                    ),
                 ),
             )
 
@@ -1364,6 +1517,7 @@ def _run_axis_retrieval_impl(
         candidates_for_context=candidates_for_context,
         bundles=list(bundles),
         render_mode=render_mode,
+        budget_trace=budget_trace,
     )
 
 
