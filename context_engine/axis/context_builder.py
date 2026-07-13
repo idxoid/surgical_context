@@ -1440,6 +1440,14 @@ def _class_header_from_members(parent: str, members: list[ContextSymbol]) -> str
 def _folded_member_body(member: ContextSymbol, *, parent: str, compact: bool) -> str | None:
     if _is_class_definition_symbol(member, parent):
         return None
+    # Honor an upstream span-rerank selection: once rendered_spans is set, the
+    # member's ``code`` IS the intended render (signature for query-irrelevant
+    # members, selected relevant spans for the rest). Re-deriving it from the
+    # structural keep-rule below would discard that selection — the fold/span
+    # collision. rendered_spans is None on the non-span-rerank path, so this
+    # branch is inert by default.
+    if member.rendered_spans is not None:
+        return _indent_block(member.code or "")
     sig = _code_signature(member.code).lstrip()
     if compact:
         return _indent_block(sig)
@@ -1472,6 +1480,12 @@ def _folded_class_spans(
             span_groups.append(rendered.effective_rendered_spans())
             continue
 
+        # Fold inherits the span-rerank selection verbatim so the reported spans
+        # (what ContextBench scores) match the rendered code above. Inert on the
+        # non-span-rerank path (rendered_spans is None).
+        if member.rendered_spans is not None:
+            span_groups.append(member.effective_rendered_spans())
+            continue
         keep_full = not compact and (member.distance_from_seed == 0 or member.name == "__init__")
         rendered = member
         if not keep_full:
