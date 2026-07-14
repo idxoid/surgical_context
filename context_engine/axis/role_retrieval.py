@@ -641,6 +641,8 @@ def find_seeds_by_vector(
     *,
     embed_fn,
     limit: int = 12,
+    min_similarity: float = 0.0,
+    max_seeds: int | None = None,
     lance_db_path: str = DB_PATH,
     include_tests: bool = False,
     impact_mode: bool = False,
@@ -662,6 +664,18 @@ def find_seeds_by_vector(
     Top-``limit`` is selected by ``argpartition`` over the workspace's
     vector matrix — no per-row Python distance loop. Returns candidates
     tagged ``role="vector_seed"``.
+
+    ``min_similarity`` > 0 switches to an ADAPTIVE qsim gate: instead of a
+    flat top-``limit``, every row whose cosine (``1 - d²/2`` for unit
+    vectors) clears the threshold is seeded, ordered by tier-adjusted
+    distance. The top-``limit`` prefix is always kept as a floor (the gate
+    never returns fewer seeds than the fixed channel would), and
+    ``max_seeds`` caps the total as a safety ceiling. This gives more seeds
+    to queries whose answer symbols are semantically retrievable and fewer
+    to queries where the gold is absent from the embedding neighbourhood —
+    unlike a fixed K, which over-seeds easy queries and under-seeds hard
+    ones. The gate is opt-in; ``min_similarity`` == 0 preserves the exact
+    top-``limit`` behaviour.
     """
     if not query_text or embed_fn is None:
         return []
@@ -704,9 +718,22 @@ def find_seeds_by_vector(
     )
     weights = np.where(weights <= 0.0, 1e-6, weights)
     adjusted = distances / weights
-    # argpartition for the k nearest by ADJUSTED distance, then sort those k.
-    nearest = np.argpartition(adjusted, k - 1)[:k] if k < n else np.arange(n)
-    nearest = nearest[np.argsort(adjusted[nearest])]
+    if min_similarity > 0.0:
+        # ADAPTIVE qsim gate: keep every row clearing the cosine threshold,
+        # ordered by tier-adjusted distance, with the top-`k` prefix pinned as
+        # a floor so the gate is never sparser than the fixed channel. Full
+        # argsort is O(n log n) but runs only on this opt-in path.
+        cosines = 1.0 - np.square(distances) / 2.0
+        order = np.argsort(adjusted)
+        keep = cosines[order] >= min_similarity
+        keep[:k] = True  # floor: always retain the top-k by adjusted distance
+        nearest = order[keep]
+        if max_seeds is not None and max_seeds > 0:
+            nearest = nearest[:max_seeds]
+    else:
+        # argpartition for the k nearest by ADJUSTED distance, then sort those k.
+        nearest = np.argpartition(adjusted, k - 1)[:k] if k < n else np.arange(n)
+        nearest = nearest[np.argsort(adjusted[nearest])]
 
     out: list[RoleCandidate] = []
     for idx in nearest:

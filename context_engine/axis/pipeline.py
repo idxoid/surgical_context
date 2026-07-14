@@ -1093,6 +1093,101 @@ def _apply_cross_role_intersection(
             )
 
 
+# The pure-semantic seed axes. Their retrieval metric (embedding cosine) is
+# range-restricted — every candidate is already top-cosine, so cosine cannot rank
+# gold WITHIN the channel (measured AUC ~0.52). The rest of the pool (structural
+# roles) is the orthogonal reference the connectivity gate scores against.
+_VSEED_SEMANTIC_ROLES = frozenset(
+    {"vector_seed", "doc_anchor", "doc_anchor_bridge", "anchor_symbol"}
+)
+
+
+def _vector_seed_connectivity(
+    db: Any, vseed_uids: list[str], other_uids: list[str]
+) -> dict[str, int]:
+    """For each vector_seed uid, count DISTINCT other-axis (structural) pool nodes
+    reachable by a single graph edge (any type/direction). This 1-hop cross-axis
+    connectivity is the metric ORTHOGONAL to the channel's own cosine — it separates
+    gold in the vector_seed channel at AUC ~0.71 (vs 0.52 for cosine), and is NOT
+    global centrality (raw degree is gold-blind) but connectivity to THIS query's
+    structural neighbourhood."""
+    if not vseed_uids or not other_uids:
+        return {}
+    query = (
+        "UNWIND $V AS vu "
+        "OPTIONAL MATCH (v {uid: vu}) "
+        "OPTIONAL MATCH (v)--(o) WHERE o.uid IN $O "
+        "RETURN vu AS uid, count(DISTINCT o.uid) AS c"
+    )
+    with db.driver.session() as session:
+        return {
+            str(row["uid"]): int(row["c"] or 0)
+            for row in session.run(query, V=vseed_uids, O=other_uids)
+        }
+
+
+def _apply_vector_seed_connectivity_gate(
+    raw_by_role: dict[str, list[RoleCandidate]],
+    *,
+    db: Any,
+    min_conn: int,
+) -> None:
+    """Gate the vector_seed axis by cross-axis structural connectivity (see
+    ``_vector_seed_connectivity``). Drops candidates connected to fewer than
+    ``min_conn`` distinct other-axis pool nodes — the isolated cosine noise that a
+    widened channel pulls in and that no in-channel signal can demote — while
+    keeping the structurally-grounded (gold-enriched) seeds. No-op when
+    ``min_conn`` <= 0. RECALL-SAFE: a vector_seed that is the ONLY pool candidate
+    covering its file is retained even when isolated — the gate prunes noise, never
+    file coverage. Never empties the channel (falls back to the best-connected
+    seed)."""
+    if min_conn <= 0:
+        return
+    vseeds = raw_by_role.get("vector_seed") or []
+    if not vseeds:
+        return
+    other_uids = {
+        c.uid
+        for role, cands in raw_by_role.items()
+        if role not in _VSEED_SEMANTIC_ROLES
+        for c in cands
+        if c.uid
+    }
+    if not other_uids:
+        return
+    conn = _vector_seed_connectivity(
+        db, [c.uid for c in vseeds if c.uid], list(other_uids)
+    )
+    # Files already covered by any OTHER pool candidate (any non-vector_seed role):
+    # a vseed on one of these is safe to prune. A vseed on a file NOTHING else covers
+    # is the sole bridge to that file — keep it regardless of connectivity.
+    covered_files = {
+        c.file_path
+        for role, cands in raw_by_role.items()
+        if role != "vector_seed"
+        for c in cands
+        if c.file_path
+    }
+    kept: list[RoleCandidate] = []
+    kept_uids: set[str] = set()
+    for c in vseeds:  # connected seeds first
+        if conn.get(c.uid, 0) >= min_conn:
+            kept.append(c)
+            kept_uids.add(c.uid)
+            if c.file_path:
+                covered_files.add(c.file_path)
+    for c in vseeds:  # recall-safe re-admit: sole cover of an otherwise-absent file
+        if c.uid in kept_uids:
+            continue
+        if c.file_path and c.file_path not in covered_files:
+            kept.append(c)
+            kept_uids.add(c.uid)
+            covered_files.add(c.file_path)
+    if not kept:
+        kept = [max(vseeds, key=lambda c: conn.get(c.uid, 0))]
+    raw_by_role["vector_seed"] = kept
+
+
 def _flatten_candidates_for_context(
     raw_by_role: dict[str, list[RoleCandidate]],
     intent: list[IntentMatch],
@@ -1419,12 +1514,21 @@ def _run_axis_retrieval_impl(
         # in-index with good qsim but loses a role slot). Its cap is normally
         # seed_limit (=per_role_limit, 7) — too small to reach qsim~0.37 gold.
         # AXIS_VECTOR_SEED_LIMIT widens ONLY this floor (off/default = seed_limit).
+        # AXIS_VECTOR_SEED_QSIM (>0) switches to an ADAPTIVE gate: seed every
+        # symbol clearing that cosine threshold (top-limit still pinned as a
+        # floor), so hard queries get more seeds and easy ones don't over-seed;
+        # AXIS_VECTOR_SEED_MAX caps the gated total (default 200). Both default
+        # off — the fixed top-limit behaviour is unchanged.
         vector_seed_limit = max(seed_limit, int(os.getenv("AXIS_VECTOR_SEED_LIMIT", "0") or "0"))
+        vector_seed_qsim = float(os.getenv("AXIS_VECTOR_SEED_QSIM", "0") or "0")
+        vector_seed_max = int(os.getenv("AXIS_VECTOR_SEED_MAX", "200") or "200")
         raw_by_role["vector_seed"] = role_retrieval.find_seeds_by_vector(
             workspace_id,
             question,
             embed_fn=embed_fn,
             limit=vector_seed_limit,
+            min_similarity=vector_seed_qsim,
+            max_seeds=vector_seed_max,
             impact_mode=impact_mode,
             prescanned=scanned,
             query_scoring=query_scoring,
@@ -1503,6 +1607,17 @@ def _run_axis_retrieval_impl(
         workspace_id=workspace_id,
         trace=tr,
     )
+
+    # Rank the pure-semantic vector_seed axis by the ORTHOGONAL metric it lacks:
+    # 1-hop connectivity to the structural pool (its own cosine is range-restricted
+    # and gold-blind within the channel). AXIS_VSEED_CONN_MIN (>0) drops isolated
+    # cosine noise a widened channel pulls in; default 0 = off (behaviour unchanged).
+    vseed_conn_min = int(os.getenv("AXIS_VSEED_CONN_MIN", "0") or "0")
+    if vseed_conn_min > 0:
+        with tr.stage("vseed_connectivity_gate"):
+            _apply_vector_seed_connectivity_gate(
+                raw_by_role, db=db, min_conn=vseed_conn_min
+            )
 
     raw_by_role = axis_ranking.apply_intent_axis_boost(raw_by_role, [m.role for m in intent])
 
