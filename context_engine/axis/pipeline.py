@@ -1113,9 +1113,14 @@ def _vector_seed_connectivity(
     structural neighbourhood."""
     if not vseed_uids or not other_uids:
         return {}
+    # The :Symbol label lets the seek use the symbol_uid_unique index; without it
+    # the planner does an AllNodesScan per UNWIND row (~1000x slower on this graph:
+    # 45s -> 0.05s for 200 vseeds). vector_seed candidates are embedded code symbols,
+    # so they are always :Symbol; the neighbour ``o`` is deliberately left unlabelled
+    # so connectivity to ExternalSymbol/ExternalPkg pool nodes is still counted.
     query = (
         "UNWIND $V AS vu "
-        "OPTIONAL MATCH (v {uid: vu}) "
+        "OPTIONAL MATCH (v:Symbol {uid: vu}) "
         "OPTIONAL MATCH (v)--(o) WHERE o.uid IN $O "
         "RETURN vu AS uid, count(DISTINCT o.uid) AS c"
     )
