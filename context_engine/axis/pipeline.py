@@ -35,6 +35,7 @@ Design notes that matter for the seam:
 from __future__ import annotations
 
 import contextlib
+import os
 from dataclasses import dataclass, field, replace
 from typing import Any
 
@@ -1413,11 +1414,17 @@ def _run_axis_retrieval_impl(
             )
 
     with tr.stage("vector_seeds"):
+        # The role-agnostic vector seed channel is the floor that catches gold
+        # symbols the role caps drop (measured: ~2/3 of the missing gold is
+        # in-index with good qsim but loses a role slot). Its cap is normally
+        # seed_limit (=per_role_limit, 7) — too small to reach qsim~0.37 gold.
+        # AXIS_VECTOR_SEED_LIMIT widens ONLY this floor (off/default = seed_limit).
+        vector_seed_limit = max(seed_limit, int(os.getenv("AXIS_VECTOR_SEED_LIMIT", "0") or "0"))
         raw_by_role["vector_seed"] = role_retrieval.find_seeds_by_vector(
             workspace_id,
             question,
             embed_fn=embed_fn,
-            limit=seed_limit,
+            limit=vector_seed_limit,
             impact_mode=impact_mode,
             prescanned=scanned,
             query_scoring=query_scoring,
