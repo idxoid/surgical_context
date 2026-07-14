@@ -471,6 +471,7 @@ def expand_candidates_via_neighbourhood(
     query_text: str | None = None,
     embed_fn=None,
     query_scoring: QueryScoringContext | None = None,
+    additional_source_roles: Iterable[str] = (),
 ) -> dict[str, list[RoleCandidate]]:
     """Walk K hops from every role's candidates and use the
     container_kinds of the reached neighbours two ways:
@@ -522,9 +523,14 @@ def expand_candidates_via_neighbourhood(
         idx = row.get("_idx")
         return float(distances[idx]) if idx is not None else None
 
+    # Preserve retrieval-only channels in the output.  They may serve as graph
+    # sources but never become target intent roles, so role semantics remain
+    # honest while exact/chunk seeds can expose structurally evidenced peers.
     out: dict[str, list[RoleCandidate]] = {
-        role: list(candidates_by_role.get(role) or []) for role in intent_roles
+        role: list(candidates) for role, candidates in candidates_by_role.items()
     }
+    for role in intent_roles:
+        out.setdefault(role, [])
     if not kind_to_roles:
         return out
 
@@ -553,7 +559,10 @@ def expand_candidates_via_neighbourhood(
         all_seed_uids=all_seed_uids,
     )
 
-    for source_role in intent_roles:
+    source_roles = list(
+        dict.fromkeys([*intent_roles, *(str(role) for role in additional_source_roles)])
+    )
+    for source_role in source_roles:
         _expand_lookahead_for_source_role(
             source_role,
             candidates_by_role=candidates_by_role,

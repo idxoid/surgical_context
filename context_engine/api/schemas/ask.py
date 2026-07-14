@@ -51,6 +51,9 @@ class AskAxisRequest(BaseModel):
     intent_budget: bool = True
     token_budget: int = Field(default=6000, ge=TOKEN_BUDGET_MIN, le=TOKEN_BUDGET_MAX)
     span_line_rerank: bool = False
+    lexical_retrieval: bool = True
+    semantic_chunk_retrieval: bool = True
+    hybrid_seed_limit: int = Field(default=12, ge=1, le=100)
 
 
 class AxisIntentMatchResponse(BaseModel):
@@ -72,6 +75,9 @@ class AxisCandidateResponse(BaseModel):
     score: float
     query_similarity: float | None = None
     graph_score: float | None = None
+    retrieval_channels: list[str] = Field(default_factory=list)
+    retrieval_spans: list[tuple[int, int]] = Field(default_factory=list)
+    exact_symbol_match: bool = False
 
 
 class AxisContextSymbolResponse(BaseModel):
@@ -85,6 +91,7 @@ class AxisContextSymbolResponse(BaseModel):
     start_line: int | None = None
     end_line: int | None = None
     rendered_spans: list[tuple[int, int]] = Field(default_factory=list)
+    retrieval_spans: list[tuple[int, int]] = Field(default_factory=list)
 
 
 class AxisContextBundleResponse(BaseModel):

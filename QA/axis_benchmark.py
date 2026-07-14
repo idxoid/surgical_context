@@ -124,6 +124,8 @@ class QuestionResult:
     question: str
     mechanism: str
     expected_files: list[str]
+    expected_symbols: list[str] = field(default_factory=list)
+    expected_spans: list[dict[str, Any]] = field(default_factory=list)
     retrieved_files: list[str] = field(default_factory=list)
     matched_files: list[str] = field(default_factory=list)
     file_recall: float = 0.0
@@ -172,6 +174,11 @@ class QuestionResult:
     top_candidates: list[dict[str, Any]] = field(default_factory=list)
     top_rendered_symbols: list[dict[str, Any]] = field(default_factory=list)
     expected_file_layers: list[dict[str, Any]] = field(default_factory=list)
+    seed_symbol_recall: float = 0.0
+    pool_symbol_recall: float = 0.0
+    bundle_symbol_recall: float = 0.0
+    seed_span_recall: float = 0.0
+    bundle_span_recall: float = 0.0
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -181,6 +188,8 @@ class QuestionResult:
             "question": self.question,
             "mechanism": self.mechanism,
             "expected_files": self.expected_files,
+            "expected_symbols": self.expected_symbols,
+            "expected_spans": self.expected_spans,
             "retrieved_files": self.retrieved_files,
             "matched_files": self.matched_files,
             "file_recall": self.file_recall,
@@ -208,6 +217,11 @@ class QuestionResult:
             "top_candidates": self.top_candidates,
             "top_rendered_symbols": self.top_rendered_symbols,
             "expected_file_layers": self.expected_file_layers,
+            "seed_symbol_recall": self.seed_symbol_recall,
+            "pool_symbol_recall": self.pool_symbol_recall,
+            "bundle_symbol_recall": self.bundle_symbol_recall,
+            "seed_span_recall": self.seed_span_recall,
+            "bundle_span_recall": self.bundle_span_recall,
         }
 
 
@@ -290,6 +304,122 @@ def _compute_precision(expected: list[str], retrieved: list[str]) -> float:
     return matched / len(paths)
 
 
+def _normalise_expected_spans(entry: dict[str, Any]) -> list[dict[str, Any]]:
+    """Accept future span gold without forcing one fixture representation."""
+    output: list[dict[str, Any]] = []
+
+    def add(raw: Any, *, default_symbol: str = "", default_file: str = "") -> None:
+        if isinstance(raw, int):
+            start = end = raw
+            symbol = default_symbol
+            file_path = default_file
+        elif isinstance(raw, (list, tuple)) and len(raw) == 2:
+            start, end = raw
+            symbol = default_symbol
+            file_path = default_file
+        elif isinstance(raw, dict):
+            start = raw.get("start_line", raw.get("start", raw.get("line", 0)))
+            end = raw.get("end_line", raw.get("end", start))
+            symbol = str(raw.get("symbol") or default_symbol)
+            file_path = str(raw.get("file_path") or raw.get("file") or default_file)
+        else:
+            return
+        try:
+            start_line = int(start)
+            end_line = int(end)
+        except (TypeError, ValueError):
+            return
+        if start_line <= 0 or end_line < start_line:
+            return
+        output.append(
+            {
+                "symbol": symbol,
+                "file_path": file_path,
+                "start_line": start_line,
+                "end_line": end_line,
+            }
+        )
+
+    default_symbol = str(entry.get("symbol") or "")
+    default_files = [str(path) for path in (entry.get("expected_files") or [])]
+    default_file = default_files[0] if len(default_files) == 1 else ""
+    for raw in entry.get("expected_spans") or []:
+        add(raw, default_symbol=default_symbol, default_file=default_file)
+
+    expected_lines = entry.get("expected_lines") or []
+    if isinstance(expected_lines, dict):
+        for owner, lines in expected_lines.items():
+            owner_text = str(owner)
+            owner_is_file = "/" in owner_text or owner_text.endswith(".py")
+            owner_file = owner_text if owner_is_file else default_file
+            owner_symbol = default_symbol if owner_is_file else owner_text
+            for raw in lines if isinstance(lines, list) else [lines]:
+                add(raw, default_symbol=owner_symbol, default_file=owner_file)
+    else:
+        for raw in expected_lines if isinstance(expected_lines, list) else [expected_lines]:
+            add(raw, default_symbol=default_symbol, default_file=default_file)
+    return output
+
+
+def _symbol_matches(item: Any, expected_symbol: str) -> bool:
+    expected = expected_symbol.strip().lower()
+    if not expected:
+        return False
+    name = str(getattr(item, "name", "") or "").lower()
+    qualified = str(getattr(item, "qualified_name", "") or "").lower()
+    return (
+        name == expected
+        or qualified == expected
+        or qualified.endswith(f".{expected}")
+        or qualified.endswith(f":{expected}")
+    )
+
+
+def _compute_symbol_recall(expected: list[str], items: list[Any]) -> float:
+    if not expected:
+        return 0.0
+    matched = sum(1 for symbol in expected if any(_symbol_matches(item, symbol) for item in items))
+    return matched / len(expected)
+
+
+def _item_matches_span_owner(item: Any, gold: dict[str, Any]) -> bool:
+    symbol = str(gold.get("symbol") or "")
+    file_path = str(gold.get("file_path") or "")
+    if symbol and not _symbol_matches(item, symbol):
+        return False
+    if file_path and not _file_matches(str(getattr(item, "file_path", "") or ""), file_path):
+        return False
+    return True
+
+
+def _compute_span_recall(
+    expected_spans: list[dict[str, Any]],
+    items: list[Any],
+    *,
+    span_getter,
+) -> float:
+    gold_lines = {
+        (gold_index, line)
+        for gold_index, gold in enumerate(expected_spans)
+        for line in range(int(gold["start_line"]), int(gold["end_line"]) + 1)
+    }
+    if not gold_lines:
+        return 0.0
+    covered: set[tuple[int, int]] = set()
+    for gold_index, gold in enumerate(expected_spans):
+        for item in items:
+            if not _item_matches_span_owner(item, gold):
+                continue
+            for start_line, end_line in span_getter(item):
+                start = int(start_line)
+                end = int(end_line)
+                for line in range(
+                    max(start, int(gold["start_line"])), min(end, int(gold["end_line"])) + 1
+                ):
+                    covered.add((gold_index, line))
+    return len(covered) / len(gold_lines)
+
+
 def _sorted_counter_dict(counter: Counter[str]) -> dict[str, int]:
     return {
         key: count for key, count in sorted(counter.items(), key=lambda item: (-item[1], item[0]))
@@ -333,6 +463,9 @@ def _candidate_audit_row(candidate: Any, rank: int) -> dict[str, Any]:
         "edge_type": str(getattr(candidate, "edge_type", "") or ""),
         "satisfying_contracts": list(getattr(candidate, "satisfying_contracts", ()) or ()),
         "satisfying_kinds": list(getattr(candidate, "satisfying_kinds", ()) or ()),
+        "retrieval_channels": list(getattr(candidate, "retrieval_channels", ()) or ()),
+        "retrieval_spans": list(getattr(candidate, "retrieval_spans", ()) or ()),
+        "exact_symbol_match": bool(getattr(candidate, "exact_symbol_match", False)),
     }
 
 
@@ -349,6 +482,8 @@ def _rendered_symbol_audit_row(symbol: Any, rank: int) -> dict[str, Any]:
         "edge_type": str(getattr(symbol, "edge_type", "") or ""),
         "relevance_score": _float_or_none(getattr(symbol, "relevance_score", None)),
         "utility_score": _float_or_none(getattr(symbol, "utility_score", None)),
+        "retrieval_spans": list(getattr(symbol, "retrieval_spans", ()) or ()),
+        "rendered_spans": list(symbol.effective_rendered_spans()),
     }
 
 
@@ -434,6 +569,8 @@ def _question_result_from_entry(question_entry: dict[str, Any]) -> QuestionResul
         question=str(question_entry.get("question") or ""),
         mechanism=str(question_entry.get("mechanism") or ""),
         expected_files=[str(p) for p in (question_entry.get("expected_files") or [])],
+        expected_symbols=[str(p) for p in (question_entry.get("expected_symbols") or [])],
+        expected_spans=_normalise_expected_spans(question_entry),
     )
 
 
@@ -523,6 +660,32 @@ def _populate_recall_layers(result: QuestionResult, retrieval: Any) -> None:
     result.pool_precision = _compute_precision(result.expected_files, result.pool_files)
     result.bundle_precision = _compute_precision(result.expected_files, result.retrieved_files)
 
+    seed_candidates = list(getattr(retrieval, "seed_candidates", []) or [])
+    pool_candidates = list(getattr(retrieval, "candidates_for_context", []) or [])
+    rendered_symbols = _unique_rendered_symbols(getattr(retrieval, "bundles", []) or [])
+    result.seed_symbol_recall = _compute_symbol_recall(
+        result.expected_symbols,
+        seed_candidates,
+    )
+    result.pool_symbol_recall = _compute_symbol_recall(
+        result.expected_symbols,
+        pool_candidates,
+    )
+    result.bundle_symbol_recall = _compute_symbol_recall(
+        result.expected_symbols,
+        rendered_symbols,
+    )
+    result.seed_span_recall = _compute_span_recall(
+        result.expected_spans,
+        seed_candidates,
+        span_getter=lambda candidate: getattr(candidate, "retrieval_spans", ()) or (),
+    )
+    result.bundle_span_recall = _compute_span_recall(
+        result.expected_spans,
+        rendered_symbols,
+        span_getter=lambda symbol: symbol.effective_rendered_spans(),
+    )
+
 
 def _run_axis_retrieval_for_question(
     *,
@@ -563,6 +726,9 @@ def _run_axis_retrieval_for_question(
     context_semantic_expansion: bool,
     context_semantic_expansion_alpha: float,
     context_semantic_expansion_structural_reserve: int,
+    lexical_retrieval: bool,
+    semantic_chunk_retrieval: bool,
+    hybrid_seed_limit: int,
 ) -> Any:
     return run_axis_retrieval(
         result.question,
@@ -609,6 +775,9 @@ def _run_axis_retrieval_for_question(
             context_semantic_expansion_structural_reserve=(
                 context_semantic_expansion_structural_reserve
             ),
+            lexical_retrieval=lexical_retrieval,
+            semantic_chunk_retrieval=semantic_chunk_retrieval,
+            hybrid_seed_limit=hybrid_seed_limit,
             trace=timer,
         ),
     )
@@ -650,6 +819,9 @@ def run_question(
     context_semantic_expansion: bool = True,
     context_semantic_expansion_alpha: float = 0.70,
     context_semantic_expansion_structural_reserve: int = 1,
+    lexical_retrieval: bool = True,
+    semantic_chunk_retrieval: bool = True,
+    hybrid_seed_limit: int = 12,
     workspace_overrides: dict[str, str] | None = None,
 ) -> QuestionResult:
     result = _question_result_from_entry(question_entry)
@@ -711,6 +883,9 @@ def run_question(
         context_semantic_expansion_structural_reserve=(
             context_semantic_expansion_structural_reserve
         ),
+        lexical_retrieval=lexical_retrieval,
+        semantic_chunk_retrieval=semantic_chunk_retrieval,
+        hybrid_seed_limit=hybrid_seed_limit,
     )
     # Post-processing cost: the ``context`` stage is the build_context graph
     # expansion + per-uid code fetch; rendered_tokens is the token volume of
@@ -848,6 +1023,14 @@ def summarise(results: list[QuestionResult]) -> dict[str, Any]:
     def _mean(attr: str) -> float:
         return sum(getattr(r, attr) for r in scored) / len(scored) if scored else 0.0
 
+    def _mean_with_gold(attr: str, gold_attr: str) -> float:
+        eligible = [result for result in scored if getattr(result, gold_attr)]
+        return (
+            sum(float(getattr(result, attr)) for result in eligible) / len(eligible)
+            if eligible
+            else 0.0
+        )
+
     overall_seed_recall = _mean("seed_recall")
     seed_full_count = sum(1 for r in scored if r.seed_recall >= 1.0 - 1e-9)
     seed_zero_count = sum(1 for r in scored if r.seed_recall <= 1e-9)
@@ -921,6 +1104,13 @@ def summarise(results: list[QuestionResult]) -> dict[str, Any]:
         "overall_pool_mean_recall": overall_pool_recall,
         "pool_full_recall_questions": pool_full_count,
         "pool_zero_recall_questions": pool_zero_count,
+        "overall_seed_symbol_recall": _mean_with_gold("seed_symbol_recall", "expected_symbols"),
+        "overall_pool_symbol_recall": _mean_with_gold("pool_symbol_recall", "expected_symbols"),
+        "overall_bundle_symbol_recall": _mean_with_gold("bundle_symbol_recall", "expected_symbols"),
+        "overall_seed_span_recall": _mean_with_gold("seed_span_recall", "expected_spans"),
+        "overall_bundle_span_recall": _mean_with_gold("bundle_span_recall", "expected_spans"),
+        "symbol_gold_questions": sum(1 for result in scored if result.expected_symbols),
+        "span_gold_questions": sum(1 for result in scored if result.expected_spans),
         # Report-only precision telemetry (never a P7 gate — the gold set is
         # recall-oriented; see ``_compute_precision``).
         "overall_seed_mean_precision": _mean("seed_precision"),
@@ -948,6 +1138,11 @@ def summarise(results: list[QuestionResult]) -> dict[str, Any]:
                 "file_recall": round(r.file_recall, 4),
                 "seed_recall": round(r.seed_recall, 4),
                 "pool_recall": round(r.pool_recall, 4),
+                "seed_symbol_recall": round(r.seed_symbol_recall, 4),
+                "pool_symbol_recall": round(r.pool_symbol_recall, 4),
+                "bundle_symbol_recall": round(r.bundle_symbol_recall, 4),
+                "seed_span_recall": round(r.seed_span_recall, 4),
+                "bundle_span_recall": round(r.bundle_span_recall, 4),
                 "bundle_precision": round(r.bundle_precision, 4),
                 "token_precision": round(r.token_precision, 4),
                 "expected_tokens": r.expected_tokens,
@@ -1540,6 +1735,19 @@ def main() -> None:
     parser.add_argument("--span-rank-max-candidates-per-symbol", type=int, default=24)
     parser.add_argument("--span-rank-max-body-lines", type=int, default=6)
     parser.add_argument(
+        "--lexical-retrieval",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Enable fielded BM25/exact-symbol seeds before graph expansion.",
+    )
+    parser.add_argument(
+        "--semantic-chunk-retrieval",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Enable owner-resolved semantic chunk seeds before graph expansion.",
+    )
+    parser.add_argument("--hybrid-seed-limit", type=int, default=12)
+    parser.add_argument(
         "--context-semantic-expansion",
         action=argparse.BooleanOptionalAction,
         default=True,
@@ -1661,6 +1869,9 @@ def main() -> None:
             context_semantic_expansion_structural_reserve=(
                 args.context_semantic_expansion_structural_reserve
             ),
+            lexical_retrieval=args.lexical_retrieval,
+            semantic_chunk_retrieval=args.semantic_chunk_retrieval,
+            hybrid_seed_limit=args.hybrid_seed_limit,
         )
         results.append(res)
         question_seconds = time.monotonic() - question_started
@@ -1698,6 +1909,9 @@ def main() -> None:
         "intent_budget": args.intent_budget,
         "query_node_rerank": args.query_node_rerank,
         "query_node_semantic_weight": args.query_node_weight,
+        "lexical_retrieval": args.lexical_retrieval,
+        "semantic_chunk_retrieval": args.semantic_chunk_retrieval,
+        "hybrid_seed_limit": args.hybrid_seed_limit,
         "query_node_mode_semantic_weight": args.query_node_mode_weight,
         "query_node_ordering_mode": args.query_node_ordering,
         "query_node_blend_alpha": args.query_node_blend_alpha,

@@ -30,7 +30,7 @@ from __future__ import annotations
 import json
 import os
 from collections import defaultdict
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any, cast
 
 import lancedb
@@ -76,6 +76,12 @@ class RoleCandidate:
     # one.  Older/specialised producers may leave it unset; the pool reranker
     # then treats their current ``score`` as the structural baseline.
     graph_score: float | None = None
+    # Retrieval-only provenance. Semantic fragments resolve to their owner
+    # symbol; these absolute source intervals remain priors for the later
+    # within-symbol line ranker and benchmark telemetry.
+    retrieval_channels: tuple[str, ...] = ()
+    retrieval_spans: tuple[tuple[int, int], ...] = ()
+    exact_symbol_match: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -95,6 +101,9 @@ class RoleCandidate:
             "utility_score": self.utility_score,
             "query_similarity": self.query_similarity,
             "graph_score": self.graph_score,
+            "retrieval_channels": list(self.retrieval_channels),
+            "retrieval_spans": list(self.retrieval_spans),
+            "exact_symbol_match": self.exact_symbol_match,
         }
 
 
@@ -204,6 +213,7 @@ class WorkspaceScan:
     rows_by_uid: dict[str, dict] = field(default_factory=dict)
     contract_index: dict[str, tuple[int, ...]] = field(default_factory=dict)
     kind_index: dict[str, tuple[int, ...]] = field(default_factory=dict)
+    lexical_index: Any | None = None
 
     def __post_init__(self) -> None:
         for index, row in enumerate(self.rows):
@@ -349,6 +359,8 @@ def _scan_reader_columns(table, *, with_vector: bool) -> list[str]:
         columns.append("qualified_name")
     if _schema_has_column(table, "file_tier"):
         columns.append("file_tier")
+    if _schema_has_column(table, "symbol_kind"):
+        columns.append("symbol_kind")
     if with_vector:
         columns.append("vector")
         if _schema_has_column(table, "signature_vector"):
@@ -759,9 +771,241 @@ def find_seeds_by_vector(
                     else _cosine_from_l2_distance(distance)
                 ),
                 graph_score=0.0,
+                retrieval_channels=("vector",),
             )
         )
     return out
+
+
+def _workspace_lexical_index(scan: WorkspaceScan):
+    if scan.lexical_index is None:
+        from context_engine.search.lexical import FieldedBM25Index
+
+        scan.lexical_index = FieldedBM25Index(scan.rows)
+    return scan.lexical_index
+
+
+def find_seeds_by_lexical(
+    workspace_id: str,
+    query_text: str,
+    *,
+    limit: int = 16,
+    lance_db_path: str = DB_PATH,
+    include_tests: bool = False,
+    impact_mode: bool = False,
+    prescanned: WorkspaceScan | None = None,
+) -> list[RoleCandidate]:
+    """Fielded BM25 + exact identifier retrieval over cached symbol metadata."""
+    if not query_text or limit <= 0:
+        return []
+    scan = (
+        prescanned
+        if prescanned is not None
+        else scan_workspace_rows(
+            workspace_id,
+            lance_db_path=lance_db_path,
+            include_tests=include_tests,
+        )
+    )
+    if not scan.rows:
+        return []
+    hits = _workspace_lexical_index(scan).search(query_text, limit=limit)
+    if not hits:
+        return []
+    ceiling = max(float(hit.score) for hit in hits) or 1.0
+    output: list[RoleCandidate] = []
+    for hit in hits:
+        row = scan.rows[hit.row_index]
+        tier_w = _tier_weight(str(row.get("file_tier") or "core"), impact_mode=impact_mode)
+        output.append(
+            RoleCandidate(
+                uid=str(row.get("uid") or ""),
+                name=str(row.get("name") or ""),
+                qualified_name=str(row.get("qualified_name") or ""),
+                file_path=str(row.get("file_path") or ""),
+                role="lexical_seed",
+                satisfying_contracts=(),
+                satisfying_kinds=(),
+                contract_count=0,
+                kind_count=0,
+                vector_distance=None,
+                score=min(1.0, float(hit.score) / ceiling) * tier_w,
+                graph_score=0.0,
+                retrieval_channels=("lexical",),
+                exact_symbol_match=bool(hit.exact),
+            )
+        )
+    return output
+
+
+def find_seeds_by_semantic_chunk(
+    workspace_id: str,
+    query_text: str,
+    *,
+    embed_fn,
+    limit: int = 12,
+    chunk_oversample: int = 4,
+    include_tests: bool = False,
+    impact_mode: bool = False,
+    prescanned: WorkspaceScan | None = None,
+    query_scoring: QueryScoringContext | None = None,
+    lance=None,
+) -> list[RoleCandidate]:
+    """Vector-search AST chunks, aggregate by owner symbol, retain spans."""
+    if not query_text or embed_fn is None or limit <= 0 or lance is None:
+        return []
+    search_chunks = getattr(lance, "search_symbol_chunks_by_vector", None)
+    if not callable(search_chunks):
+        return []
+    scan = prescanned or scan_workspace_rows(
+        workspace_id,
+        include_tests=include_tests,
+    )
+    try:
+        query_vector = (
+            query_scoring.query_vector if query_scoring is not None else embed_fn(query_text)
+        )
+        rows = search_chunks(
+            query_vector,
+            workspace_id=workspace_id,
+            limit=max(limit, limit * max(1, chunk_oversample)),
+        )
+    except Exception:
+        return []
+    by_owner: dict[str, dict[str, Any]] = {}
+    for row in rows or []:
+        owner_uid = str(row.get("owner_uid") or "")
+        owner = scan.rows_by_uid.get(owner_uid)
+        if not owner:
+            continue
+        distance = float(row.get("distance", 1.0))
+        state = by_owner.setdefault(
+            owner_uid,
+            {"owner": owner, "distance": distance, "spans": set()},
+        )
+        state["distance"] = min(float(state["distance"]), distance)
+        start_line = int(row.get("start_line") or 0)
+        end_line = int(row.get("end_line") or 0)
+        if start_line > 0 and end_line >= start_line:
+            state["spans"].add((start_line, end_line))
+
+    ranked = sorted(
+        by_owner.items(),
+        key=lambda item: (float(item[1]["distance"]), item[0]),
+    )[:limit]
+    output: list[RoleCandidate] = []
+    for owner_uid, state in ranked:
+        owner = state["owner"]
+        distance = float(state["distance"])
+        tier_w = _tier_weight(
+            str(owner.get("file_tier") or "core"),
+            impact_mode=impact_mode,
+        )
+        output.append(
+            RoleCandidate(
+                uid=owner_uid,
+                name=str(owner.get("name") or ""),
+                qualified_name=str(owner.get("qualified_name") or ""),
+                file_path=str(owner.get("file_path") or ""),
+                role="semantic_chunk_seed",
+                satisfying_contracts=(),
+                satisfying_kinds=(),
+                contract_count=0,
+                kind_count=0,
+                vector_distance=distance,
+                score=_semantic_score(distance) * tier_w,
+                query_similarity=_cosine_from_l2_distance(distance),
+                graph_score=0.0,
+                retrieval_channels=("semantic_chunk",),
+                retrieval_spans=tuple(sorted(state["spans"])),
+            )
+        )
+    return output
+
+
+def _merge_retrieval_spans(candidates: list[RoleCandidate]) -> tuple[tuple[int, int], ...]:
+    spans = {
+        (int(start), int(end))
+        for candidate in candidates
+        for start, end in candidate.retrieval_spans
+        if int(start) > 0 and int(end) >= int(start)
+    }
+    return tuple(sorted(spans))
+
+
+def fuse_seed_channels(
+    channels: dict[str, list[RoleCandidate]],
+    *,
+    limit: int = 12,
+    rrf_k: int = 60,
+    weights: dict[str, float] | None = None,
+) -> list[RoleCandidate]:
+    """Weighted reciprocal-rank fusion, deduplicated by owner symbol uid."""
+    if limit <= 0:
+        return []
+    channel_weights = {"vector": 1.0, "lexical": 1.15, "semantic_chunk": 1.0}
+    if weights:
+        channel_weights.update(weights)
+    scores: dict[str, float] = defaultdict(float)
+    evidence: dict[str, list[RoleCandidate]] = defaultdict(list)
+    for channel, candidates in channels.items():
+        weight = max(0.0, float(channel_weights.get(channel, 1.0)))
+        for rank, candidate in enumerate(candidates, start=1):
+            if not candidate.uid:
+                continue
+            scores[candidate.uid] += weight / (max(0, int(rrf_k)) + rank)
+            evidence[candidate.uid].append(candidate)
+    if not scores:
+        return []
+    ceiling = (
+        sum(
+            max(0.0, float(channel_weights.get(channel, 1.0))) / (max(0, int(rrf_k)) + 1)
+            for channel, candidates in channels.items()
+            if candidates
+        )
+        or 1.0
+    )
+    ranked_uids = sorted(scores, key=lambda uid: (scores[uid], uid), reverse=True)[:limit]
+    output: list[RoleCandidate] = []
+    for uid in ranked_uids:
+        sources = evidence[uid]
+        exemplar = max(
+            sources,
+            key=lambda candidate: (
+                candidate.exact_symbol_match,
+                bool(candidate.retrieval_spans),
+                candidate.score,
+            ),
+        )
+        similarities = [
+            float(candidate.query_similarity)
+            for candidate in sources
+            if candidate.query_similarity is not None
+        ]
+        distances = [
+            float(candidate.vector_distance)
+            for candidate in sources
+            if candidate.vector_distance is not None
+        ]
+        source_channels = tuple(
+            channel
+            for channel, candidates in channels.items()
+            if any(c.uid == uid for c in candidates)
+        )
+        output.append(
+            replace(
+                exemplar,
+                role="hybrid_seed",
+                score=min(1.0, scores[uid] / ceiling),
+                vector_distance=min(distances) if distances else None,
+                query_similarity=max(similarities) if similarities else None,
+                graph_score=0.0,
+                retrieval_channels=source_channels,
+                retrieval_spans=_merge_retrieval_spans(sources),
+                exact_symbol_match=any(candidate.exact_symbol_match for candidate in sources),
+            )
+        )
+    return output
 
 
 def _l2_distance(a, b) -> float:
@@ -1093,10 +1337,13 @@ __all__ = [
     "RoleCandidate",
     "WorkspaceScan",
     "build_query_scoring_context",
+    "find_seeds_by_lexical",
+    "find_seeds_by_semantic_chunk",
     "find_seeds_by_doc_anchor",
     "find_seeds_by_vector",
     "find_symbols_by_role",
     "find_symbols_by_roles",
     "invalidate_workspace_scan_cache",
+    "fuse_seed_channels",
     "scan_workspace_rows",
 ]

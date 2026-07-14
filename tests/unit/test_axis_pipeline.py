@@ -173,6 +173,102 @@ def test_context_seeds_per_role_caps_the_pool(stub_stages):
     assert len(result.raw_by_role["routing_surface"]) == 3
 
 
+def test_hybrid_flags_preserve_shipped_off_order_and_enable_pregraph_sources(
+    stub_stages, monkeypatch
+):
+    import context_engine.axis.intent_classifier as _intent_mod
+    import context_engine.axis.role_lookahead as _lookahead_mod
+    import context_engine.axis.role_retrieval as _retr_mod
+
+    monkeypatch.setattr(
+        _intent_mod,
+        "classify_intent",
+        lambda *a, **k: [
+            IntentMatch(role="routing_surface", similarity=0.7, description="d"),
+            IntentMatch(role="binding_surface", similarity=0.6, description="d"),
+        ],
+    )
+    monkeypatch.setattr(
+        _retr_mod,
+        "find_seeds_by_vector",
+        lambda *a, **k: [_cand("vector", "/x/vector.py")],
+    )
+    seen_at_lookahead: list[tuple[bool, bool]] = []
+
+    def _lookahead(_roles, candidates, **_kwargs):
+        seen_at_lookahead.append(
+            ("vector_seed" in candidates, "hybrid_seed" in candidates)
+        )
+        return dict(candidates)
+
+    monkeypatch.setattr(_lookahead_mod, "expand_candidates_via_neighbourhood", _lookahead)
+
+    _run(
+        with_context=False,
+        lexical_retrieval=False,
+        semantic_chunk_retrieval=False,
+    )
+    _run(with_context=False, lexical_retrieval=True, semantic_chunk_retrieval=False)
+
+    assert seen_at_lookahead == [(False, False), (True, True)]
+
+
+def test_vector_seed_connectivity_uses_symbol_index_seek_cypher():
+    captured: dict[str, object] = {}
+
+    class Session:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+        def run(self, query, **params):
+            captured["query"] = query
+            captured["params"] = params
+            return [{"uid": "vector", "c": 2}]
+
+    class Driver:
+        def session(self):
+            return Session()
+
+    class Db:
+        driver = Driver()
+
+    result = axis_pipeline._vector_seed_connectivity(  # noqa: SLF001
+        Db(), ["vector"], ["structural"]
+    )
+
+    assert result == {"vector": 2}
+    assert "MATCH (v:Symbol {uid: vu})" in str(captured["query"])
+    assert captured["params"] == {"V": ["vector"], "O": ["structural"]}
+
+
+def test_vector_seed_connectivity_gate_is_on_by_default_with_env_off_arm(
+    stub_stages, monkeypatch
+):
+    import context_engine.axis.role_retrieval as _retr_mod
+
+    monkeypatch.setattr(
+        _retr_mod,
+        "find_seeds_by_vector",
+        lambda *a, **k: [_cand("vector", "/x/vector.py")],
+    )
+    calls: list[int] = []
+    monkeypatch.setattr(
+        axis_pipeline,
+        "_apply_vector_seed_connectivity_gate",
+        lambda raw, *, db, min_conn: calls.append(min_conn),
+    )
+
+    monkeypatch.delenv("AXIS_VSEED_CONN_MIN", raising=False)
+    _run(with_context=False)
+    monkeypatch.setenv("AXIS_VSEED_CONN_MIN", "0")
+    _run(with_context=False)
+
+    assert calls == [1]
+
+
 def test_anchor_symbol_pins_named_candidate_to_context_front(stub_stages):
     # A named symbol (without anchor_only) is a pinned SEED HINT: it moves to the
     # front but the full ranked pool still renders, so recall is not collapsed.

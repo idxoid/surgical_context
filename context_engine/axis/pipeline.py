@@ -104,6 +104,7 @@ class AxisRetrievalResult:
     raw_by_role: dict[str, list[RoleCandidate]]
     seed_files: list[str]
     candidates_for_context: list[RoleCandidate]
+    seed_candidates: list[RoleCandidate] = field(default_factory=list)
     bundles: list[ContextBundle] = field(default_factory=list)
     render_mode: str = "full"
     stage_warnings: list[dict[str, Any]] = field(default_factory=list)
@@ -715,6 +716,7 @@ def _try_symbol_targeted_retrieval(
         raw_by_role={},
         seed_files=[seed_path] if seed_path else [],
         candidates_for_context=context_candidates,
+        seed_candidates=[anchor],
         bundles=list(bundles),
         render_mode=render_mode,
         budget_trace=options.budget_trace,
@@ -780,6 +782,7 @@ def _overlay_only_result(
         raw_by_role={},
         seed_files=[seed_path] if seed_path else [],
         candidates_for_context=[anchor],
+        seed_candidates=[anchor],
         bundles=bundles,
         render_mode=render_mode,
     )
@@ -840,6 +843,46 @@ def _retrieve_role_seeds(
     return scanned, raw_by_role, query_scoring
 
 
+def _retrieve_vector_and_doc_seeds(
+    question: str,
+    *,
+    workspace_id: str,
+    lance: Any,
+    embed_fn: Any,
+    scanned: Any,
+    query_scoring: Any,
+    seed_limit: int,
+    impact_mode: bool,
+) -> tuple[list[RoleCandidate], list[RoleCandidate]]:
+    """Shipped semantic floor, reusable on either side of first lookahead."""
+    vector_seed_limit = max(
+        seed_limit,
+        int(os.getenv("AXIS_VECTOR_SEED_LIMIT", "0") or "0"),
+    )
+    vector_seeds = role_retrieval.find_seeds_by_vector(
+        workspace_id,
+        question,
+        embed_fn=embed_fn,
+        limit=vector_seed_limit,
+        min_similarity=float(os.getenv("AXIS_VECTOR_SEED_QSIM", "0") or "0"),
+        max_seeds=int(os.getenv("AXIS_VECTOR_SEED_MAX", "200") or "200"),
+        impact_mode=impact_mode,
+        prescanned=scanned,
+        query_scoring=query_scoring,
+    )
+    doc_anchor_seeds = role_retrieval.find_seeds_by_doc_anchor(
+        workspace_id,
+        question,
+        embed_fn=embed_fn,
+        limit=seed_limit,
+        impact_mode=impact_mode,
+        prescanned=scanned,
+        lance=lance,
+        query_scoring=query_scoring,
+    )
+    return vector_seeds, doc_anchor_seeds
+
+
 def _candidate_file_paths(candidates: list[RoleCandidate]) -> set[str]:
     return {getattr(c, "file_path", "") or "" for c in candidates}
 
@@ -881,6 +924,7 @@ def _run_http_endpoint_bridge(
         "routing_surface",
         "trace_dependency",
         "vector_seed",
+        "hybrid_seed",
     }
     http_bridge_seeds = [
         c for role in http_bridge_roles for c in raw_by_role.get(role, []) if getattr(c, "uid", "")
@@ -912,6 +956,7 @@ def _run_hook_api_bridge(
         "routing_surface",
         "trace_dependency",
         "vector_seed",
+        "hybrid_seed",
         "binding_surface",
     }
     hook_bridge_seeds = [
@@ -1098,13 +1143,13 @@ def _apply_cross_role_intersection(
 # gold WITHIN the channel (measured AUC ~0.52). The rest of the pool (structural
 # roles) is the orthogonal reference the connectivity gate scores against.
 _VSEED_SEMANTIC_ROLES = frozenset(
-    {"vector_seed", "doc_anchor", "doc_anchor_bridge", "anchor_symbol"}
+    {"vector_seed", "hybrid_seed", "doc_anchor", "doc_anchor_bridge", "anchor_symbol"}
 )
 
 
 def _vector_seed_connectivity(
     db: Any, vseed_uids: list[str], other_uids: list[str]
-) -> dict[str, int]:
+) -> dict[str, int] | None:
     """For each vector_seed uid, count DISTINCT other-axis (structural) pool nodes
     reachable by a single graph edge (any type/direction). This 1-hop cross-axis
     connectivity is the metric ORTHOGONAL to the channel's own cosine — it separates
@@ -1124,11 +1169,23 @@ def _vector_seed_connectivity(
         "OPTIONAL MATCH (v)--(o) WHERE o.uid IN $O "
         "RETURN vu AS uid, count(DISTINCT o.uid) AS c"
     )
-    with db.driver.session() as session:
-        return {
-            str(row["uid"]): int(row["c"] or 0)
-            for row in session.run(query, V=vseed_uids, O=other_uids)
-        }
+    try:
+        with db.driver.session() as session:
+            return {
+                str(row["uid"]): int(row["c"] or 0)
+                for row in session.run(query, V=vseed_uids, O=other_uids)
+            }
+    except Exception as exc:
+        # The gate is a precision pass, not a reason to fail retrieval. An
+        # unavailable graph must preserve the ungated vector channel rather
+        # than treating every seed as disconnected.
+        record_stage_warning(
+            "vseed_connectivity_gate",
+            "vseed_connectivity_query_failed",
+            "Vector-seed connectivity query failed; retaining the ungated channel.",
+            error=exc,
+        )
+        return None
 
 
 def _apply_vector_seed_connectivity_gate(
@@ -1163,13 +1220,15 @@ def _apply_vector_seed_connectivity_gate(
     conn = _vector_seed_connectivity(
         db, [c.uid for c in vseeds if c.uid], list(other_uids)
     )
+    if conn is None:
+        return
     # Files already covered by any OTHER pool candidate (any non-vector_seed role):
     # a vseed on one of these is safe to prune. A vseed on a file NOTHING else covers
     # is the sole bridge to that file — keep it regardless of connectivity.
     covered_files = {
         c.file_path
         for role, cands in raw_by_role.items()
-        if role != "vector_seed"
+        if role not in {"vector_seed", "hybrid_seed"}
         for c in cands
         if c.file_path
     }
@@ -1202,6 +1261,7 @@ def _flatten_candidates_for_context(
     intent_role_keys = [m.role for m in intent]
     ordered_keys = intent_role_keys + [r for r in raw_by_role if r not in set(intent_role_keys)]
     candidates_for_context: list[RoleCandidate] = []
+    candidate_index: dict[str, int] = {}
     seen_keys: set[str] = set()
     for key in ordered_keys:
         if key in seen_keys:
@@ -1210,7 +1270,26 @@ def _flatten_candidates_for_context(
         cands = raw_by_role.get(key) or []
         if context_seeds_per_role is not None:
             cands = cands[:context_seeds_per_role]
-        candidates_for_context.extend(cands)
+        for candidate in cands:
+            uid = candidate.uid
+            if not uid or uid not in candidate_index:
+                candidate_index[uid] = len(candidates_for_context)
+                candidates_for_context.append(candidate)
+                continue
+            existing_index = candidate_index[uid]
+            existing = candidates_for_context[existing_index]
+            merged_spans = tuple(
+                sorted(set(existing.retrieval_spans) | set(candidate.retrieval_spans))
+            )
+            merged_channels = tuple(
+                dict.fromkeys([*existing.retrieval_channels, *candidate.retrieval_channels])
+            )
+            candidates_for_context[existing_index] = replace(
+                existing,
+                retrieval_spans=merged_spans,
+                retrieval_channels=merged_channels,
+                exact_symbol_match=(existing.exact_symbol_match or candidate.exact_symbol_match),
+            )
     return candidates_for_context
 
 
@@ -1319,6 +1398,13 @@ class AxisRetrievalConfig:
     context_semantic_expansion_alpha: float = 0.70
     context_semantic_expansion_structural_reserve: int = 1
     context_semantic_expansion_roles: tuple[str, ...] = ("dependency_solver",)
+    # Pre-graph retrieval channels.  Lexical is an in-memory fielded BM25
+    # view over the cached symbol scan; semantic chunks live in a separate
+    # Lance table and resolve back to owner symbols with source spans.
+    lexical_retrieval: bool = True
+    semantic_chunk_retrieval: bool = True
+    hybrid_seed_limit: int = 12
+    hybrid_rrf_k: int = 60
 
 
 def _request_embedder(lance: Any):
@@ -1495,9 +1581,67 @@ def _run_axis_retrieval_impl(
         trace=tr,
     )
 
-    seed_files = {
-        getattr(c, "file_path", "") or "" for cands in raw_by_role.values() for c in cands
-    }
+    seed_raw_by_role = {role: list(candidates) for role, candidates in raw_by_role.items()}
+    hybrid_enabled = cfg.lexical_retrieval or cfg.semantic_chunk_retrieval
+
+    # With either new channel enabled, all retrieval-only signals are resolved
+    # before the first graph walk.  Disabling both preserves the latest shipped
+    # order exactly: role lookahead first, vector/doc floor second.
+    if hybrid_enabled:
+        with tr.stage("hybrid_retrieval"):
+            vector_seeds, doc_anchor_seeds = _retrieve_vector_and_doc_seeds(
+                question,
+                workspace_id=workspace_id,
+                lance=lance,
+                embed_fn=embed_fn,
+                scanned=scanned,
+                query_scoring=query_scoring,
+                seed_limit=seed_limit,
+                impact_mode=impact_mode,
+            )
+            lexical_seeds = (
+                role_retrieval.find_seeds_by_lexical(
+                    workspace_id,
+                    question,
+                    limit=max(seed_limit, cfg.hybrid_seed_limit),
+                    impact_mode=impact_mode,
+                    prescanned=scanned,
+                )
+                if cfg.lexical_retrieval
+                else []
+            )
+            semantic_chunk_seeds = (
+                role_retrieval.find_seeds_by_semantic_chunk(
+                    workspace_id,
+                    question,
+                    embed_fn=embed_fn,
+                    limit=max(seed_limit, cfg.hybrid_seed_limit),
+                    impact_mode=impact_mode,
+                    prescanned=scanned,
+                    query_scoring=query_scoring,
+                    lance=lance,
+                )
+                if cfg.semantic_chunk_retrieval
+                else []
+            )
+            raw_by_role["vector_seed"] = vector_seeds
+            raw_by_role["hybrid_seed"] = role_retrieval.fuse_seed_channels(
+                {
+                    "vector": vector_seeds,
+                    "lexical": lexical_seeds,
+                    "semantic_chunk": semantic_chunk_seeds,
+                },
+                limit=max(seed_limit, cfg.hybrid_seed_limit),
+                rrf_k=cfg.hybrid_rrf_k,
+            )
+            raw_by_role["doc_anchor"] = doc_anchor_seeds
+            seed_raw_by_role.update(
+                {
+                    "vector_seed": list(vector_seeds),
+                    "hybrid_seed": list(raw_by_role["hybrid_seed"]),
+                    "doc_anchor": list(doc_anchor_seeds),
+                }
+            )
 
     if len(intent) >= 2 and any(raw_by_role.values()):
         with tr.stage("cross_role_lookahead"):
@@ -1511,43 +1655,41 @@ def _run_axis_retrieval_impl(
                 query_text=question,
                 embed_fn=embed_fn,
                 query_scoring=query_scoring,
+                additional_source_roles=("hybrid_seed",) if hybrid_enabled else (),
             )
 
-    with tr.stage("vector_seeds"):
-        # The role-agnostic vector seed channel is the floor that catches gold
-        # symbols the role caps drop (measured: ~2/3 of the missing gold is
-        # in-index with good qsim but loses a role slot). Its cap is normally
-        # seed_limit (=per_role_limit, 7) — too small to reach qsim~0.37 gold.
-        # AXIS_VECTOR_SEED_LIMIT widens ONLY this floor (off/default = seed_limit).
-        # AXIS_VECTOR_SEED_QSIM (>0) switches to an ADAPTIVE gate: seed every
-        # symbol clearing that cosine threshold (top-limit still pinned as a
-        # floor), so hard queries get more seeds and easy ones don't over-seed;
-        # AXIS_VECTOR_SEED_MAX caps the gated total (default 200). Both default
-        # off — the fixed top-limit behaviour is unchanged.
-        vector_seed_limit = max(seed_limit, int(os.getenv("AXIS_VECTOR_SEED_LIMIT", "0") or "0"))
-        vector_seed_qsim = float(os.getenv("AXIS_VECTOR_SEED_QSIM", "0") or "0")
-        vector_seed_max = int(os.getenv("AXIS_VECTOR_SEED_MAX", "200") or "200")
-        raw_by_role["vector_seed"] = role_retrieval.find_seeds_by_vector(
-            workspace_id,
-            question,
-            embed_fn=embed_fn,
-            limit=vector_seed_limit,
-            min_similarity=vector_seed_qsim,
-            max_seeds=vector_seed_max,
-            impact_mode=impact_mode,
-            prescanned=scanned,
-            query_scoring=query_scoring,
-        )
-        raw_by_role["doc_anchor"] = role_retrieval.find_seeds_by_doc_anchor(
-            workspace_id,
-            question,
-            embed_fn=embed_fn,
-            limit=seed_limit,
-            impact_mode=impact_mode,
-            prescanned=scanned,
-            lance=lance,
-            query_scoring=query_scoring,
-        )
+    if not hybrid_enabled:
+        with tr.stage("vector_seeds"):
+            vector_seeds, doc_anchor_seeds = _retrieve_vector_and_doc_seeds(
+                question,
+                workspace_id=workspace_id,
+                lance=lance,
+                embed_fn=embed_fn,
+                scanned=scanned,
+                query_scoring=query_scoring,
+                seed_limit=seed_limit,
+                impact_mode=impact_mode,
+            )
+            raw_by_role["vector_seed"] = vector_seeds
+            raw_by_role["doc_anchor"] = doc_anchor_seeds
+            seed_raw_by_role.update(
+                {
+                    "vector_seed": list(vector_seeds),
+                    "doc_anchor": list(doc_anchor_seeds),
+                }
+            )
+
+    seed_candidates = _flatten_candidates_for_context(
+        seed_raw_by_role,
+        intent,
+        context_seeds_per_role=None,
+    )
+    seed_files = {
+        getattr(c, "file_path", "") or ""
+        for role, candidates in seed_raw_by_role.items()
+        if role != "doc_anchor"
+        for c in candidates
+    }
 
     seed_files |= _run_doc_anchor_bridge(
         raw_by_role,
@@ -1616,8 +1758,10 @@ def _run_axis_retrieval_impl(
     # Rank the pure-semantic vector_seed axis by the ORTHOGONAL metric it lacks:
     # 1-hop connectivity to the structural pool (its own cosine is range-restricted
     # and gold-blind within the channel). AXIS_VSEED_CONN_MIN (>0) drops isolated
-    # cosine noise a widened channel pulls in; default 0 = off (behaviour unchanged).
-    vseed_conn_min = int(os.getenv("AXIS_VSEED_CONN_MIN", "0") or "0")
+    # cosine noise a widened channel pulls in. This branch enables the perf-fixed
+    # index-seek query at min_conn=1 by default; set the env value to 0 for the
+    # shipped off-arm.
+    vseed_conn_min = int(os.getenv("AXIS_VSEED_CONN_MIN", "1") or "0")
     if vseed_conn_min > 0:
         with tr.stage("vseed_connectivity_gate"):
             _apply_vector_seed_connectivity_gate(
@@ -1735,6 +1879,7 @@ def _run_axis_retrieval_impl(
         raw_by_role=raw_by_role,
         seed_files=sorted(f for f in seed_files if f),
         candidates_for_context=candidates_for_context,
+        seed_candidates=seed_candidates,
         bundles=list(bundles),
         render_mode=render_mode,
         budget_trace=budget_trace,

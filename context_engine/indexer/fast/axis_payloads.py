@@ -58,6 +58,8 @@ def build_symbol_docs_for_extracted(
                     "file_path": sym.file_path,
                     "workspace_id": workspace_id,
                     "code": code,
+                    "start_line": sym.start_line,
+                    "end_line": sym.end_line,
                 }
             )
             continue
@@ -69,6 +71,8 @@ def build_symbol_docs_for_extracted(
             "file_path": sym.file_path,
             "workspace_id": workspace_id,
             "code": code,
+            "start_line": sym.start_line,
+            "end_line": sym.end_line,
             "file_tier": file_tier_value,
         }
         row.update(axis_payloads.get(sym.uid) or axis_payloads.get(sym.qualified_name) or {})

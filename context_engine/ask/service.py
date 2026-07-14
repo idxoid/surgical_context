@@ -688,6 +688,9 @@ class AskService:
                 intent_budget=req.intent_budget,
                 base_token_budget=req.token_budget,
                 span_line_rerank=req.span_line_rerank,
+                lexical_retrieval=req.lexical_retrieval,
+                semantic_chunk_retrieval=req.semantic_chunk_retrieval,
+                hybrid_seed_limit=req.hybrid_seed_limit,
                 trace=trace,
                 overlay=self.overlay,
                 user_id=user_id,
@@ -724,6 +727,9 @@ class AskService:
                     score=c.score,
                     query_similarity=c.query_similarity,
                     graph_score=c.graph_score,
+                    retrieval_channels=list(c.retrieval_channels),
+                    retrieval_spans=list(c.retrieval_spans),
+                    exact_symbol_match=c.exact_symbol_match,
                 )
                 for c in candidates
             ]

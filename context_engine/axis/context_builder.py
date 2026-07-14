@@ -96,6 +96,7 @@ class _SpanCandidate:
     lexical_score: float
     structural_score: float
     line_anchor_score: float = 0.0
+    retrieval_anchor_score: float = 0.0
     anchored_line_indices: tuple[int, ...] = ()
 
 
@@ -127,6 +128,9 @@ class ContextSymbol:
     # ``None`` means the untrimmed symbol body (``start_line..end_line``);
     # an empty tuple means synthetic text with no honest source attribution.
     rendered_spans: tuple[tuple[int, int], ...] | None = None
+    # Retrieval hint only: source intervals returned by semantic chunks.  It
+    # is not claimed as rendered until the line ranker actually selects it.
+    retrieval_spans: tuple[tuple[int, int], ...] = ()
 
     def effective_rendered_spans(self) -> tuple[tuple[int, int], ...]:
         if self.rendered_spans is not None:
@@ -160,6 +164,7 @@ class ContextSymbol:
         if self.end_line >= self.start_line > 0:
             payload["end_line"] = self.end_line
         payload["rendered_spans"] = self.effective_rendered_spans()
+        payload["retrieval_spans"] = self.retrieval_spans
         return payload
 
 
@@ -1041,6 +1046,12 @@ def _span_candidates(
         uniform_starts.append(final_start)
     uniform_starts = sorted(set(uniform_starts))
 
+    retrieval_lines = {
+        source_line
+        for start_line, end_line in sym.retrieval_spans
+        for source_line in range(int(start_line), int(end_line) + 1)
+        if int(start_line) > 0 and int(end_line) >= int(start_line)
+    }
     lexical_starts: list[int] = []
     if query_terms:
         for index in sorted(renderable):
@@ -1055,6 +1066,18 @@ def _span_candidates(
                 )
     if sym.start_line > 0 and query_lines:
         for source_line in sorted(query_lines):
+            index = source_line - sym.start_line
+            if index in renderable:
+                lexical_starts.append(
+                    _span_window_start(
+                        index,
+                        body_start=body_start,
+                        line_count=len(lines),
+                        width=width,
+                    )
+                )
+    if sym.start_line > 0 and retrieval_lines:
+        for source_line in sorted(retrieval_lines):
             index = source_line - sym.start_line
             if index in renderable:
                 lexical_starts.append(
@@ -1099,7 +1122,7 @@ def _span_candidates(
         anchored_indices = tuple(
             index
             for index in indices
-            if sym.start_line > 0 and sym.start_line + index in query_lines
+            if sym.start_line > 0 and sym.start_line + index in (query_lines | retrieval_lines)
         )
         candidates.append(
             _SpanCandidate(
@@ -1110,6 +1133,11 @@ def _span_candidates(
                 line_anchor_score=(
                     len(source_lines & query_lines) / max(1, len(query_lines))
                     if query_lines
+                    else 0.0
+                ),
+                retrieval_anchor_score=(
+                    len(source_lines & retrieval_lines) / max(1, len(source_lines))
+                    if retrieval_lines
                     else 0.0
                 ),
                 anchored_line_indices=anchored_indices,
@@ -1180,6 +1208,7 @@ def _span_ranked_selection(
         zip(candidates, excess, strict=True),
         key=lambda row: (
             1.25 * row[0].line_anchor_score
+            + 1.00 * row[0].retrieval_anchor_score
             + 0.78 * row[1]
             + 0.17 * row[0].lexical_score
             + 0.05 * row[0].structural_score,
@@ -1192,6 +1221,7 @@ def _span_ranked_selection(
     )
     final_scores = [
         1.25 * candidate.line_anchor_score
+        + 1.00 * candidate.retrieval_anchor_score
         + 0.78 * semantic
         + 0.17 * candidate.lexical_score
         + 0.05 * candidate.structural_score
@@ -3347,6 +3377,7 @@ def _context_bundle_for_candidate(
         utility_score=cand.utility_score if cand.utility_score is not None else cand.score,
         start_line=_int_payload_value(seed_payload.get("start_line")),
         end_line=_int_payload_value(seed_payload.get("end_line")),
+        retrieval_spans=cand.retrieval_spans,
     )
     related = tuple(_context_symbol_from_hit(h, payload_by_uid) for h in hits)
     return ContextBundle(

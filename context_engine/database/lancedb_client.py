@@ -62,10 +62,20 @@ LANCEDB_AXIS_ADJACENCY_PARTIAL_RESET_MAX_RATIO = float(
 # covers most of the workspace (cold/full reindex). Delta updates stay per-uid.
 LANCEDB_SYMBOL_BULK_REPLACE_MIN = int(os.getenv("LANCEDB_SYMBOL_BULK_REPLACE_MIN", "512"))
 LANCEDB_SYMBOL_BULK_REPLACE_RATIO = float(os.getenv("LANCEDB_SYMBOL_BULK_REPLACE_RATIO", "0.85"))
+AXIS_SEMANTIC_CHUNK_INDEX = os.getenv("AXIS_SEMANTIC_CHUNK_INDEX", "true").strip().lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+}
+AXIS_SEMANTIC_CHUNK_TARGET_LINES = int(os.getenv("AXIS_SEMANTIC_CHUNK_TARGET_LINES", "24"))
+AXIS_SEMANTIC_CHUNK_OVERLAP_LINES = int(os.getenv("AXIS_SEMANTIC_CHUNK_OVERLAP_LINES", "4"))
+AXIS_SEMANTIC_CHUNK_MIN_SYMBOL_LINES = int(os.getenv("AXIS_SEMANTIC_CHUNK_MIN_SYMBOL_LINES", "10"))
 DOCS_TABLE = "docs"
 SYMBOLS_TABLE = "symbols"
 AXIS_ADJACENCY_TABLE = "axis_adjacency"
 AXIS_ADJACENCY_EXTERNAL_TABLE = "axis_adjacency_external"
+AXIS_SYMBOL_CHUNKS_SUFFIX = "_semantic_chunks_v1"
 
 _log = logging.getLogger(__name__)
 _SHARED_EMBEDDING_MODELS: dict[str, Any] = {}
@@ -232,6 +242,23 @@ AXIS_ADJACENCY_EXTERNAL_SCHEMA = pa.schema(
     ]
 )
 
+AXIS_SYMBOL_CHUNKS_SCHEMA = pa.schema(
+    [
+        pa.field("chunk_uid", pa.string()),
+        pa.field("workspace_id", pa.string()),
+        pa.field("owner_uid", pa.string()),
+        pa.field("name", pa.string()),
+        pa.field("qualified_name", pa.string()),
+        pa.field("file_path", pa.string()),
+        pa.field("chunk_index", pa.int32()),
+        pa.field("start_line", pa.int32()),
+        pa.field("end_line", pa.int32()),
+        pa.field("chunk_text", pa.string()),
+        pa.field("vector", pa.list_(pa.float32(), 384)),
+        pa.field("embedding_metadata", pa.string()),
+    ]
+)
+
 
 def _symbols_schema_for_profile(profile: IndexProfile) -> pa.Schema:
     if profile.name == AXIS_PYTHON_V1_PROFILE:
@@ -290,6 +317,7 @@ class LanceDBClient:
         self._sym_table_obj: Any = None
         self._axis_adjacency_table_obj: Any = None
         self._axis_adjacency_external_table_obj: Any = None
+        self._symbol_chunks_table_obj: Any = None
         self._workspace_sym_tables: dict[str, Any] = {}
         self._workspace_adj_tables: dict[str, Any] = {}
         self._workspace_adj_external_tables: dict[str, Any] = {}
@@ -377,6 +405,21 @@ class LanceDBClient:
     @_axis_adjacency_external_table.setter
     def _axis_adjacency_external_table(self, value):
         self._axis_adjacency_external_table_obj = value
+
+    @property
+    def _symbol_chunks_table(self):
+        if getattr(self, "_symbol_chunks_table_obj", None) is None:
+            table_name = f"{self._index_profile.symbols_table}{AXIS_SYMBOL_CHUNKS_SUFFIX}"
+            self._symbol_chunks_table_obj = self._open_or_reset_table(
+                table_name,
+                AXIS_SYMBOL_CHUNKS_SCHEMA,
+                required_columns=set(AXIS_SYMBOL_CHUNKS_SCHEMA.names),
+            )
+        return self._symbol_chunks_table_obj
+
+    @_symbol_chunks_table.setter
+    def _symbol_chunks_table(self, value):
+        self._symbol_chunks_table_obj = value
 
     def _axis_symbol_payload(self, symbol: dict) -> dict[str, object]:
         if not self._symbol_axis_columns:
@@ -1184,6 +1227,100 @@ class LanceDBClient:
             rows.append(row)
         return rows
 
+    def _semantic_chunk_embedding_rows(
+        self,
+        symbols: list[dict],
+        *,
+        workspace_id: str,
+        progress_callback: Callable[[str], None] | None = None,
+    ) -> list[dict]:
+        """Build and embed AST-aligned retrieval chunks for changed symbols."""
+        if not getattr(self, "_symbol_axis_columns", set()) or not AXIS_SEMANTIC_CHUNK_INDEX:
+            return []
+        from context_engine.search.semantic_chunks import build_semantic_chunks
+
+        prepared: list[tuple[dict, Any]] = []
+        for symbol in symbols:
+            chunks = build_semantic_chunks(
+                symbol,
+                target_lines=max(4, AXIS_SEMANTIC_CHUNK_TARGET_LINES),
+                overlap_lines=max(0, AXIS_SEMANTIC_CHUNK_OVERLAP_LINES),
+                min_symbol_lines=max(1, AXIS_SEMANTIC_CHUNK_MIN_SYMBOL_LINES),
+            )
+            prepared.extend((symbol, chunk) for chunk in chunks)
+        if not prepared:
+            return []
+        if progress_callback:
+            progress_callback(f"semantic chunks: rows={len(prepared)}")
+        vectors = self._embed(
+            [chunk.embedding_text for _symbol, chunk in prepared],
+            progress_callback=progress_callback,
+        )
+        rows: list[dict] = []
+        for (symbol, chunk), vector in zip(prepared, vectors, strict=False):
+            metadata = EmbeddingMetadata(
+                model_name=EMBED_MODEL,
+                model_version=self._model_metadata.version,
+                chunk_hash=compute_chunk_hash(chunk.embedding_text),
+                embedding_hash=compute_embedding_hash(vector),
+            )
+            owner_uid = str(symbol.get("uid") or "")
+            rows.append(
+                {
+                    "chunk_uid": f"{owner_uid}::semantic::{chunk.chunk_index}",
+                    "workspace_id": str(symbol.get("workspace_id") or workspace_id),
+                    "owner_uid": owner_uid,
+                    "name": str(symbol.get("name") or ""),
+                    "qualified_name": str(symbol.get("qualified_name") or ""),
+                    "file_path": str(symbol.get("file_path") or ""),
+                    "chunk_index": int(chunk.chunk_index),
+                    "start_line": int(chunk.start_line),
+                    "end_line": int(chunk.end_line),
+                    "chunk_text": chunk.text,
+                    "vector": vector,
+                    "embedding_metadata": json.dumps(
+                        {
+                            "model_name": metadata.model_name,
+                            "model_version": metadata.model_version,
+                            "chunk_hash": metadata.chunk_hash,
+                            "embedding_hash": metadata.embedding_hash,
+                        }
+                    ),
+                }
+            )
+        return rows
+
+    def _delete_symbol_chunk_rows(self, owner_uids: list[str], workspace_id: str) -> None:
+        if not owner_uids or not getattr(self, "_symbol_axis_columns", set()):
+            return
+        self._delete_workspace_value_batches(
+            self._symbol_chunks_table,
+            owner_uids,
+            workspace_id,
+            field="owner_uid",
+        )
+
+    def _upsert_semantic_chunks(
+        self,
+        symbols: list[dict],
+        *,
+        workspace_id: str,
+        progress_callback: Callable[[str], None] | None = None,
+    ) -> None:
+        if not getattr(self, "_symbol_axis_columns", set()) or not AXIS_SEMANTIC_CHUNK_INDEX:
+            return
+        owner_uids = [str(symbol.get("uid") or "") for symbol in symbols]
+        rows = self._semantic_chunk_embedding_rows(
+            symbols,
+            workspace_id=workspace_id,
+            progress_callback=progress_callback,
+        )
+        self._delete_symbol_chunk_rows(owner_uids, workspace_id)
+        if rows:
+            add_batch_size = max(512, LANCEDB_DELETE_BATCH_SIZE)
+            for start in range(0, len(rows), add_batch_size):
+                self._symbol_chunks_table.add(rows[start : start + add_batch_size])
+
     def _apply_symbol_upsert_delete_strategy(
         self,
         uids: list[str],
@@ -1542,6 +1679,11 @@ class LanceDBClient:
         self.symbols_table(workspace_id).add(rows)
         if progress_callback:
             progress_callback(f"insert done in {time.perf_counter() - t0:.2f}s")
+        self._upsert_semantic_chunks(
+            symbols,
+            workspace_id=workspace_id,
+            progress_callback=progress_callback,
+        )
         from context_engine.axis.role_retrieval import invalidate_workspace_scan_cache
 
         invalidate_workspace_scan_cache(workspace_id)
@@ -1584,6 +1726,12 @@ class LanceDBClient:
             predicate = f"workspace_id = '{ws}'"
             try:
                 self._sym_table.delete(predicate)
+            except Exception:
+                pass
+        if getattr(self, "_symbol_axis_columns", set()):
+            ws = self._quote_delete_value(workspace_id)
+            try:
+                self._symbol_chunks_table.delete(f"workspace_id = '{ws}'")
             except Exception:
                 pass
         from context_engine.axis.role_retrieval import invalidate_workspace_scan_cache
@@ -1831,6 +1979,11 @@ class LanceDBClient:
             sym_table.delete(sym_predicate)
         except Exception:
             pass
+        if getattr(self, "_symbol_axis_columns", set()):
+            try:
+                self._symbol_chunks_table.delete(predicate)
+            except Exception:
+                pass
 
         adj_table = self.axis_adjacency_table(workspace_id)
         if use_full_reset:
@@ -1857,6 +2010,62 @@ class LanceDBClient:
     ):
         """Remove symbol embedding rows for deleted symbols."""
         self._delete_symbol_rows(uids, workspace_id)
+        self._delete_symbol_chunk_rows(uids, workspace_id)
+
+    def search_symbol_chunks_by_vector(
+        self,
+        vector: list[float],
+        *,
+        workspace_id: str = DEFAULT_WORKSPACE_ID,
+        limit: int = 24,
+        threshold: float = 1.45,
+    ) -> list[dict]:
+        """Search semantic fragments and return source-attributed owner hits."""
+        if not getattr(self, "_symbol_axis_columns", set()) or limit <= 0:
+            return []
+        if hasattr(vector, "tolist"):
+            vector = vector.tolist()
+        ws = self._quote_delete_value(workspace_id)
+        try:
+            rows = (
+                self._symbol_chunks_table.search(vector)
+                .where(f"workspace_id = '{ws}'", prefilter=True)
+                .limit(limit)
+                .to_list()
+            )
+        except Exception:
+            return []
+        output: list[dict] = []
+        for row in rows:
+            meta_str = row.get("embedding_metadata")
+            if meta_str:
+                try:
+                    metadata_dict = json.loads(meta_str)
+                    indexed_model = metadata_dict.get("model_name")
+                    if indexed_model and indexed_model != EMBED_MODEL:
+                        raise EmbeddingModelMismatch(
+                            f"Query embedding uses {EMBED_MODEL} but semantic chunks use "
+                            f"{indexed_model}. Re-index the workspace."
+                        )
+                except json.JSONDecodeError:
+                    pass
+            distance = float(row.get("_distance", 1.0))
+            if distance > threshold:
+                continue
+            output.append(
+                {
+                    "chunk_uid": str(row.get("chunk_uid") or ""),
+                    "owner_uid": str(row.get("owner_uid") or ""),
+                    "name": str(row.get("name") or ""),
+                    "qualified_name": str(row.get("qualified_name") or ""),
+                    "file_path": str(row.get("file_path") or ""),
+                    "start_line": int(row.get("start_line") or 0),
+                    "end_line": int(row.get("end_line") or 0),
+                    "distance": distance,
+                    "score": _l2_to_score(distance),
+                }
+            )
+        return output
 
     def search_symbols(
         self,

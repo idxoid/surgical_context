@@ -163,3 +163,72 @@ def test_axis_benchmark_records_precision_layers_and_token_split() -> None:
     assert row["bundle_precision"] == 0.5
     assert row["expected_tokens"] == expected_tokens
     assert row["other_tokens"] == other_tokens
+
+
+def test_axis_benchmark_records_exact_symbol_and_span_recall() -> None:
+    from QA.axis_benchmark import QuestionResult
+
+    seed = RoleCandidate(
+        uid="run-once",
+        name="run_once",
+        qualified_name="worker.AsyncPoller.run_once",
+        file_path="/repo/worker.py",
+        role="hybrid_seed",
+        satisfying_contracts=(),
+        satisfying_kinds=(),
+        contract_count=0,
+        kind_count=0,
+        vector_distance=0.2,
+        score=0.9,
+        retrieval_channels=("lexical", "semantic_chunk"),
+        retrieval_spans=((105, 110),),
+        exact_symbol_match=True,
+    )
+    rendered = ContextSymbol(
+        uid=seed.uid,
+        name=seed.name,
+        qualified_name=seed.qualified_name,
+        file_path=seed.file_path,
+        role=seed.role,
+        distance_from_seed=0,
+        expansion_step=None,
+        code="def run_once():\n    pass",
+        start_line=100,
+        end_line=110,
+        rendered_spans=((104, 108),),
+        retrieval_spans=seed.retrieval_spans,
+    )
+    result = QuestionResult(
+        question_id="q-symbol-span",
+        repo="repo",
+        workspace_id="ws",
+        question="How does `run_once` work?",
+        mechanism="debug",
+        expected_files=["worker.py"],
+        expected_symbols=["run_once", "missing_symbol"],
+        expected_spans=[
+            {
+                "symbol": "run_once",
+                "file_path": "worker.py",
+                "start_line": 105,
+                "end_line": 109,
+            }
+        ],
+    )
+    retrieval = SimpleNamespace(
+        seed_files=[seed.file_path],
+        seed_candidates=[seed],
+        candidates_for_context=[seed],
+        bundles=[ContextBundle(role=seed.role, seed=rendered)],
+    )
+
+    _populate_recall_layers(result, retrieval)
+
+    assert result.seed_symbol_recall == 0.5
+    assert result.pool_symbol_recall == 0.5
+    assert result.bundle_symbol_recall == 0.5
+    assert result.seed_span_recall == 1.0
+    assert result.bundle_span_recall == 0.8
+    summary = summarise([result])
+    assert summary["overall_seed_symbol_recall"] == 0.5
+    assert summary["overall_bundle_span_recall"] == 0.8
