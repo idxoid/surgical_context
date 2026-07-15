@@ -141,7 +141,7 @@ def test_result_layers_are_populated(stub_stages):
     # role pool survives; the graph passes add empty pseudo-role keys.
     assert result.raw_by_role["routing_surface"]
     assert result.seed_files == ["/x/a.py", "/x/b.py", "/x/c.py"]
-    # No per-role cap -> the whole role pool feeds context.
+    # The default soft cap is seven, so this three-item pool is unchanged.
     assert [c.uid for c in result.candidates_for_context] == ["a", "b", "c"]
     assert [b.seed.uid for b in result.bundles] == ["a", "b", "c"]
 
@@ -171,6 +171,8 @@ def test_context_seeds_per_role_caps_the_pool(stub_stages):
     assert [c.uid for c in result.candidates_for_context] == ["a"]
     assert [b.seed.uid for b in result.bundles] == ["a"]
     assert len(result.raw_by_role["routing_surface"]) == 3
+    assert result.seed_selection_trace is not None
+    assert result.seed_selection_trace.per_role_soft_cap == 1
 
 
 def test_hybrid_flags_preserve_shipped_off_order_and_enable_pregraph_sources(

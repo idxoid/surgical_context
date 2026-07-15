@@ -26,10 +26,12 @@ Design notes that matter for the seam:
   instead of re-opening per pass.
 * **Optional ``trace``.** The endpoint passes its request trace so each
   stage keeps a span; the benchmark passes nothing and gets a null tracer.
-* **Optional ``context_seeds_per_role`` cap.** ``None`` feeds the whole pool
-  into context expansion. Callers may pass a positive value for latency A/B,
-  but the production endpoint leaves it unset so the Token Credit budget can
-  rank the full scope instead of post-processing a pre-truncated pool.
+* **Evidence-aware ``context_seeds_per_role`` soft cap.** Production keeps up
+  to seven ranked seeds per source role before the expensive context walk.
+  An explicit anchor and at most one otherwise-missing exact-symbol hit per
+  source role are reserved before ordinary ranked fill. Span/channel/role
+  evidence is retained for telemetry; ``None`` remains the explicit uncapped
+  diagnostic arm.
 """
 
 from __future__ import annotations
@@ -54,6 +56,7 @@ from context_engine.axis import (
     reexport_bridge,
     role_lookahead,
     role_retrieval,
+    seed_selector,
     structural_neighbours,
     trace_traversal,
 )
@@ -109,6 +112,7 @@ class AxisRetrievalResult:
     render_mode: str = "full"
     stage_warnings: list[dict[str, Any]] = field(default_factory=list)
     budget_trace: context_builder.TokenCreditTrace | None = None
+    seed_selection_trace: seed_selector.SeedSelectionTrace | None = None
 
 
 # Synthetic anchor for a symbol that lives only in the editor overlay (typed
@@ -1258,39 +1262,12 @@ def _flatten_candidates_for_context(
     *,
     context_seeds_per_role: int | None,
 ) -> list[RoleCandidate]:
-    intent_role_keys = [m.role for m in intent]
-    ordered_keys = intent_role_keys + [r for r in raw_by_role if r not in set(intent_role_keys)]
-    candidates_for_context: list[RoleCandidate] = []
-    candidate_index: dict[str, int] = {}
-    seen_keys: set[str] = set()
-    for key in ordered_keys:
-        if key in seen_keys:
-            continue
-        seen_keys.add(key)
-        cands = raw_by_role.get(key) or []
-        if context_seeds_per_role is not None:
-            cands = cands[:context_seeds_per_role]
-        for candidate in cands:
-            uid = candidate.uid
-            if not uid or uid not in candidate_index:
-                candidate_index[uid] = len(candidates_for_context)
-                candidates_for_context.append(candidate)
-                continue
-            existing_index = candidate_index[uid]
-            existing = candidates_for_context[existing_index]
-            merged_spans = tuple(
-                sorted(set(existing.retrieval_spans) | set(candidate.retrieval_spans))
-            )
-            merged_channels = tuple(
-                dict.fromkeys([*existing.retrieval_channels, *candidate.retrieval_channels])
-            )
-            candidates_for_context[existing_index] = replace(
-                existing,
-                retrieval_spans=merged_spans,
-                retrieval_channels=merged_channels,
-                exact_symbol_match=(existing.exact_symbol_match or candidate.exact_symbol_match),
-            )
-    return candidates_for_context
+    selected, _trace = seed_selector.select_context_seeds(
+        raw_by_role,
+        (match.role for match in intent),
+        per_role_soft_cap=context_seeds_per_role,
+    )
+    return selected
 
 
 def _prepare_budgeted_candidates(
@@ -1356,7 +1333,7 @@ class AxisRetrievalConfig:
     intent_threshold: float = 0.20
     with_context: bool = True
     context_per_seed: int = 4
-    context_seeds_per_role: int | None = None
+    context_seeds_per_role: int | None = 7
     intent_budget: bool = True
     base_token_budget: int = 6000
     render_mode_override: str | None = None
@@ -1496,9 +1473,10 @@ def _run_axis_retrieval_impl(
     ``Neo4jClient``); ``lance`` is a ``LanceDBClient`` used for both intent
     embedding and the vector seeds. ``trace`` may be any object exposing a
     ``stage(name)`` context manager; pass ``None`` for an un-instrumented
-    run. ``context_seeds_per_role=None`` feeds the entire pool into context
-    expansion (the benchmarked behaviour); a positive value caps the
-    per-role context seeds.
+    run. The default evidence-aware selector uses a soft per-role cap of seven
+    before context expansion. ``context_seeds_per_role=None`` is the explicit
+    uncapped diagnostic arm. Explicit anchors may overflow a positive cap; one
+    otherwise-missing exact hit per source role consumes a normal slot.
 
     ``intent_override`` bypasses the embedding role-classifier: when supplied,
     those roles drive retrieval directly (the caller picked them). The vector
@@ -1785,10 +1763,10 @@ def _run_axis_retrieval_impl(
                 rrf_k=cfg.query_node_rrf_k,
             )
 
-    candidates_for_context = _flatten_candidates_for_context(
+    candidates_for_context, seed_selection_trace = seed_selector.select_context_seeds(
         raw_by_role,
-        intent,
-        context_seeds_per_role=cfg.context_seeds_per_role,
+        (match.role for match in intent),
+        per_role_soft_cap=cfg.context_seeds_per_role,
     )
     active, token_budget, render_mode, budget_profile, utility_score_fn = (
         _prepare_budgeted_candidates(
@@ -1883,6 +1861,7 @@ def _run_axis_retrieval_impl(
         bundles=list(bundles),
         render_mode=render_mode,
         budget_trace=budget_trace,
+        seed_selection_trace=seed_selection_trace,
     )
 
 

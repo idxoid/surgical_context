@@ -303,6 +303,13 @@ Important request fields include `top_roles` (1–10), `per_role_limit` (1–50)
 `with_context`, `context_seeds_per_role`, `context_per_seed`, `intent_budget`, and
 `token_budget` (400–32,000; default 6,000).
 
+`context_seeds_per_role` defaults to `7` and is a pre-graph soft cap. Ranked
+top candidates retain their existing order; explicit anchors and at most one
+otherwise-missing exact-symbol hit per source role are recall-safe reserves.
+Pass JSON `null` only for the uncapped diagnostic path. The response's
+`seed_selection` object reports input/unique/selected/dropped counts and
+low-cardinality selection reasons.
+
 ---
 
 ### POST /ask/stream

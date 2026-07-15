@@ -765,4 +765,9 @@ class AskService:
             candidates_by_role=candidates_by_role,
             context_bundles=bundles_payload,
             stage_warnings=stage_warnings_payload,
+            seed_selection=(
+                result.seed_selection_trace.to_dict()
+                if result.seed_selection_trace is not None
+                else {}
+            ),
         )

@@ -46,7 +46,7 @@ class AskAxisRequest(BaseModel):
     intent_threshold: float = Field(default=0.20, ge=0.0, le=1.0)
     per_role_limit: int = Field(default=7, ge=1, le=50)
     with_context: bool = True
-    context_seeds_per_role: int | None = Field(default=None, ge=1, le=10)
+    context_seeds_per_role: int | None = Field(default=7, ge=1, le=10)
     context_per_seed: int = Field(default=4, ge=1, le=20)
     intent_budget: bool = True
     token_budget: int = Field(default=6000, ge=TOKEN_BUDGET_MIN, le=TOKEN_BUDGET_MAX)
@@ -122,6 +122,7 @@ class AskAxisResponse(BaseModel):
     candidates_by_role: dict[str, list[AxisCandidateResponse]]
     context_bundles: list[AxisContextBundleResponse]
     stage_warnings: list[AxisStageWarningResponse] = Field(default_factory=list)
+    seed_selection: dict[str, Any] = Field(default_factory=dict)
 
 
 class IntentRequest(BaseModel):

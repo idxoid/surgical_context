@@ -12,9 +12,12 @@ structural mode-roles (no keyword match), to prompt-packing policy.
 
 Candidate-count knobs live on ``AxisRetrievalConfig`` instead:
 ``per_role_limit`` controls retrieval seed breadth, ``context_seeds_per_role``
-optionally caps the pool before context expansion, and ``context_per_seed``
-caps graph fanout per seed. Those are quality/latency tradeoffs, not automatic
-budget-profile decisions; changing them materially affects candidate recall.
+is an evidence-aware soft cap before context expansion, and
+``context_per_seed`` caps graph fanout per seed. Explicit anchors and one
+otherwise-missing exact-symbol hit per source role are reserved before ranked
+fill; span/channel/role consensus remains attached as telemetry. These remain
+quality/latency tradeoffs, not automatic token-profile decisions; changing
+them materially affects candidate recall.
 
 Two profiles, picked by the structural mode-roles already produced by the
 intent classifier:
@@ -63,10 +66,9 @@ class RetrievalBudget:
         return max(1, round(base_token_budget * self.token_weight / _MIN_WEIGHT))
 
 
-# The budget profile deliberately does not cap context candidates. Historical
-# active/passive walk caps were strong recall levers, not safe budget policy.
-# Keep candidate caps explicit on AxisRetrievalConfig / request schemas, where
-# callers can opt into the quality/latency tradeoff with eyes open.
+# The token profile deliberately does not choose the context-seed cap. The
+# evidence-aware selector runs earlier and keeps its quality/latency policy
+# explicit on AxisRetrievalConfig / request schemas.
 ARCHITECTURE = RetrievalBudget(
     name="architecture",
     token_weight=12000,

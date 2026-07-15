@@ -1,6 +1,31 @@
 from __future__ import annotations
 
+import os
+import subprocess
+import sys
+
 from context_engine.search.semantic_chunks import build_semantic_chunks
+
+
+def test_semantic_chunk_index_is_opt_in_by_default():
+    env = os.environ.copy()
+    env.pop("AXIS_SEMANTIC_CHUNK_INDEX", None)
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            (
+                "from context_engine.database.lancedb_client import "
+                "AXIS_SEMANTIC_CHUNK_INDEX; "
+                "print(int(AXIS_SEMANTIC_CHUNK_INDEX))"
+            ),
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+        env=env,
+    )
+    assert result.stdout.strip() == "0"
 
 
 def test_semantic_chunks_are_overlapping_and_source_attributed():

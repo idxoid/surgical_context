@@ -173,6 +173,7 @@ class QuestionResult:
     bundle_relation_histogram: dict[str, int] = field(default_factory=dict)
     top_candidates: list[dict[str, Any]] = field(default_factory=list)
     top_rendered_symbols: list[dict[str, Any]] = field(default_factory=list)
+    seed_selection: dict[str, Any] = field(default_factory=dict)
     expected_file_layers: list[dict[str, Any]] = field(default_factory=list)
     seed_symbol_recall: float = 0.0
     pool_symbol_recall: float = 0.0
@@ -216,6 +217,7 @@ class QuestionResult:
             "bundle_relation_histogram": self.bundle_relation_histogram,
             "top_candidates": self.top_candidates,
             "top_rendered_symbols": self.top_rendered_symbols,
+            "seed_selection": self.seed_selection,
             "expected_file_layers": self.expected_file_layers,
             "seed_symbol_recall": self.seed_symbol_recall,
             "pool_symbol_recall": self.pool_symbol_recall,
@@ -466,6 +468,8 @@ def _candidate_audit_row(candidate: Any, rank: int) -> dict[str, Any]:
         "retrieval_channels": list(getattr(candidate, "retrieval_channels", ()) or ()),
         "retrieval_spans": list(getattr(candidate, "retrieval_spans", ()) or ()),
         "exact_symbol_match": bool(getattr(candidate, "exact_symbol_match", False)),
+        "supporting_roles": list(getattr(candidate, "supporting_roles", ()) or ()),
+        "selection_reasons": list(getattr(candidate, "selection_reasons", ()) or ()),
     }
 
 
@@ -559,6 +563,8 @@ def _populate_candidate_audit(
         _rendered_symbol_audit_row(symbol, rank)
         for rank, symbol in enumerate(rendered_symbols[:top_limit], start=1)
     ]
+    selection_trace = getattr(retrieval, "seed_selection_trace", None)
+    result.seed_selection = selection_trace.to_dict() if selection_trace is not None else {}
 
 
 def _question_result_from_entry(question_entry: dict[str, Any]) -> QuestionResult:
@@ -793,7 +799,7 @@ def run_question(
     max_impacted: int,
     intent_threshold: float,
     context_per_seed: int,
-    context_seeds_per_role: int | None = None,
+    context_seeds_per_role: int | None = 7,
     intent_budget: bool = True,
     base_token_budget: int = 6000,
     render_mode_override: str | None = None,
@@ -831,10 +837,10 @@ def run_question(
 
     # The whole read-side pipeline is the canonical ``run_axis_retrieval``
     # — the same function the ``/ask/axis`` endpoint runs, so this
-    # benchmark validates that exact code. ``context_seeds_per_role=None``
-    # feeds the entire pool into context expansion (the historical
-    # benchmark behaviour); the seed / pool / bundle recall layers below
-    # read straight off the layered result.
+    # benchmark validates that exact code. The production default is the
+    # evidence-aware soft cap of seven; ``context_seeds_per_role=None`` remains
+    # the explicit historical/full-pool arm. The seed / pool / bundle recall
+    # layers below read straight off the layered result.
     #
     # The default benchmark path measures production /ask budgeting: full
     # ranked scope, then the echelon-2 marginal token-credit packer. The seed /
@@ -919,7 +925,7 @@ def run_axis_pack(
     max_impacted: int = 35,
     intent_threshold: float = 0.20,
     context_per_seed: int = 6,
-    context_seeds_per_role: int | None = None,
+    context_seeds_per_role: int | None = 7,
     intent_budget: bool = True,
     base_token_budget: int = 6000,
     render_mode_override: str | None = None,
@@ -1608,12 +1614,17 @@ def main() -> None:
     parser.add_argument(
         "--context-seeds-per-role",
         type=int,
-        default=None,
+        default=7,
         nargs="?",
         const=2,
         metavar="N",
-        help="Optional latency A/B cap for context seeds per intent role. "
-        "Omit for the production/full-pool path; pass alone for legacy cap 2.",
+        help="Evidence-aware soft cap for context seeds per source role "
+        "(production default 7; pass alone for legacy cap 2).",
+    )
+    parser.add_argument(
+        "--uncapped-context-seeds",
+        action="store_true",
+        help="Diagnostic historical arm: feed the full candidate pool to context expansion.",
     )
     budget_group = parser.add_mutually_exclusive_group()
     budget_group.add_argument(
@@ -1785,6 +1796,8 @@ def main() -> None:
         help="Exclude a repository id from the pack; repeat for multiple ids.",
     )
     args = parser.parse_args()
+    if args.uncapped_context_seeds:
+        args.context_seeds_per_role = None
 
     questions = _load_pack(args.pack)
     if args.repo:

@@ -62,7 +62,10 @@ LANCEDB_AXIS_ADJACENCY_PARTIAL_RESET_MAX_RATIO = float(
 # covers most of the workspace (cold/full reindex). Delta updates stay per-uid.
 LANCEDB_SYMBOL_BULK_REPLACE_MIN = int(os.getenv("LANCEDB_SYMBOL_BULK_REPLACE_MIN", "512"))
 LANCEDB_SYMBOL_BULK_REPLACE_RATIO = float(os.getenv("LANCEDB_SYMBOL_BULK_REPLACE_RATIO", "0.85"))
-AXIS_SEMANTIC_CHUNK_INDEX = os.getenv("AXIS_SEMANTIC_CHUNK_INDEX", "true").strip().lower() in {
+# Semantic chunks are intentionally opt-in: cold-indexing a large repository
+# can require tens of thousands of additional embeddings.  Lexical/exact-symbol
+# retrieval remains available without this materialized index.
+AXIS_SEMANTIC_CHUNK_INDEX = os.getenv("AXIS_SEMANTIC_CHUNK_INDEX", "false").strip().lower() in {
     "1",
     "true",
     "yes",

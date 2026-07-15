@@ -82,6 +82,14 @@ class RoleCandidate:
     retrieval_channels: tuple[str, ...] = ()
     retrieval_spans: tuple[tuple[int, int], ...] = ()
     exact_symbol_match: bool = False
+    # Selection-only provenance accumulated when the same UID is supported by
+    # several intent/pseudo-role pools.  The historical flattening pass kept
+    # only the first role, which hid a useful pre-graph consensus signal.
+    supporting_roles: tuple[str, ...] = ()
+    # Stable, low-cardinality reason tags attached by the pre-graph selector.
+    # They are telemetry rather than ranking inputs for later graph/token
+    # stages, so a benchmark can explain why a seed survived the cap.
+    selection_reasons: tuple[str, ...] = ()
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -104,6 +112,8 @@ class RoleCandidate:
             "retrieval_channels": list(self.retrieval_channels),
             "retrieval_spans": list(self.retrieval_spans),
             "exact_symbol_match": self.exact_symbol_match,
+            "supporting_roles": list(self.supporting_roles),
+            "selection_reasons": list(self.selection_reasons),
         }
 
 

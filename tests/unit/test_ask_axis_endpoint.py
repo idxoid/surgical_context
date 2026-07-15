@@ -138,9 +138,9 @@ def _request(**overrides) -> context_engine_main.AskAxisRequest:
     return context_engine_main.AskAxisRequest(**defaults)
 
 
-def test_ask_axis_request_default_keeps_context_pool_uncapped() -> None:
+def test_ask_axis_request_default_uses_evidence_aware_context_cap() -> None:
     req = context_engine_main.AskAxisRequest(question="how does routing work")
-    assert req.context_seeds_per_role is None
+    assert req.context_seeds_per_role == 7
     assert req.intent_budget is True
     assert req.token_budget == 6000
     assert req.span_line_rerank is False
@@ -154,6 +154,7 @@ def test_ask_axis_returns_well_formed_payload(patch_axis_pipeline):
     assert resp.workspace_id == "test-workspace"
     assert resp.user == "test-user"
     assert isinstance(resp.stage_warnings, list)
+    assert resp.seed_selection["per_role_soft_cap"] == 1
     assert len(resp.intent_matches) == 1
     assert resp.intent_matches[0].role == "routing_surface"
     assert list(resp.candidates_by_role) == ["routing_surface"]
