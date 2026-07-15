@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from types import SimpleNamespace
 
 from context_engine.axis.context_builder import ContextBundle, ContextSymbol
 from context_engine.axis.role_retrieval import RoleCandidate
 from QA.axis_benchmark import (
+    _compute_span_owner_recall,
     _expected_file_layers,
     _populate_candidate_audit,
     _populate_recall_layers,
@@ -227,8 +229,42 @@ def test_axis_benchmark_records_exact_symbol_and_span_recall() -> None:
     assert result.seed_symbol_recall == 0.5
     assert result.pool_symbol_recall == 0.5
     assert result.bundle_symbol_recall == 0.5
+    assert result.seed_span_owner_recall == 1.0
+    assert result.pool_span_owner_recall == 1.0
+    assert result.bundle_span_owner_recall == 1.0
     assert result.seed_span_recall == 1.0
+    assert result.pool_span_recall == 1.0
     assert result.bundle_span_recall == 0.8
     summary = summarise([result])
     assert summary["overall_seed_symbol_recall"] == 0.5
+    assert summary["overall_seed_span_owner_recall"] == 1.0
+    assert summary["overall_pool_span_owner_recall"] == 1.0
+    assert summary["overall_bundle_span_owner_recall"] == 1.0
+    assert summary["overall_pool_span_recall"] == 1.0
     assert summary["overall_bundle_span_recall"] == 0.8
+    assert summary["per_repo"]["repo"]["bundle_span_owner_recall"] == 1.0
+
+
+def test_span_owner_recall_requires_the_file_symbol_pair_and_deduplicates_ranges() -> None:
+    expected = [
+        {"file_path": "worker.py", "symbol": "run_once", "start_line": 10, "end_line": 12},
+        {"file_path": "worker.py", "symbol": "run_once", "start_line": 20, "end_line": 22},
+    ]
+    wrong_pair = [
+        _candidate("wrong-file", "/repo/other.py", "hybrid_seed"),
+        _candidate("wrong-symbol", "/repo/worker.py", "hybrid_seed"),
+    ]
+    wrong_pair[0] = replace(
+        wrong_pair[0],
+        name="run_once",
+        qualified_name="worker.run_once",
+    )
+
+    assert _compute_span_owner_recall(expected, wrong_pair) == 0.0
+
+    correct = replace(
+        wrong_pair[1],
+        name="run_once",
+        qualified_name="worker.run_once",
+    )
+    assert _compute_span_owner_recall(expected, [*wrong_pair, correct]) == 1.0

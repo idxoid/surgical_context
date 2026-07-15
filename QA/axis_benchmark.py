@@ -178,7 +178,14 @@ class QuestionResult:
     seed_symbol_recall: float = 0.0
     pool_symbol_recall: float = 0.0
     bundle_symbol_recall: float = 0.0
+    # Span gold has two independent failure modes. Owner recall asks whether
+    # the exact (file, symbol) pair survived each layer; line recall asks how
+    # much of the gold interval is actually anchored/rendered once it did.
+    seed_span_owner_recall: float = 0.0
+    pool_span_owner_recall: float = 0.0
+    bundle_span_owner_recall: float = 0.0
     seed_span_recall: float = 0.0
+    pool_span_recall: float = 0.0
     bundle_span_recall: float = 0.0
 
     def to_dict(self) -> dict[str, Any]:
@@ -222,7 +229,11 @@ class QuestionResult:
             "seed_symbol_recall": self.seed_symbol_recall,
             "pool_symbol_recall": self.pool_symbol_recall,
             "bundle_symbol_recall": self.bundle_symbol_recall,
+            "seed_span_owner_recall": self.seed_span_owner_recall,
+            "pool_span_owner_recall": self.pool_span_owner_recall,
+            "bundle_span_owner_recall": self.bundle_span_owner_recall,
             "seed_span_recall": self.seed_span_recall,
+            "pool_span_recall": self.pool_span_recall,
             "bundle_span_recall": self.bundle_span_recall,
         }
 
@@ -392,6 +403,31 @@ def _item_matches_span_owner(item: Any, gold: dict[str, Any]) -> bool:
     if file_path and not _file_matches(str(getattr(item, "file_path", "") or ""), file_path):
         return False
     return True
+
+
+def _compute_span_owner_recall(
+    expected_spans: list[dict[str, Any]],
+    items: list[Any],
+) -> float:
+    """Recall of unique exact (file, symbol) owners in span gold.
+
+    A question may name several disjoint answer intervals inside one large
+    function. Count that owner once here; the line metric below retains the
+    interval-level weighting.
+    """
+    owners: dict[tuple[str, str], dict[str, Any]] = {}
+    for gold in expected_spans:
+        symbol = str(gold.get("symbol") or "").strip()
+        file_path = str(gold.get("file_path") or "").replace("\\", "/").strip("/")
+        if not symbol and not file_path:
+            continue
+        owners.setdefault((file_path, symbol.lower()), gold)
+    if not owners:
+        return 0.0
+    matched = sum(
+        1 for gold in owners.values() if any(_item_matches_span_owner(item, gold) for item in items)
+    )
+    return matched / len(owners)
 
 
 def _compute_span_recall(
@@ -681,9 +717,26 @@ def _populate_recall_layers(result: QuestionResult, retrieval: Any) -> None:
         result.expected_symbols,
         rendered_symbols,
     )
+    result.seed_span_owner_recall = _compute_span_owner_recall(
+        result.expected_spans,
+        seed_candidates,
+    )
+    result.pool_span_owner_recall = _compute_span_owner_recall(
+        result.expected_spans,
+        pool_candidates,
+    )
+    result.bundle_span_owner_recall = _compute_span_owner_recall(
+        result.expected_spans,
+        rendered_symbols,
+    )
     result.seed_span_recall = _compute_span_recall(
         result.expected_spans,
         seed_candidates,
+        span_getter=lambda candidate: getattr(candidate, "retrieval_spans", ()) or (),
+    )
+    result.pool_span_recall = _compute_span_recall(
+        result.expected_spans,
+        pool_candidates,
         span_getter=lambda candidate: getattr(candidate, "retrieval_spans", ()) or (),
     )
     result.bundle_span_recall = _compute_span_recall(
@@ -1070,6 +1123,15 @@ def summarise(results: list[QuestionResult]) -> dict[str, Any]:
     by_repo: defaultdict[str, list[QuestionResult]] = defaultdict(list)
     for r in scored:
         by_repo[r.repo].append(r)
+
+    def _items_mean_with_gold(items: list[QuestionResult], attr: str, gold_attr: str) -> float:
+        eligible = [result for result in items if getattr(result, gold_attr)]
+        return (
+            sum(float(getattr(result, attr)) for result in eligible) / len(eligible)
+            if eligible
+            else 0.0
+        )
+
     by_repo_summary = {
         repo: {
             "questions": len(items),
@@ -1084,6 +1146,20 @@ def summarise(results: list[QuestionResult]) -> dict[str, Any]:
             "mean_token_precision": sum(r.token_precision for r in items) / len(items),
             "mean_expected_tokens": sum(r.expected_tokens for r in items) / len(items),
             "mean_other_tokens": sum(r.other_tokens for r in items) / len(items),
+            "seed_span_owner_recall": _items_mean_with_gold(
+                items, "seed_span_owner_recall", "expected_spans"
+            ),
+            "pool_span_owner_recall": _items_mean_with_gold(
+                items, "pool_span_owner_recall", "expected_spans"
+            ),
+            "bundle_span_owner_recall": _items_mean_with_gold(
+                items, "bundle_span_owner_recall", "expected_spans"
+            ),
+            "seed_span_recall": _items_mean_with_gold(items, "seed_span_recall", "expected_spans"),
+            "pool_span_recall": _items_mean_with_gold(items, "pool_span_recall", "expected_spans"),
+            "bundle_span_recall": _items_mean_with_gold(
+                items, "bundle_span_recall", "expected_spans"
+            ),
         }
         for repo, items in sorted(by_repo.items())
     }
@@ -1113,7 +1189,17 @@ def summarise(results: list[QuestionResult]) -> dict[str, Any]:
         "overall_seed_symbol_recall": _mean_with_gold("seed_symbol_recall", "expected_symbols"),
         "overall_pool_symbol_recall": _mean_with_gold("pool_symbol_recall", "expected_symbols"),
         "overall_bundle_symbol_recall": _mean_with_gold("bundle_symbol_recall", "expected_symbols"),
+        "overall_seed_span_owner_recall": _mean_with_gold(
+            "seed_span_owner_recall", "expected_spans"
+        ),
+        "overall_pool_span_owner_recall": _mean_with_gold(
+            "pool_span_owner_recall", "expected_spans"
+        ),
+        "overall_bundle_span_owner_recall": _mean_with_gold(
+            "bundle_span_owner_recall", "expected_spans"
+        ),
         "overall_seed_span_recall": _mean_with_gold("seed_span_recall", "expected_spans"),
+        "overall_pool_span_recall": _mean_with_gold("pool_span_recall", "expected_spans"),
         "overall_bundle_span_recall": _mean_with_gold("bundle_span_recall", "expected_spans"),
         "symbol_gold_questions": sum(1 for result in scored if result.expected_symbols),
         "span_gold_questions": sum(1 for result in scored if result.expected_spans),
@@ -1147,7 +1233,11 @@ def summarise(results: list[QuestionResult]) -> dict[str, Any]:
                 "seed_symbol_recall": round(r.seed_symbol_recall, 4),
                 "pool_symbol_recall": round(r.pool_symbol_recall, 4),
                 "bundle_symbol_recall": round(r.bundle_symbol_recall, 4),
+                "seed_span_owner_recall": round(r.seed_span_owner_recall, 4),
+                "pool_span_owner_recall": round(r.pool_span_owner_recall, 4),
+                "bundle_span_owner_recall": round(r.bundle_span_owner_recall, 4),
                 "seed_span_recall": round(r.seed_span_recall, 4),
+                "pool_span_recall": round(r.pool_span_recall, 4),
                 "bundle_span_recall": round(r.bundle_span_recall, 4),
                 "bundle_precision": round(r.bundle_precision, 4),
                 "token_precision": round(r.token_precision, 4),
@@ -1225,6 +1315,18 @@ def _render_markdown(results: list[QuestionResult], summary: dict[str, Any]) -> 
         f"**{summary.get('overall_mean_expected_tokens', 0.0):.0f}** vs other "
         f"**{summary.get('overall_mean_other_tokens', 0.0):.0f}** "
         f"(token precision **{summary.get('overall_mean_token_precision', 0.0):.3f}**)",
+        f"- mean **exact symbol recall**: seed "
+        f"**{summary.get('overall_seed_symbol_recall', 0.0):.3f}** → pool "
+        f"**{summary.get('overall_pool_symbol_recall', 0.0):.3f}** → bundle "
+        f"**{summary.get('overall_bundle_symbol_recall', 0.0):.3f}**",
+        f"- mean **span owner recall** (`file + symbol`): seed "
+        f"**{summary.get('overall_seed_span_owner_recall', 0.0):.3f}** → pool "
+        f"**{summary.get('overall_pool_span_owner_recall', 0.0):.3f}** → bundle "
+        f"**{summary.get('overall_bundle_span_owner_recall', 0.0):.3f}**",
+        f"- mean **span line recall**: seed "
+        f"**{summary.get('overall_seed_span_recall', 0.0):.3f}** → pool "
+        f"**{summary.get('overall_pool_span_recall', 0.0):.3f}** → bundle "
+        f"**{summary.get('overall_bundle_span_recall', 0.0):.3f}**",
         "",
         "## Per-repo (seed → pool → bundle)",
         "",
