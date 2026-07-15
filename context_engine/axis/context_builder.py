@@ -22,9 +22,10 @@ consumer's choice (chat format, tool-use schema, etc.).
 from __future__ import annotations
 
 import heapq
+import math
 import os
 import re
-from collections import namedtuple
+from collections import Counter, namedtuple
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field, replace
 from functools import lru_cache
@@ -98,6 +99,35 @@ class _SpanCandidate:
     line_anchor_score: float = 0.0
     retrieval_anchor_score: float = 0.0
     anchored_line_indices: tuple[int, ...] = ()
+
+
+@dataclass(frozen=True)
+class LexicalSpanProbeTrace:
+    candidate_count: int
+    bounded_candidates: int
+    payload_count: int
+    matched_symbols: int
+    span_count: int
+    covered_lines: int
+    fetch_failed: bool = False
+
+    def to_dict(self) -> dict[str, int | bool]:
+        return {
+            "candidate_count": self.candidate_count,
+            "bounded_candidates": self.bounded_candidates,
+            "payload_count": self.payload_count,
+            "matched_symbols": self.matched_symbols,
+            "span_count": self.span_count,
+            "covered_lines": self.covered_lines,
+            "fetch_failed": self.fetch_failed,
+        }
+
+
+@dataclass(frozen=True)
+class LexicalSpanEvidence:
+    spans: tuple[tuple[int, int], ...]
+    score: float
+    matched_terms: tuple[str, ...]
 
 
 @dataclass(frozen=True)
@@ -1144,6 +1174,165 @@ def _span_candidates(
             )
         )
     return tuple(candidates)
+
+
+def probe_candidate_lexical_spans(
+    candidates: Iterable[RoleCandidate],
+    *,
+    workspace_id: str,
+    lance: Any,
+    db: Any | None = None,
+    query_text: str,
+    max_symbols: int = 96,
+    max_windows_per_symbol: int = 3,
+    max_candidates_per_symbol: int = 24,
+    window_lines: int = 6,
+) -> tuple[dict[str, LexicalSpanEvidence], LexicalSpanProbeTrace]:
+    """Find query-bearing source windows inside a bounded pre-graph pool.
+
+    This is intentionally lexical and query-time: it reuses symbol bodies
+    already stored in Lance and creates no persistent chunk index. A candidate
+    receives evidence only when a body window contains a query term or an
+    explicit query line hint; uniformly sampled zero-match windows are not
+    promoted to retrieval spans.
+    """
+    unique: dict[str, RoleCandidate] = {}
+    for candidate in candidates:
+        if candidate.uid:
+            unique.setdefault(candidate.uid, candidate)
+    candidate_count = len(unique)
+    bounded = list(unique.values())[: max(0, int(max_symbols))]
+    empty_trace = LexicalSpanProbeTrace(
+        candidate_count=candidate_count,
+        bounded_candidates=len(bounded),
+        payload_count=0,
+        matched_symbols=0,
+        span_count=0,
+        covered_lines=0,
+    )
+    if not bounded or not query_text or max_windows_per_symbol <= 0:
+        return {}, empty_trace
+
+    try:
+        uids = {candidate.uid for candidate in bounded}
+        payloads = (
+            _resolve_context_payloads(
+                lance,
+                db,
+                workspace_id,
+                uids,
+                overlay=None,
+                user_id="anonymous",
+            )
+            if db is not None
+            else _fetch_symbol_payloads(lance, workspace_id, uids)
+        )
+    except Exception:
+        return {}, replace(empty_trace, fetch_failed=True)
+
+    query_terms = _span_terms(query_text)
+    query_lines = _span_query_line_numbers(query_text)
+    payload_terms = {
+        uid: _span_terms(str(payload.get("code") or ""))
+        for uid, payload in payloads.items()
+    }
+    document_frequency = Counter(
+        term
+        for terms in payload_terms.values()
+        for term in query_terms & terms
+    )
+    document_count = max(1, len(payload_terms))
+    term_weights = {
+        term: math.log(
+            1.0 + (document_count - frequency + 0.5) / (frequency + 0.5)
+        )
+        for term, frequency in document_frequency.items()
+    }
+    weight_ceiling = sum(term_weights.values()) or 1.0
+    evidence_by_uid: dict[str, LexicalSpanEvidence] = {}
+    for candidate in bounded:
+        payload = payloads.get(candidate.uid) or {}
+        code = str(payload.get("code") or "")
+        start_line = _int_payload_value(payload.get("start_line"))
+        end_line = _int_payload_value(payload.get("end_line"))
+        if not code or start_line <= 0 or end_line < start_line:
+            continue
+        symbol = ContextSymbol(
+            uid=candidate.uid,
+            name=candidate.name,
+            qualified_name=candidate.qualified_name,
+            file_path=candidate.file_path,
+            role=candidate.role,
+            distance_from_seed=candidate.depth or 0,
+            expansion_step=None,
+            code=code,
+            start_line=start_line,
+            end_line=end_line,
+            retrieval_spans=candidate.retrieval_spans,
+        )
+        windows = _span_candidates(
+            symbol,
+            query_terms=query_terms,
+            query_lines=query_lines,
+            max_candidates=max(1, int(max_candidates_per_symbol)),
+            window_lines=max(2, int(window_lines)),
+        )
+        scored_windows = []
+        for window in windows:
+            matched_terms = query_terms & _span_terms(window.text)
+            weighted_score = (
+                sum(term_weights.get(term, 0.0) for term in matched_terms)
+                / weight_ceiling
+            )
+            if window.line_anchor_score <= 0.0 and weighted_score <= 0.0:
+                continue
+            scored_windows.append((window, weighted_score, matched_terms))
+        ranked = sorted(
+            scored_windows,
+            key=lambda row: (
+                row[0].line_anchor_score,
+                row[1],
+                row[0].structural_score,
+                -row[0].line_indices[0],
+            ),
+            reverse=True,
+        )
+        selected_indices: set[int] = set()
+        selected_terms: set[str] = set()
+        explicit_line_match = False
+        selected_windows = 0
+        for window, _weighted_score, matched_terms in ranked:
+            new_indices = set(window.line_indices) - selected_indices
+            if len(new_indices) < max(1, len(window.line_indices) // 2):
+                continue
+            selected_indices.update(window.line_indices)
+            selected_terms.update(matched_terms)
+            explicit_line_match = explicit_line_match or window.line_anchor_score > 0.0
+            selected_windows += 1
+            if selected_windows >= max(1, int(max_windows_per_symbol)):
+                break
+        if not selected_indices:
+            continue
+        spans = _merge_rendered_spans(
+            (start_line + index, start_line + index)
+            for index in selected_indices
+        )
+        score = sum(term_weights.get(term, 0.0) for term in selected_terms) / weight_ceiling
+        evidence_by_uid[candidate.uid] = LexicalSpanEvidence(
+            spans=spans,
+            score=max(score, 1.0 if explicit_line_match else 0.0),
+            matched_terms=tuple(sorted(selected_terms)),
+        )
+
+    all_spans = [span for evidence in evidence_by_uid.values() for span in evidence.spans]
+    return evidence_by_uid, LexicalSpanProbeTrace(
+        candidate_count=candidate_count,
+        bounded_candidates=len(bounded),
+        payload_count=len(payloads),
+        matched_symbols=len(evidence_by_uid),
+        span_count=len(all_spans),
+        covered_lines=sum(end - start + 1 for start, end in all_spans),
+    )
 
 
 def _span_candidate_oracle_recall(
@@ -3572,7 +3761,10 @@ __all__ = [
     "ContextBundle",
     "ContextRenderBudget",
     "ContextSymbol",
+    "LexicalSpanEvidence",
+    "LexicalSpanProbeTrace",
     "TokenCreditTrace",
     "TokenCreditTransaction",
     "build_context_for_candidates",
+    "probe_candidate_lexical_spans",
 ]

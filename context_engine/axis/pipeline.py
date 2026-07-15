@@ -113,6 +113,7 @@ class AxisRetrievalResult:
     stage_warnings: list[dict[str, Any]] = field(default_factory=list)
     budget_trace: context_builder.TokenCreditTrace | None = None
     seed_selection_trace: seed_selector.SeedSelectionTrace | None = None
+    lexical_span_probe_trace: context_builder.LexicalSpanProbeTrace | None = None
 
 
 # Synthetic anchor for a symbol that lives only in the editor overlay (typed
@@ -1279,6 +1280,7 @@ def _prepare_budgeted_candidates(
     render_mode_override: str | None,
     anchor_path: str | None,
     anchor_symbol: str | None,
+    lexical_span_utility_weight: float = 0.0,
 ) -> tuple[
     list[RoleCandidate],
     int | None,
@@ -1310,7 +1312,10 @@ def _prepare_budgeted_candidates(
             if c.query_similarity is not None
             else (c.utility_score if c.utility_score is not None else c.score)
         )
-        return base + proximity_boost(c.file_path, anchor_path)
+        lexical_span_utility = max(0.0, float(lexical_span_utility_weight)) * float(
+            c.lexical_span_score or 0.0
+        )
+        return base + proximity_boost(c.file_path, anchor_path) + lexical_span_utility
 
     utility_score_fn = _budget_utility_score
     active = sorted(
@@ -1323,6 +1328,81 @@ def _prepare_budgeted_candidates(
         budget_profile.render_mode if render_mode_override is None else render_mode_override
     )
     return active, token_budget, render_mode, budget_profile, utility_score_fn
+
+
+def _bounded_lexical_span_probe_candidates(
+    raw_by_role: dict[str, list[RoleCandidate]],
+    intent_roles: list[str],
+    *,
+    per_role_limit: int | None,
+    max_symbols: int,
+) -> list[RoleCandidate]:
+    """Round-robin the same ranked role slices the seed selector can admit."""
+    ordered_roles = list(dict.fromkeys([*intent_roles, *raw_by_role]))
+    eligible_by_role: list[list[RoleCandidate]] = []
+    for role in ordered_roles:
+        candidates = list(raw_by_role.get(role) or ())
+        ranked = candidates if per_role_limit is None else candidates[:per_role_limit]
+        extras = [
+            candidate
+            for candidate in candidates[len(ranked) :]
+            if candidate.exact_symbol_match
+            or candidate.role in {"anchor_symbol", "overlay_anchor"}
+        ]
+        eligible_by_role.append([*ranked, *extras])
+
+    selected: list[RoleCandidate] = []
+    seen: set[str] = set()
+    cursors = [0] * len(eligible_by_role)
+    limit = max(0, int(max_symbols))
+    while len(selected) < limit:
+        advanced = False
+        for index, candidates in enumerate(eligible_by_role):
+            while cursors[index] < len(candidates) and candidates[cursors[index]].uid in seen:
+                cursors[index] += 1
+            if cursors[index] >= len(candidates):
+                continue
+            candidate = candidates[cursors[index]]
+            cursors[index] += 1
+            if candidate.uid:
+                seen.add(candidate.uid)
+                selected.append(candidate)
+                advanced = True
+                if len(selected) >= limit:
+                    break
+        if not advanced:
+            break
+    return selected
+
+
+def _attach_lexical_probe_spans(
+    raw_by_role: dict[str, list[RoleCandidate]],
+    evidence_by_uid: dict[str, context_builder.LexicalSpanEvidence],
+) -> dict[str, list[RoleCandidate]]:
+    if not evidence_by_uid:
+        return raw_by_role
+    output: dict[str, list[RoleCandidate]] = {}
+    for role, candidates in raw_by_role.items():
+        annotated: list[RoleCandidate] = []
+        for candidate in candidates:
+            evidence = evidence_by_uid.get(candidate.uid)
+            if evidence is None:
+                annotated.append(candidate)
+                continue
+            annotated.append(
+                replace(
+                    candidate,
+                    retrieval_channels=tuple(
+                        dict.fromkeys([*candidate.retrieval_channels, "lexical_span"])
+                    ),
+                    retrieval_spans=tuple(
+                        sorted(set(candidate.retrieval_spans) | set(evidence.spans))
+                    ),
+                    lexical_span_score=evidence.score,
+                )
+            )
+        output[role] = annotated
+    return output
 
 
 @dataclass(frozen=True)
@@ -1382,6 +1462,15 @@ class AxisRetrievalConfig:
     semantic_chunk_retrieval: bool = True
     hybrid_seed_limit: int = 12
     hybrid_rrf_k: int = 60
+    # Query-time lexical windows over a bounded candidate payload batch. This
+    # runs immediately before the expensive context graph walk and needs no
+    # persistent semantic-chunk index. Off until span-gold A/B validates it.
+    pregraph_lexical_span_probe: bool = False
+    lexical_span_probe_max_symbols: int = 96
+    lexical_span_probe_max_windows_per_symbol: int = 3
+    lexical_span_probe_max_candidates_per_symbol: int = 24
+    lexical_span_probe_window_lines: int = 6
+    lexical_span_utility_weight: float = 0.0
 
 
 def _request_embedder(lance: Any):
@@ -1763,6 +1852,36 @@ def _run_axis_retrieval_impl(
                 rrf_k=cfg.query_node_rrf_k,
             )
 
+    lexical_span_probe_trace = None
+    if cfg.pregraph_lexical_span_probe:
+        with tr.stage("pregraph_lexical_span_probe"):
+            probe_candidates = _bounded_lexical_span_probe_candidates(
+                raw_by_role,
+                [match.role for match in intent],
+                per_role_limit=cfg.context_seeds_per_role,
+                max_symbols=cfg.lexical_span_probe_max_symbols,
+            )
+            lexical_span_evidence, lexical_span_probe_trace = (
+                context_builder.probe_candidate_lexical_spans(
+                    probe_candidates,
+                    workspace_id=workspace_id,
+                    lance=lance,
+                    db=db,
+                    query_text=question,
+                    max_symbols=cfg.lexical_span_probe_max_symbols,
+                    max_windows_per_symbol=(
+                        cfg.lexical_span_probe_max_windows_per_symbol
+                    ),
+                    max_candidates_per_symbol=(
+                        cfg.lexical_span_probe_max_candidates_per_symbol
+                    ),
+                    window_lines=cfg.lexical_span_probe_window_lines,
+                )
+            )
+            raw_by_role = _attach_lexical_probe_spans(
+                raw_by_role, lexical_span_evidence
+            )
+
     candidates_for_context, seed_selection_trace = seed_selector.select_context_seeds(
         raw_by_role,
         (match.role for match in intent),
@@ -1777,6 +1896,7 @@ def _run_axis_retrieval_impl(
             render_mode_override=cfg.render_mode_override,
             anchor_path=cfg.anchor_path,
             anchor_symbol=cfg.anchor_symbol,
+            lexical_span_utility_weight=cfg.lexical_span_utility_weight,
         )
     )
 
@@ -1862,6 +1982,7 @@ def _run_axis_retrieval_impl(
         render_mode=render_mode,
         budget_trace=budget_trace,
         seed_selection_trace=seed_selection_trace,
+        lexical_span_probe_trace=lexical_span_probe_trace,
     )
 
 

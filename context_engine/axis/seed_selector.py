@@ -79,6 +79,11 @@ def _merge_candidate(
         existing.supporting_roles or (existing.role,),
         [*source_roles, *(incoming.supporting_roles or (incoming.role,))],
     )
+    lexical_span_scores = [
+        score
+        for score in (existing.lexical_span_score, incoming.lexical_span_score)
+        if score is not None
+    ]
     # Preserve the first occurrence's ranking/structural payload exactly. The
     # historical flattening contract did so, and these values later drive
     # Token Credit. Allowing another role's score to escape here silently
@@ -90,6 +95,7 @@ def _merge_candidate(
         ),
         retrieval_spans=spans,
         exact_symbol_match=existing.exact_symbol_match or incoming.exact_symbol_match,
+        lexical_span_score=max(lexical_span_scores) if lexical_span_scores else None,
         supporting_roles=roles,
         selection_reasons=_ordered_union(
             existing.selection_reasons, incoming.selection_reasons

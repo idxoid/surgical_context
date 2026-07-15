@@ -12,6 +12,8 @@ real against a bare ``object()`` db, which ``walk_neighbours`` degrades to
 
 from __future__ import annotations
 
+from dataclasses import replace
+
 import pytest
 
 from context_engine.axis import pipeline as axis_pipeline
@@ -161,6 +163,90 @@ def test_with_context_false_skips_bundles(stub_stages):
 
     assert [c.uid for c in result.candidates_for_context] == ["a", "b", "c"]
     assert result.bundles == []
+
+
+def test_pregraph_lexical_span_probe_annotates_selected_pool(stub_stages, monkeypatch):
+    trace = axis_pipeline.context_builder.LexicalSpanProbeTrace(
+        candidate_count=3,
+        bounded_candidates=3,
+        payload_count=3,
+        matched_symbols=1,
+        span_count=1,
+        covered_lines=4,
+    )
+
+    def _probe(candidates, **_kwargs):
+        assert {candidate.uid for candidate in candidates} == {"a", "b", "c"}
+        return {
+            "b": axis_pipeline.context_builder.LexicalSpanEvidence(
+                spans=((10, 13),),
+                score=0.75,
+                matched_terms=("routing",),
+            )
+        }, trace
+
+    monkeypatch.setattr(
+        axis_pipeline.context_builder,
+        "probe_candidate_lexical_spans",
+        _probe,
+    )
+
+    result = _run(pregraph_lexical_span_probe=True)
+
+    by_uid = {candidate.uid: candidate for candidate in result.candidates_for_context}
+    assert by_uid["b"].retrieval_spans == ((10, 13),)
+    assert by_uid["b"].retrieval_channels == ("lexical_span",)
+    assert by_uid["b"].lexical_span_score == 0.75
+    assert result.lexical_span_probe_trace == trace
+
+
+def test_pregraph_probe_candidates_round_robin_roles_and_keep_exact_extra():
+    exact = replace(_cand("exact", "/x/exact.py"), exact_symbol_match=True)
+    raw = {
+        "role_a": [_cand("a", "/x/a.py"), _cand("b", "/x/b.py"), exact],
+        "role_b": [_cand("a", "/x/a.py"), _cand("c", "/x/c.py"), _cand("d", "/x/d.py")],
+    }
+
+    selected = axis_pipeline._bounded_lexical_span_probe_candidates(
+        raw,
+        ["role_a", "role_b"],
+        per_role_limit=2,
+        max_symbols=4,
+    )
+
+    assert [candidate.uid for candidate in selected] == ["a", "c", "b", "exact"]
+
+
+def test_lexical_span_utility_weight_is_additive_and_opt_in():
+    plain = _cand("plain", "/x/plain.py", score=0.50, query_similarity=0.1)
+    lexical = replace(
+        _cand("lexical", "/x/lexical.py", score=0.45, query_similarity=0.1),
+        lexical_span_score=1.0,
+    )
+    intent = [IntentMatch(role="routing_surface", similarity=0.8, description="d")]
+
+    baseline, *_ = axis_pipeline._prepare_budgeted_candidates(
+        [plain, lexical],
+        intent,
+        intent_budget=True,
+        base_token_budget=6000,
+        render_mode_override=None,
+        anchor_path=None,
+        anchor_symbol=None,
+    )
+    boosted, *_ = axis_pipeline._prepare_budgeted_candidates(
+        [plain, lexical],
+        intent,
+        intent_budget=True,
+        base_token_budget=6000,
+        render_mode_override=None,
+        anchor_path=None,
+        anchor_symbol=None,
+        lexical_span_utility_weight=0.10,
+    )
+
+    assert [candidate.uid for candidate in baseline] == ["plain", "lexical"]
+    assert [candidate.uid for candidate in boosted] == ["lexical", "plain"]
 
 
 def test_context_seeds_per_role_caps_the_pool(stub_stages):

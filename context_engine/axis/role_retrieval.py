@@ -82,6 +82,10 @@ class RoleCandidate:
     retrieval_channels: tuple[str, ...] = ()
     retrieval_spans: tuple[tuple[int, int], ...] = ()
     exact_symbol_match: bool = False
+    # Query-time IDF-weighted term coverage of the best lexical body windows.
+    # Kept separate from structural/query-vector score until span gold proves
+    # it is selective enough to influence seed ordering or reserves.
+    lexical_span_score: float | None = None
     # Selection-only provenance accumulated when the same UID is supported by
     # several intent/pseudo-role pools.  The historical flattening pass kept
     # only the first role, which hid a useful pre-graph consensus signal.
@@ -112,6 +116,7 @@ class RoleCandidate:
             "retrieval_channels": list(self.retrieval_channels),
             "retrieval_spans": list(self.retrieval_spans),
             "exact_symbol_match": self.exact_symbol_match,
+            "lexical_span_score": self.lexical_span_score,
             "supporting_roles": list(self.supporting_roles),
             "selection_reasons": list(self.selection_reasons),
         }

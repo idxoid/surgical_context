@@ -31,7 +31,9 @@ from context_engine.axis.context_builder import (
     _TokenCreditCoverageState,
     _upgrade_exact_delta,
     _upgrade_semantic_value,
+    probe_candidate_lexical_spans,
 )
+from context_engine.axis.role_retrieval import RoleCandidate
 from context_engine.observability.metrics import estimate_text_tokens
 
 # --- helpers ---------------------------------------------------------------
@@ -749,6 +751,63 @@ def test_span_candidate_oracle_recall_is_independent_of_window_ranking():
     )
 
     assert recall == 1.0
+
+
+def test_pregraph_lexical_span_probe_emits_only_query_matching_windows(monkeypatch):
+    lines = ["def update(instance):"] + [
+        f"    noise_{index} = unrelated_{index}()" for index in range(1, 25)
+    ]
+    lines[20] = "    instance.pk = None"
+    lines[21] = "    deleted_count = 1"
+    candidate = RoleCandidate(
+        uid="update",
+        name="update",
+        qualified_name="deletion.update",
+        file_path="/deletion.py",
+        role="hybrid_seed",
+        satisfying_contracts=(),
+        satisfying_kinds=(),
+        contract_count=0,
+        kind_count=0,
+        vector_distance=None,
+        score=0.9,
+    )
+    monkeypatch.setattr(
+        "context_engine.axis.context_builder._fetch_symbol_payloads",
+        lambda *_args, **_kwargs: {
+            "update": {
+                "code": "\n".join(lines),
+                "start_line": 100,
+                "end_line": 124,
+            }
+        },
+    )
+
+    evidence, trace = probe_candidate_lexical_spans(
+        [candidate],
+        workspace_id="ws",
+        lance=object(),
+        query_text="Where is deleted_count assigned?",
+        max_windows_per_symbol=1,
+        window_lines=6,
+    )
+
+    spans = evidence["update"].spans
+    assert any(start <= 121 <= end for start, end in spans)
+    assert sum(end - start + 1 for start, end in spans) <= 6
+    assert evidence["update"].score > 0.0
+    assert "deleted" in evidence["update"].matched_terms
+    assert trace.matched_symbols == 1
+    assert not trace.fetch_failed
+
+    empty, empty_trace = probe_candidate_lexical_spans(
+        [candidate],
+        workspace_id="ws",
+        lance=object(),
+        query_text="completely absent terminology",
+    )
+    assert empty == {}
+    assert empty_trace.matched_symbols == 0
 
 
 # --- _apply_render_and_budget ---------------------------------------------

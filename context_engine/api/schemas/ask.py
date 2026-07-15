@@ -54,6 +54,11 @@ class AskAxisRequest(BaseModel):
     lexical_retrieval: bool = True
     semantic_chunk_retrieval: bool = True
     hybrid_seed_limit: int = Field(default=12, ge=1, le=100)
+    pregraph_lexical_span_probe: bool = False
+    lexical_span_probe_max_symbols: int = Field(default=96, ge=1, le=256)
+    lexical_span_probe_max_windows_per_symbol: int = Field(default=3, ge=1, le=12)
+    lexical_span_probe_window_lines: int = Field(default=6, ge=2, le=40)
+    lexical_span_utility_weight: float = Field(default=0.0, ge=0.0, le=1.0)
 
 
 class AxisIntentMatchResponse(BaseModel):
@@ -78,6 +83,7 @@ class AxisCandidateResponse(BaseModel):
     retrieval_channels: list[str] = Field(default_factory=list)
     retrieval_spans: list[tuple[int, int]] = Field(default_factory=list)
     exact_symbol_match: bool = False
+    lexical_span_score: float | None = None
 
 
 class AxisContextSymbolResponse(BaseModel):
@@ -123,6 +129,7 @@ class AskAxisResponse(BaseModel):
     context_bundles: list[AxisContextBundleResponse]
     stage_warnings: list[AxisStageWarningResponse] = Field(default_factory=list)
     seed_selection: dict[str, Any] = Field(default_factory=dict)
+    lexical_span_probe: dict[str, Any] = Field(default_factory=dict)
 
 
 class IntentRequest(BaseModel):

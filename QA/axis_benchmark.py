@@ -174,6 +174,9 @@ class QuestionResult:
     top_candidates: list[dict[str, Any]] = field(default_factory=list)
     top_rendered_symbols: list[dict[str, Any]] = field(default_factory=list)
     seed_selection: dict[str, Any] = field(default_factory=dict)
+    lexical_span_probe: dict[str, Any] = field(default_factory=dict)
+    lexical_span_probe_seconds: float = 0.0
+    lexical_span_score_audit: dict[str, Any] = field(default_factory=dict)
     expected_file_layers: list[dict[str, Any]] = field(default_factory=list)
     seed_symbol_recall: float = 0.0
     pool_symbol_recall: float = 0.0
@@ -225,6 +228,9 @@ class QuestionResult:
             "top_candidates": self.top_candidates,
             "top_rendered_symbols": self.top_rendered_symbols,
             "seed_selection": self.seed_selection,
+            "lexical_span_probe": self.lexical_span_probe,
+            "lexical_span_probe_seconds": self.lexical_span_probe_seconds,
+            "lexical_span_score_audit": self.lexical_span_score_audit,
             "expected_file_layers": self.expected_file_layers,
             "seed_symbol_recall": self.seed_symbol_recall,
             "pool_symbol_recall": self.pool_symbol_recall,
@@ -458,6 +464,65 @@ def _compute_span_recall(
     return len(covered) / len(gold_lines)
 
 
+def _lexical_span_score_audit(
+    expected_spans: list[dict[str, Any]],
+    items: list[Any],
+) -> dict[str, Any]:
+    unique: dict[str, Any] = {}
+    for index, item in enumerate(items):
+        uid = str(getattr(item, "uid", "") or f"__missing_uid__:{index}")
+        unique.setdefault(uid, item)
+    gold_items = [
+        item
+        for item in unique.values()
+        if any(_item_matches_span_owner(item, gold) for gold in expected_spans)
+    ]
+    other_items = [item for item in unique.values() if item not in gold_items]
+
+    def score(item: Any) -> float:
+        value = getattr(item, "lexical_span_score", None)
+        return float(value) if value is not None else 0.0
+
+    gold_scores = [score(item) for item in gold_items]
+    other_scores = [score(item) for item in other_items]
+    pair_count = len(gold_scores) * len(other_scores)
+    auc = None
+    if pair_count:
+        wins = sum(
+            1.0 if gold > other else 0.5 if gold == other else 0.0
+            for gold in gold_scores
+            for other in other_scores
+        )
+        auc = wins / pair_count
+    ranked = sorted(
+        unique.values(),
+        key=lambda item: (score(item), str(getattr(item, "uid", "") or "")),
+        reverse=True,
+    )
+    cutoff = len(gold_items)
+    top = ranked[:cutoff]
+    top_gold = sum(item in gold_items for item in top)
+    return {
+        "candidate_count": len(unique),
+        "gold_owner_candidates": len(gold_items),
+        "other_candidates": len(other_items),
+        "scored_gold_owner_candidates": sum(
+            getattr(item, "lexical_span_score", None) is not None for item in gold_items
+        ),
+        "scored_other_candidates": sum(
+            getattr(item, "lexical_span_score", None) is not None for item in other_items
+        ),
+        "mean_gold_owner_score": (
+            sum(gold_scores) / len(gold_scores) if gold_scores else 0.0
+        ),
+        "mean_other_score": (
+            sum(other_scores) / len(other_scores) if other_scores else 0.0
+        ),
+        "auc": auc,
+        "gold_precision_at_owner_count": top_gold / cutoff if cutoff else 0.0,
+    }
+
+
 def _sorted_counter_dict(counter: Counter[str]) -> dict[str, int]:
     return {
         key: count for key, count in sorted(counter.items(), key=lambda item: (-item[1], item[0]))
@@ -504,6 +569,9 @@ def _candidate_audit_row(candidate: Any, rank: int) -> dict[str, Any]:
         "retrieval_channels": list(getattr(candidate, "retrieval_channels", ()) or ()),
         "retrieval_spans": list(getattr(candidate, "retrieval_spans", ()) or ()),
         "exact_symbol_match": bool(getattr(candidate, "exact_symbol_match", False)),
+        "lexical_span_score": _float_or_none(
+            getattr(candidate, "lexical_span_score", None)
+        ),
         "supporting_roles": list(getattr(candidate, "supporting_roles", ()) or ()),
         "selection_reasons": list(getattr(candidate, "selection_reasons", ()) or ()),
     }
@@ -744,6 +812,10 @@ def _populate_recall_layers(result: QuestionResult, retrieval: Any) -> None:
         rendered_symbols,
         span_getter=lambda symbol: symbol.effective_rendered_spans(),
     )
+    result.lexical_span_score_audit = _lexical_span_score_audit(
+        result.expected_spans,
+        pool_candidates,
+    )
 
 
 def _run_axis_retrieval_for_question(
@@ -788,6 +860,11 @@ def _run_axis_retrieval_for_question(
     lexical_retrieval: bool,
     semantic_chunk_retrieval: bool,
     hybrid_seed_limit: int,
+    pregraph_lexical_span_probe: bool,
+    lexical_span_probe_max_symbols: int,
+    lexical_span_probe_max_windows_per_symbol: int,
+    lexical_span_probe_window_lines: int,
+    lexical_span_utility_weight: float,
 ) -> Any:
     return run_axis_retrieval(
         result.question,
@@ -837,6 +914,13 @@ def _run_axis_retrieval_for_question(
             lexical_retrieval=lexical_retrieval,
             semantic_chunk_retrieval=semantic_chunk_retrieval,
             hybrid_seed_limit=hybrid_seed_limit,
+            pregraph_lexical_span_probe=pregraph_lexical_span_probe,
+            lexical_span_probe_max_symbols=lexical_span_probe_max_symbols,
+            lexical_span_probe_max_windows_per_symbol=(
+                lexical_span_probe_max_windows_per_symbol
+            ),
+            lexical_span_probe_window_lines=lexical_span_probe_window_lines,
+            lexical_span_utility_weight=lexical_span_utility_weight,
             trace=timer,
         ),
     )
@@ -881,6 +965,11 @@ def run_question(
     lexical_retrieval: bool = True,
     semantic_chunk_retrieval: bool = True,
     hybrid_seed_limit: int = 12,
+    pregraph_lexical_span_probe: bool = False,
+    lexical_span_probe_max_symbols: int = 96,
+    lexical_span_probe_max_windows_per_symbol: int = 3,
+    lexical_span_probe_window_lines: int = 6,
+    lexical_span_utility_weight: float = 0.0,
     workspace_overrides: dict[str, str] | None = None,
 ) -> QuestionResult:
     result = _question_result_from_entry(question_entry)
@@ -945,6 +1034,13 @@ def run_question(
         lexical_retrieval=lexical_retrieval,
         semantic_chunk_retrieval=semantic_chunk_retrieval,
         hybrid_seed_limit=hybrid_seed_limit,
+        pregraph_lexical_span_probe=pregraph_lexical_span_probe,
+        lexical_span_probe_max_symbols=lexical_span_probe_max_symbols,
+        lexical_span_probe_max_windows_per_symbol=(
+            lexical_span_probe_max_windows_per_symbol
+        ),
+        lexical_span_probe_window_lines=lexical_span_probe_window_lines,
+        lexical_span_utility_weight=lexical_span_utility_weight,
     )
     # Post-processing cost: the ``context`` stage is the build_context graph
     # expansion + per-uid code fetch; rendered_tokens is the token volume of
@@ -953,6 +1049,14 @@ def run_question(
     # ``axis_bundles_to_prompt_context`` does (no double-counting shared
     # neighbours across bundles).
     result.context_seconds = round(timer.durations.get("context", 0.0), 4)
+    result.lexical_span_probe_seconds = round(
+        timer.durations.get("pregraph_lexical_span_probe", 0.0), 4
+    )
+    result.lexical_span_probe = (
+        retrieval.lexical_span_probe_trace.to_dict()
+        if retrieval.lexical_span_probe_trace is not None
+        else {}
+    )
     result.expected_tokens, result.other_tokens = _split_rendered_tokens(
         retrieval.bundles, result.expected_files
     )
@@ -1174,6 +1278,17 @@ def summarise(results: list[QuestionResult]) -> dict[str, Any]:
         candidate_relation_totals.update(r.candidate_relation_histogram)
         bundle_relation_totals.update(r.bundle_relation_histogram)
 
+    lexical_score_audits = [
+        result.lexical_span_score_audit
+        for result in scored
+        if result.lexical_span_score_audit
+    ]
+    lexical_score_auc_values = [
+        float(audit["auc"])
+        for audit in lexical_score_audits
+        if audit.get("auc") is not None
+    ]
+
     return {
         "scored": len(scored),
         "skipped": len(skipped),
@@ -1221,6 +1336,29 @@ def summarise(results: list[QuestionResult]) -> dict[str, Any]:
         # Post-processing cost (the expensive part of the budget cost model).
         "overall_mean_context_seconds": _mean("context_seconds"),
         "max_context_seconds": max((r.context_seconds for r in scored), default=0.0),
+        "overall_mean_lexical_span_probe_seconds": _mean(
+            "lexical_span_probe_seconds"
+        ),
+        "max_lexical_span_probe_seconds": max(
+            (r.lexical_span_probe_seconds for r in scored), default=0.0
+        ),
+        "overall_lexical_span_score_auc": (
+            sum(lexical_score_auc_values) / len(lexical_score_auc_values)
+            if lexical_score_auc_values
+            else 0.0
+        ),
+        "overall_mean_lexical_span_gold_owner_score": (
+            sum(float(audit["mean_gold_owner_score"]) for audit in lexical_score_audits)
+            / len(lexical_score_audits)
+            if lexical_score_audits
+            else 0.0
+        ),
+        "overall_mean_lexical_span_other_score": (
+            sum(float(audit["mean_other_score"]) for audit in lexical_score_audits)
+            / len(lexical_score_audits)
+            if lexical_score_audits
+            else 0.0
+        ),
         "overall_mean_rendered_tokens": _mean("rendered_tokens"),
         "max_rendered_tokens": max((r.rendered_tokens for r in scored), default=0),
         "per_question": [
@@ -1243,6 +1381,9 @@ def summarise(results: list[QuestionResult]) -> dict[str, Any]:
                 "token_precision": round(r.token_precision, 4),
                 "expected_tokens": r.expected_tokens,
                 "other_tokens": r.other_tokens,
+                "lexical_span_probe_seconds": r.lexical_span_probe_seconds,
+                "lexical_span_probe": r.lexical_span_probe,
+                "lexical_span_score_audit": r.lexical_span_score_audit,
             }
             for r in sorted(scored, key=lambda x: x.question_id)
         ],
@@ -1861,6 +2002,21 @@ def main() -> None:
     )
     parser.add_argument("--hybrid-seed-limit", type=int, default=12)
     parser.add_argument(
+        "--pregraph-lexical-span-probe",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help=(
+            "Fetch a bounded pre-context-graph symbol batch and attach query-matching "
+            "lexical source windows without a persistent chunk index."
+        ),
+    )
+    parser.add_argument("--lexical-span-probe-max-symbols", type=int, default=96)
+    parser.add_argument(
+        "--lexical-span-probe-max-windows-per-symbol", type=int, default=3
+    )
+    parser.add_argument("--lexical-span-probe-window-lines", type=int, default=6)
+    parser.add_argument("--lexical-span-utility-weight", type=float, default=0.0)
+    parser.add_argument(
         "--context-semantic-expansion",
         action=argparse.BooleanOptionalAction,
         default=True,
@@ -1987,6 +2143,13 @@ def main() -> None:
             lexical_retrieval=args.lexical_retrieval,
             semantic_chunk_retrieval=args.semantic_chunk_retrieval,
             hybrid_seed_limit=args.hybrid_seed_limit,
+            pregraph_lexical_span_probe=args.pregraph_lexical_span_probe,
+            lexical_span_probe_max_symbols=args.lexical_span_probe_max_symbols,
+            lexical_span_probe_max_windows_per_symbol=(
+                args.lexical_span_probe_max_windows_per_symbol
+            ),
+            lexical_span_probe_window_lines=args.lexical_span_probe_window_lines,
+            lexical_span_utility_weight=args.lexical_span_utility_weight,
         )
         results.append(res)
         question_seconds = time.monotonic() - question_started
@@ -2027,6 +2190,13 @@ def main() -> None:
         "lexical_retrieval": args.lexical_retrieval,
         "semantic_chunk_retrieval": args.semantic_chunk_retrieval,
         "hybrid_seed_limit": args.hybrid_seed_limit,
+        "pregraph_lexical_span_probe": args.pregraph_lexical_span_probe,
+        "lexical_span_probe_max_symbols": args.lexical_span_probe_max_symbols,
+        "lexical_span_probe_max_windows_per_symbol": (
+            args.lexical_span_probe_max_windows_per_symbol
+        ),
+        "lexical_span_probe_window_lines": args.lexical_span_probe_window_lines,
+        "lexical_span_utility_weight": args.lexical_span_utility_weight,
         "query_node_mode_semantic_weight": args.query_node_mode_weight,
         "query_node_ordering_mode": args.query_node_ordering,
         "query_node_blend_alpha": args.query_node_blend_alpha,

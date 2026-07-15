@@ -10,6 +10,7 @@ from context_engine.axis.role_retrieval import RoleCandidate
 from QA.axis_benchmark import (
     _compute_span_owner_recall,
     _expected_file_layers,
+    _lexical_span_score_audit,
     _populate_candidate_audit,
     _populate_recall_layers,
     _split_rendered_tokens,
@@ -268,3 +269,32 @@ def test_span_owner_recall_requires_the_file_symbol_pair_and_deduplicates_ranges
         qualified_name="worker.run_once",
     )
     assert _compute_span_owner_recall(expected, [*wrong_pair, correct]) == 1.0
+
+
+def test_lexical_span_score_audit_compares_exact_owner_pair_with_pool() -> None:
+    expected = [
+        {"file_path": "worker.py", "symbol": "run_once", "start_line": 10, "end_line": 12}
+    ]
+    gold = replace(
+        _candidate("gold", "/repo/worker.py", "hybrid_seed"),
+        name="run_once",
+        qualified_name="worker.run_once",
+        lexical_span_score=0.8,
+    )
+    wrong_file = replace(
+        _candidate("wrong", "/repo/other.py", "hybrid_seed"),
+        name="run_once",
+        qualified_name="other.run_once",
+        lexical_span_score=0.9,
+    )
+    other = replace(
+        _candidate("other", "/repo/other.py", "hybrid_seed"),
+        lexical_span_score=0.2,
+    )
+
+    audit = _lexical_span_score_audit(expected, [gold, wrong_file, other])
+
+    assert audit["gold_owner_candidates"] == 1
+    assert audit["scored_gold_owner_candidates"] == 1
+    assert audit["auc"] == 0.5
+    assert audit["gold_precision_at_owner_count"] == 0.0
