@@ -177,6 +177,7 @@ class QuestionResult:
     lexical_span_probe: dict[str, Any] = field(default_factory=dict)
     lexical_span_probe_seconds: float = 0.0
     lexical_span_score_audit: dict[str, Any] = field(default_factory=dict)
+    gold_rank_audit: dict[str, Any] = field(default_factory=dict)
     expected_file_layers: list[dict[str, Any]] = field(default_factory=list)
     seed_symbol_recall: float = 0.0
     pool_symbol_recall: float = 0.0
@@ -231,6 +232,7 @@ class QuestionResult:
             "lexical_span_probe": self.lexical_span_probe,
             "lexical_span_probe_seconds": self.lexical_span_probe_seconds,
             "lexical_span_score_audit": self.lexical_span_score_audit,
+            "gold_rank_audit": self.gold_rank_audit,
             "expected_file_layers": self.expected_file_layers,
             "seed_symbol_recall": self.seed_symbol_recall,
             "pool_symbol_recall": self.pool_symbol_recall,
@@ -380,17 +382,47 @@ def _normalise_expected_spans(entry: dict[str, Any]) -> list[dict[str, Any]]:
     return output
 
 
-def _symbol_matches(item: Any, expected_symbol: str) -> bool:
+def _item_owner_views(item: Any) -> list[tuple[str, str, str]]:
+    views = [
+        (
+            str(getattr(item, "file_path", "") or ""),
+            str(getattr(item, "name", "") or ""),
+            str(getattr(item, "qualified_name", "") or ""),
+        )
+    ]
+    for owner in tuple(getattr(item, "represented_owners", ()) or ()):
+        if isinstance(owner, dict):
+            file_path = str(owner.get("file_path") or "")
+            name = str(owner.get("name") or "")
+            qualified_name = str(owner.get("qualified_name") or "")
+        else:
+            file_path = str(getattr(owner, "file_path", "") or "")
+            name = str(getattr(owner, "name", "") or "")
+            qualified_name = str(getattr(owner, "qualified_name", "") or "")
+        view = (file_path, name, qualified_name)
+        if view not in views:
+            views.append(view)
+    return views
+
+
+def _owner_symbol_matches(name: str, qualified_name: str, expected_symbol: str) -> bool:
     expected = expected_symbol.strip().lower()
     if not expected:
         return False
-    name = str(getattr(item, "name", "") or "").lower()
-    qualified = str(getattr(item, "qualified_name", "") or "").lower()
+    name = name.lower()
+    qualified = qualified_name.lower()
     return (
         name == expected
         or qualified == expected
         or qualified.endswith(f".{expected}")
         or qualified.endswith(f":{expected}")
+    )
+
+
+def _symbol_matches(item: Any, expected_symbol: str) -> bool:
+    return any(
+        _owner_symbol_matches(name, qualified_name, expected_symbol)
+        for _file_path, name, qualified_name in _item_owner_views(item)
     )
 
 
@@ -404,11 +436,11 @@ def _compute_symbol_recall(expected: list[str], items: list[Any]) -> float:
 def _item_matches_span_owner(item: Any, gold: dict[str, Any]) -> bool:
     symbol = str(gold.get("symbol") or "")
     file_path = str(gold.get("file_path") or "")
-    if symbol and not _symbol_matches(item, symbol):
-        return False
-    if file_path and not _file_matches(str(getattr(item, "file_path", "") or ""), file_path):
-        return False
-    return True
+    return any(
+        (not symbol or _owner_symbol_matches(name, qualified_name, symbol))
+        and (not file_path or _file_matches(owner_file, file_path))
+        for owner_file, name, qualified_name in _item_owner_views(item)
+    )
 
 
 def _compute_span_owner_recall(
@@ -520,6 +552,158 @@ def _lexical_span_score_audit(
         ),
         "auc": auc,
         "gold_precision_at_owner_count": top_gold / cutoff if cutoff else 0.0,
+    }
+
+
+_GOLD_RANK_CUTOFFS = (1, 3, 5, 10, 20, 40, 80, 160)
+
+
+def _first_matching_rank(items: list[Any], predicate) -> int | None:
+    return next(
+        (rank for rank, item in enumerate(items, start=1) if predicate(item)),
+        None,
+    )
+
+
+def _gold_rank_funnel(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    def stage(field: str) -> dict[str, Any]:
+        ranks = [int(row[field]) for row in rows if row.get(field) is not None]
+        return {
+            "present": len(ranks),
+            "recall": len(ranks) / len(rows) if rows else 0.0,
+            "recall_at": {
+                str(cutoff): (
+                    sum(rank <= cutoff for rank in ranks) / len(rows) if rows else 0.0
+                )
+                for cutoff in _GOLD_RANK_CUTOFFS
+            },
+        }
+
+    return {
+        "gold_count": len(rows),
+        "utility": stage("utility_rank"),
+        "coverage": stage("coverage_rank"),
+        "final": stage("final_rank"),
+        "retrieval_missing_but_final": sum(
+            row.get("utility_rank") is None and row.get("final_rank") is not None
+            for row in rows
+        ),
+        "utility_not_coverage_but_final": sum(
+            row.get("utility_rank") is not None
+            and row.get("coverage_rank") is None
+            and row.get("final_rank") is not None
+            for row in rows
+        ),
+        "coverage_not_final": sum(
+            row.get("coverage_rank") is not None and row.get("final_rank") is None
+            for row in rows
+        ),
+    }
+
+
+def _gold_rank_audit(
+    expected_spans: list[dict[str, Any]],
+    expected_symbols: list[str],
+    ranked_candidates: list[Any],
+    rendered_symbols: list[Any],
+    budget_trace: Any | None,
+) -> dict[str, Any]:
+    coverage_transactions = [
+        transaction
+        for transaction in list(getattr(budget_trace, "transactions", ()) or ())
+        if str(getattr(transaction, "phase", "") or "") == "coverage"
+    ]
+    coverage_uids = [
+        str(getattr(transaction, "uid", "") or "")
+        for transaction in coverage_transactions
+    ]
+
+    owners: dict[tuple[str, str], dict[str, Any]] = {}
+    for gold in expected_spans:
+        file_path = str(gold.get("file_path") or "").replace("\\", "/").strip("/")
+        symbol = str(gold.get("symbol") or "").strip()
+        key = (file_path, symbol.lower())
+        if key != ("", ""):
+            owners.setdefault(key, gold)
+
+    owner_rows: list[dict[str, Any]] = []
+    for (file_path, symbol_key), gold in owners.items():
+        def matches_owner(item: Any, expected: dict[str, Any] = gold) -> bool:
+            return _item_matches_span_owner(item, expected)
+
+        matching_uids = {
+            str(getattr(candidate, "uid", "") or "")
+            for candidate in ranked_candidates
+            if matches_owner(candidate)
+        }
+        utility_rank = _first_matching_rank(ranked_candidates, matches_owner)
+        ranked_match = (
+            ranked_candidates[utility_rank - 1] if utility_rank is not None else None
+        )
+        owner_rows.append(
+            {
+                "file_path": file_path,
+                "symbol": str(gold.get("symbol") or symbol_key),
+                "utility_rank": utility_rank,
+                "coverage_rank": next(
+                    (
+                        rank
+                        for rank, uid in enumerate(coverage_uids, start=1)
+                        if uid in matching_uids
+                    ),
+                    None,
+                ),
+                "final_rank": _first_matching_rank(rendered_symbols, matches_owner),
+                "lexical_span_score": _float_or_none(
+                    getattr(ranked_match, "lexical_span_score", None)
+                ),
+            }
+        )
+
+    symbol_rows: list[dict[str, Any]] = []
+    for expected_symbol in expected_symbols:
+        symbol = str(expected_symbol or "").strip()
+        if not symbol:
+            continue
+        def matches_symbol(item: Any, expected: str = symbol) -> bool:
+            return _symbol_matches(item, expected)
+
+        matching_uids = {
+            str(getattr(candidate, "uid", "") or "")
+            for candidate in ranked_candidates
+            if matches_symbol(candidate)
+        }
+        utility_rank = _first_matching_rank(ranked_candidates, matches_symbol)
+        ranked_match = (
+            ranked_candidates[utility_rank - 1] if utility_rank is not None else None
+        )
+        symbol_rows.append(
+            {
+                "symbol": symbol,
+                "utility_rank": utility_rank,
+                "coverage_rank": next(
+                    (
+                        rank
+                        for rank, uid in enumerate(coverage_uids, start=1)
+                        if uid in matching_uids
+                    ),
+                    None,
+                ),
+                "final_rank": _first_matching_rank(rendered_symbols, matches_symbol),
+                "lexical_span_score": _float_or_none(
+                    getattr(ranked_match, "lexical_span_score", None)
+                ),
+            }
+        )
+
+    return {
+        "candidate_count": len(ranked_candidates),
+        "coverage_count": len(coverage_transactions),
+        "rendered_symbol_count": len(rendered_symbols),
+        "owners": owner_rows,
+        "symbols": symbol_rows,
+        "owner_funnel": _gold_rank_funnel(owner_rows),
+        "symbol_funnel": _gold_rank_funnel(symbol_rows),
     }
 
 
@@ -651,6 +835,9 @@ def _populate_candidate_audit(
     top_limit: int = _TOP_CANDIDATE_AUDIT_LIMIT,
 ) -> None:
     candidates = list(getattr(retrieval, "candidates_for_context", []) or [])
+    ranked_candidates = list(
+        getattr(retrieval, "budget_ranked_candidates", []) or candidates
+    )
     rendered_symbols = _unique_rendered_symbols(getattr(retrieval, "bundles", []) or [])
 
     result.candidate_relation_histogram = _sorted_counter_dict(
@@ -661,7 +848,7 @@ def _populate_candidate_audit(
     )
     result.top_candidates = [
         _candidate_audit_row(candidate, rank)
-        for rank, candidate in enumerate(candidates[:top_limit], start=1)
+        for rank, candidate in enumerate(ranked_candidates[:top_limit], start=1)
     ]
     result.top_rendered_symbols = [
         _rendered_symbol_audit_row(symbol, rank)
@@ -669,6 +856,13 @@ def _populate_candidate_audit(
     ]
     selection_trace = getattr(retrieval, "seed_selection_trace", None)
     result.seed_selection = selection_trace.to_dict() if selection_trace is not None else {}
+    result.gold_rank_audit = _gold_rank_audit(
+        result.expected_spans,
+        result.expected_symbols,
+        ranked_candidates,
+        rendered_symbols,
+        getattr(retrieval, "budget_trace", None),
+    )
 
 
 def _question_result_from_entry(question_entry: dict[str, Any]) -> QuestionResult:
@@ -896,6 +1090,9 @@ def _run_axis_retrieval_for_question(
             query_node_rrf_weight=query_node_rrf_weight,
             query_node_mode_rrf_weight=query_node_mode_rrf_weight,
             query_node_rrf_k=query_node_rrf_k,
+            # Report-only transaction capture. TokenCreditTrace records
+            # accepted purchases but never changes selection.
+            capture_budget_trace=True,
             token_credit_min_utility_per_token=token_credit_min_utility_per_token,
             token_credit_freeze_at_plateau=token_credit_freeze_at_plateau,
             token_credit_plateau_upgrade_reserve_share=(
@@ -1169,6 +1366,70 @@ def assert_p7_baseline(summary: dict[str, Any], baseline: dict[str, Any]) -> Non
         )
 
 
+def _rank_percentile(values: list[int], quantile: float) -> float | None:
+    if not values:
+        return None
+    ordered = sorted(values)
+    position = (len(ordered) - 1) * min(1.0, max(0.0, quantile))
+    lower = int(position)
+    upper = min(len(ordered) - 1, lower + 1)
+    if lower == upper:
+        return float(ordered[lower])
+    fraction = position - lower
+    return ordered[lower] * (1.0 - fraction) + ordered[upper] * fraction
+
+
+def _aggregate_gold_rank_funnel(
+    results: list[QuestionResult],
+    *,
+    row_key: str,
+) -> dict[str, Any]:
+    audits = [result.gold_rank_audit for result in results if result.gold_rank_audit]
+    rows = [row for audit in audits for row in list(audit.get(row_key, []) or [])]
+
+    def stage(field: str) -> dict[str, Any]:
+        ranks = [int(row[field]) for row in rows if row.get(field) is not None]
+        return {
+            "present": len(ranks),
+            "recall": len(ranks) / len(rows) if rows else 0.0,
+            "mean_rank": sum(ranks) / len(ranks) if ranks else None,
+            "median_rank": _rank_percentile(ranks, 0.50),
+            "p90_rank": _rank_percentile(ranks, 0.90),
+            "recall_at": {
+                str(cutoff): (
+                    sum(rank <= cutoff for rank in ranks) / len(rows) if rows else 0.0
+                )
+                for cutoff in _GOLD_RANK_CUTOFFS
+            },
+        }
+
+    return {
+        "gold_count": len(rows),
+        "candidate_count": sum(int(audit.get("candidate_count", 0)) for audit in audits),
+        "coverage_count": sum(int(audit.get("coverage_count", 0)) for audit in audits),
+        "rendered_symbol_count": sum(
+            int(audit.get("rendered_symbol_count", 0)) for audit in audits
+        ),
+        "utility": stage("utility_rank"),
+        "coverage": stage("coverage_rank"),
+        "final": stage("final_rank"),
+        "retrieval_missing_but_final": sum(
+            row.get("utility_rank") is None and row.get("final_rank") is not None
+            for row in rows
+        ),
+        "utility_not_coverage_but_final": sum(
+            row.get("utility_rank") is not None
+            and row.get("coverage_rank") is None
+            and row.get("final_rank") is not None
+            for row in rows
+        ),
+        "coverage_not_final": sum(
+            row.get("coverage_rank") is not None and row.get("final_rank") is None
+            for row in rows
+        ),
+    }
+
+
 def summarise(results: list[QuestionResult]) -> dict[str, Any]:
     scored = [r for r in results if r.skipped_reason is None]
     skipped = [r for r in results if r.skipped_reason is not None]
@@ -1288,6 +1549,8 @@ def summarise(results: list[QuestionResult]) -> dict[str, Any]:
         for audit in lexical_score_audits
         if audit.get("auc") is not None
     ]
+    owner_gold_rank_funnel = _aggregate_gold_rank_funnel(scored, row_key="owners")
+    symbol_gold_rank_funnel = _aggregate_gold_rank_funnel(scored, row_key="symbols")
 
     return {
         "scored": len(scored),
@@ -1332,6 +1595,10 @@ def summarise(results: list[QuestionResult]) -> dict[str, Any]:
         "intent_top_role_counts": dict(by_intent),
         "candidate_relation_totals": _sorted_counter_dict(candidate_relation_totals),
         "bundle_relation_totals": _sorted_counter_dict(bundle_relation_totals),
+        "gold_rank_funnel": {
+            "owners": owner_gold_rank_funnel,
+            "symbols": symbol_gold_rank_funnel,
+        },
         "skipped_reasons": Counter(r.skipped_reason for r in skipped),
         # Post-processing cost (the expensive part of the budget cost model).
         "overall_mean_context_seconds": _mean("context_seconds"),
@@ -1384,6 +1651,7 @@ def summarise(results: list[QuestionResult]) -> dict[str, Any]:
                 "lexical_span_probe_seconds": r.lexical_span_probe_seconds,
                 "lexical_span_probe": r.lexical_span_probe,
                 "lexical_span_score_audit": r.lexical_span_score_audit,
+                "gold_rank_audit": r.gold_rank_audit,
             }
             for r in sorted(scored, key=lambda x: x.question_id)
         ],
@@ -1485,6 +1753,46 @@ def _render_markdown(results: list[QuestionResult], summary: dict[str, Any]) -> 
             f"{info.get('mean_expected_tokens', 0.0):.0f}/{info.get('mean_other_tokens', 0.0):.0f} | "
             f"{info.get('seed_full_recall', 0)} | "
             f"{info.get('pool_full_recall', 0)} | {info['full_recall']} |"
+        )
+
+    rank_funnel = summary.get("gold_rank_funnel", {})
+    owner_funnel = rank_funnel.get("owners", {})
+    symbol_funnel = rank_funnel.get("symbols", {})
+    if owner_funnel.get("gold_count") or symbol_funnel.get("gold_count"):
+        lines.extend(
+            [
+                "",
+                "## Gold rank funnel (utility → Token Credit coverage → prompt)",
+                "",
+                "Ranks are computed over the complete budget-sorted pool and "
+                "the complete first-wins prompt, not the top-15 audit sample.",
+                "",
+                "| gold | stage | present/total | recall | median rank | p90 rank |",
+                "|---|---|---|---|---|---|",
+            ]
+        )
+        for label, funnel in (("owner", owner_funnel), ("symbol", symbol_funnel)):
+            total = int(funnel.get("gold_count", 0))
+            for stage_name in ("utility", "coverage", "final"):
+                stage = funnel.get(stage_name, {})
+                median = stage.get("median_rank")
+                p90 = stage.get("p90_rank")
+                lines.append(
+                    f"| {label} | {stage_name} | {stage.get('present', 0)}/{total} | "
+                    f"{stage.get('recall', 0.0):.3f} | "
+                    f"{median if median is not None else '—'} | "
+                    f"{p90 if p90 is not None else '—'} |"
+                )
+        lines.extend(
+            [
+                "",
+                f"Owner flow: retrieval-missing but graph-rescued "
+                f"**{owner_funnel.get('retrieval_missing_but_final', 0)}** · "
+                f"utility-present, coverage-missed but rescued "
+                f"**{owner_funnel.get('utility_not_coverage_but_final', 0)}** · "
+                f"coverage-selected but absent after first-wins "
+                f"**{owner_funnel.get('coverage_not_final', 0)}**.",
+            ]
         )
 
     def _masking_section(title: str, lower: str, upper: str, rows: list) -> None:

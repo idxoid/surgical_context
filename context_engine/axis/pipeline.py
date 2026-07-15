@@ -107,6 +107,10 @@ class AxisRetrievalResult:
     raw_by_role: dict[str, list[RoleCandidate]]
     seed_files: list[str]
     candidates_for_context: list[RoleCandidate]
+    # The exact order passed into context expansion after request-local budget
+    # utility sorting (and anchor pinning).  Kept separately from the selector
+    # output so QA can measure gold rank without changing pool membership.
+    budget_ranked_candidates: list[RoleCandidate] = field(default_factory=list)
     seed_candidates: list[RoleCandidate] = field(default_factory=list)
     bundles: list[ContextBundle] = field(default_factory=list)
     render_mode: str = "full"
@@ -721,6 +725,7 @@ def _try_symbol_targeted_retrieval(
         raw_by_role={},
         seed_files=[seed_path] if seed_path else [],
         candidates_for_context=context_candidates,
+        budget_ranked_candidates=context_candidates,
         seed_candidates=[anchor],
         bundles=list(bundles),
         render_mode=render_mode,
@@ -787,6 +792,7 @@ def _overlay_only_result(
         raw_by_role={},
         seed_files=[seed_path] if seed_path else [],
         candidates_for_context=[anchor],
+        budget_ranked_candidates=[anchor],
         seed_candidates=[anchor],
         bundles=bundles,
         render_mode=render_mode,
@@ -1977,6 +1983,7 @@ def _run_axis_retrieval_impl(
         raw_by_role=raw_by_role,
         seed_files=sorted(f for f in seed_files if f),
         candidates_for_context=candidates_for_context,
+        budget_ranked_candidates=active,
         seed_candidates=seed_candidates,
         bundles=list(bundles),
         render_mode=render_mode,

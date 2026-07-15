@@ -587,8 +587,14 @@ def test_build_context_threads_qualified_name_for_fold_render():
         render_budget=ContextRenderBudget(render_mode="fold"),
     )
 
-    assert bundle.seed.name == "Service"
-    assert bundle.seed.qualified_name == "pkg.mod.Service"
+    assert bundle.seed.name == "target"
+    assert bundle.seed.qualified_name == "pkg.mod.Service.target"
+    assert {
+        (owner.uid, owner.qualified_name) for owner in bundle.seed.represented_owners
+    } == {
+        ("u:target", "pkg.mod.Service.target"),
+        ("u:helper", "pkg.mod.Service.helper"),
+    }
     assert bundle.related == ()
     assert "def target(self):" in (bundle.seed.code or "")
     assert "return self.helper()" in (bundle.seed.code or "")

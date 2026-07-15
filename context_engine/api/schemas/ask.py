@@ -98,6 +98,7 @@ class AxisContextSymbolResponse(BaseModel):
     end_line: int | None = None
     rendered_spans: list[tuple[int, int]] = Field(default_factory=list)
     retrieval_spans: list[tuple[int, int]] = Field(default_factory=list)
+    represented_owners: list[dict[str, str]] = Field(default_factory=list)
 
 
 class AxisContextBundleResponse(BaseModel):

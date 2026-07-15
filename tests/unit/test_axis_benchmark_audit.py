@@ -5,11 +5,12 @@ from __future__ import annotations
 from dataclasses import replace
 from types import SimpleNamespace
 
-from context_engine.axis.context_builder import ContextBundle, ContextSymbol
+from context_engine.axis.context_builder import ContextBundle, ContextSymbol, RenderedOwner
 from context_engine.axis.role_retrieval import RoleCandidate
 from QA.axis_benchmark import (
     _compute_span_owner_recall,
     _expected_file_layers,
+    _gold_rank_audit,
     _lexical_span_score_audit,
     _populate_candidate_audit,
     _populate_recall_layers,
@@ -271,6 +272,34 @@ def test_span_owner_recall_requires_the_file_symbol_pair_and_deduplicates_ranges
     assert _compute_span_owner_recall(expected, [*wrong_pair, correct]) == 1.0
 
 
+def test_span_owner_recall_matches_all_honest_owners_of_folded_render() -> None:
+    folded = replace(
+        _symbol("method", "/repo/worker.py", "hybrid_seed"),
+        name="run_once",
+        qualified_name="worker.Worker.run_once",
+        represented_owners=(
+            RenderedOwner(
+                uid="class",
+                name="Worker",
+                qualified_name="worker.Worker",
+                file_path="/repo/worker.py",
+            ),
+            RenderedOwner(
+                uid="method",
+                name="run_once",
+                qualified_name="worker.Worker.run_once",
+                file_path="/repo/worker.py",
+            ),
+        ),
+    )
+    expected = [
+        {"file_path": "worker.py", "symbol": "Worker", "start_line": 1, "end_line": 20},
+        {"file_path": "worker.py", "symbol": "run_once", "start_line": 5, "end_line": 9},
+    ]
+
+    assert _compute_span_owner_recall(expected, [folded]) == 1.0
+
+
 def test_lexical_span_score_audit_compares_exact_owner_pair_with_pool() -> None:
     expected = [
         {"file_path": "worker.py", "symbol": "run_once", "start_line": 10, "end_line": 12}
@@ -298,3 +327,53 @@ def test_lexical_span_score_audit_compares_exact_owner_pair_with_pool() -> None:
     assert audit["scored_gold_owner_candidates"] == 1
     assert audit["auc"] == 0.5
     assert audit["gold_precision_at_owner_count"] == 0.0
+
+
+def test_gold_rank_audit_tracks_complete_budget_and_prompt_funnel() -> None:
+    expected_spans = [
+        {"file_path": "worker.py", "symbol": "run_once", "start_line": 10, "end_line": 12},
+        {"file_path": "missing.py", "symbol": "rescued", "start_line": 20, "end_line": 22},
+    ]
+    other = _candidate("other", "/repo/other.py", "hybrid_seed")
+    gold = replace(
+        _candidate("gold", "/repo/worker.py", "hybrid_seed"),
+        name="run_once",
+        qualified_name="worker.run_once",
+        lexical_span_score=0.8,
+    )
+    rendered_other = _symbol("other", "/repo/other.py", "hybrid_seed")
+    rendered_gold = replace(
+        _symbol("gold", "/repo/worker.py", "hybrid_seed"),
+        name="run_once",
+        qualified_name="worker.run_once",
+    )
+    rendered_rescue = replace(
+        _symbol("rescue", "/repo/missing.py", "binding_structure_expansion"),
+        name="rescued",
+        qualified_name="missing.rescued",
+    )
+    trace = SimpleNamespace(
+        transactions=[
+            SimpleNamespace(phase="upgrade_capped", uid="gold"),
+            SimpleNamespace(phase="coverage", uid="gold"),
+            SimpleNamespace(phase="coverage", uid="other"),
+        ]
+    )
+
+    audit = _gold_rank_audit(
+        expected_spans,
+        ["run_once", "rescued"],
+        [other, gold],
+        [rendered_other, rendered_gold, rendered_rescue],
+        trace,
+    )
+
+    by_owner = {row["symbol"]: row for row in audit["owners"]}
+    assert by_owner["run_once"]["utility_rank"] == 2
+    assert by_owner["run_once"]["coverage_rank"] == 1
+    assert by_owner["run_once"]["final_rank"] == 2
+    assert by_owner["rescued"]["utility_rank"] is None
+    assert by_owner["rescued"]["final_rank"] == 3
+    assert audit["owner_funnel"]["retrieval_missing_but_final"] == 1
+    assert audit["owner_funnel"]["utility"]["recall_at"]["1"] == 0.0
+    assert audit["owner_funnel"]["utility"]["recall_at"]["3"] == 0.5

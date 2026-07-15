@@ -131,6 +131,24 @@ class LexicalSpanEvidence:
 
 
 @dataclass(frozen=True)
+class RenderedOwner:
+    """One source symbol honestly represented inside an aggregate render."""
+
+    uid: str
+    name: str
+    qualified_name: str
+    file_path: str
+
+    def to_dict(self) -> dict[str, str]:
+        return {
+            "uid": self.uid,
+            "name": self.name,
+            "qualified_name": self.qualified_name,
+            "file_path": self.file_path,
+        }
+
+
+@dataclass(frozen=True)
 class ContextSymbol:
     """One symbol in the assembled context: the seed (depth 0) or a
     related symbol reached through graph expansion."""
@@ -161,6 +179,11 @@ class ContextSymbol:
     # Retrieval hint only: source intervals returned by semantic chunks.  It
     # is not claimed as rendered until the line ranker actually selects it.
     retrieval_spans: tuple[tuple[int, int], ...] = ()
+    # Aggregate renders (currently class folds) represent several real source
+    # symbols while retaining one primary uid for budget accounting. Keep the
+    # complete owner set so exact-symbol/file evaluation does not confuse the
+    # rendering container with a different source node.
+    represented_owners: tuple[RenderedOwner, ...] = ()
 
     def effective_rendered_spans(self) -> tuple[tuple[int, int], ...]:
         if self.rendered_spans is not None:
@@ -195,6 +218,10 @@ class ContextSymbol:
             payload["end_line"] = self.end_line
         payload["rendered_spans"] = self.effective_rendered_spans()
         payload["retrieval_spans"] = self.retrieval_spans
+        if self.represented_owners:
+            payload["represented_owners"] = [
+                owner.to_dict() for owner in self.represented_owners
+            ]
         return payload
 
 
@@ -1720,17 +1747,35 @@ def _build_folded_class_symbol(
     *,
     compact: bool,
 ) -> ContextSymbol:
+    # A folded block is a render of the closest source symbol, not a new class
+    # node.  Keep that symbol's identity alongside its uid.  Re-labelling a
+    # method uid as its parent class makes first-wins prompt dedupe discard a
+    # later exact method occurrence while the surviving row no longer matches
+    # the method owner.  The class-shaped code and unioned spans still make the
+    # aggregation explicit through ``expansion_step="fold"``.
     first = min(members, key=lambda m: (m.distance_from_seed, m.uid))
+    represented: dict[tuple[str, str, str, str], RenderedOwner] = {}
+    for member in members:
+        member_owners = member.represented_owners or (
+            RenderedOwner(
+                uid=member.uid,
+                name=member.name,
+                qualified_name=member.qualified_name,
+                file_path=member.file_path,
+            ),
+        )
+        for owner in member_owners:
+            key = (owner.uid, owner.file_path, owner.name, owner.qualified_name)
+            represented.setdefault(key, owner)
     return cast(
         ContextSymbol,
         replace(
             first,
-            name=_class_name_from_qualified_name(parent),
-            qualified_name=parent,
             distance_from_seed=min(m.distance_from_seed for m in members),
             expansion_step="fold",
             code=_folded_class_code(parent, members, compact=compact),
             rendered_spans=_folded_class_spans(parent, members, compact=compact),
+            represented_owners=tuple(represented.values()),
         ),
     )
 

@@ -77,8 +77,16 @@ Primary axis benchmark outputs (`summary.json`):
 - `overall_seed_mean_recall` / `overall_pool_mean_recall` — seed vs expanded pool
 - `overall_mean_rendered_tokens` — tokens in assembled context
 - `overall_mean_context_seconds` — graph expansion + code fetch time
+- `gold_rank_funnel` — complete exact-owner and exact-symbol distribution across
+  budget utility order, accepted Token Credit coverage transactions, and the
+  final first-wins prompt order. Each stage reports presence, median/p90 rank,
+  and recall@1/3/5/10/20/40/80/160; the owner flow also exposes retrieval misses
+  rescued by graph expansion and coverage-selected owners lost after dedupe.
 
-Per-question rows include `file_recall`, `seed_file_recall`, `pool_file_recall`, `rendered_tokens`, `context_seconds`, and `skipped` / `skip_reason` when applicable.
+Per-question rows include `file_recall`, `seed_recall`, `pool_recall`,
+`rendered_tokens`, `context_seconds`, and `gold_rank_audit`. The latter contains
+the full owner/symbol rank rows; it does not depend on the top-15 candidate audit
+sample. Skipped questions retain `skipped_reason` in `results.jsonl`.
 
 ## 6. Related
 

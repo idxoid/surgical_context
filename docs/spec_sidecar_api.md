@@ -321,6 +321,12 @@ the probe score only to pre-Token-Credit utility. The response's
 `lexical_span_probe` object reports bounded/payload/matched counts, covered
 lines, and degraded fetch status.
 
+Folded class renders keep the primary source symbol identity and expose
+`represented_owners` on the context symbol. Each entry contains the real
+`uid`, `file_path`, `name`, and `qualified_name` included in that aggregate
+render; synthetic class headers do not invent owners. This keeps inspector and
+exact-owner evaluation aligned with first-wins prompt deduplication.
+
 ---
 
 ### POST /ask/stream

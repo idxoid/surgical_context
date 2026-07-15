@@ -1097,8 +1097,20 @@ def test_fold_groups_class_members_and_signatures_siblings():
 
     [out] = _apply_render_and_budget([bundle], token_budget=None, render_mode="fold")
 
-    assert out.seed.name == "Service"
-    assert out.seed.qualified_name == "pkg.mod.Service"
+    # Fold changes the render, not the source identity.  Keeping the member
+    # owner aligned with its uid prevents first-wins dedupe from turning a
+    # method uid into a class row and hiding the exact owner.
+    assert out.seed.uid == "target"
+    assert out.seed.name == "target"
+    assert out.seed.qualified_name == "pkg.mod.Service.target"
+    assert out.seed.expansion_step == "fold"
+    assert {
+        (owner.uid, owner.name, owner.qualified_name)
+        for owner in out.seed.represented_owners
+    } == {
+        ("target", "target", "pkg.mod.Service.target"),
+        ("helper", "helper", "pkg.mod.Service.helper"),
+    }
     assert out.related == ()
     assert out.seed.code == (
         "class Service:\n"
