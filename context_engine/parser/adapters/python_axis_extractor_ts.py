@@ -161,7 +161,11 @@ def _field(node, name: str):
 
 
 def _fields(node, name: str) -> list:
-    return [_unwrap(ch) for ch in node.children_by_field_name(name) if ch.type not in _IGNORED_CHILD_TYPES]
+    return [
+        _unwrap(ch)
+        for ch in node.children_by_field_name(name)
+        if ch.type not in _IGNORED_CHILD_TYPES
+    ]
 
 
 def _is_starred_chain(node) -> bool:
@@ -341,9 +345,7 @@ class _Renderer:
             children = _named_children(node)
             if len(children) == 2 and children[1].type == "type_parameter":
                 base = self.render(children[0], _P_ATOM)
-                args = ", ".join(
-                    self.render(arg, _P_TEST) for arg in _named_children(children[1])
-                )
+                args = ", ".join(self.render(arg, _P_TEST) for arg in _named_children(children[1]))
                 return f"{base}[{args}]"
             return self.fallback(node)
         if t == "union_type":
@@ -1306,9 +1308,7 @@ class _TsAxisWalker:
             evidence = param["name"]
             if param["annotation"] is not None:
                 evidence = f"{param['name']}: {self.render.render(param['annotation'])}"
-            self._emit_param(
-                "struct", "parameter_decl", param["node"], scope, payload, evidence
-            )
+            self._emit_param("struct", "parameter_decl", param["node"], scope, payload, evidence)
             self._emit_param("dfg", "parameter_input", param["node"], scope, payload, evidence)
             default = param["default"]
             if default is not None:
@@ -1317,7 +1317,9 @@ class _TsAxisWalker:
                     "default": self.render.render(default),
                     "default_kind": _ast_kind(default),
                 }
-                self._emit("struct", "parameter_default", default, scope=scope, payload=default_payload)
+                self._emit(
+                    "struct", "parameter_default", default, scope=scope, payload=default_payload
+                )
                 self._emit(
                     "dfg", "parameter_default_value", default, scope=scope, payload=default_payload
                 )
@@ -1603,9 +1605,7 @@ class _TsAxisWalker:
     def _visit_expression_statement(self, node) -> None:
         children = _named_children(node)
         has_comma = any(ch.type == "," for ch in node.children)
-        is_assignment = any(
-            ch.type in ("assignment", "augmented_assignment") for ch in children
-        )
+        is_assignment = any(ch.type in ("assignment", "augmented_assignment") for ch in children)
         if children and has_comma and not is_assignment:
             # bare statement-level tuple: ast sees Expr(Tuple(...)) — including
             # the single-element `call(...),` trailing-comma form
@@ -1711,9 +1711,7 @@ class _TsAxisWalker:
                 "container": container,
                 "method": method,
                 "callee": self.render.render(func),
-                "arguments": [
-                    self._expr_payload(self._splat_inner(arg)) for arg in positional
-                ],
+                "arguments": [self._expr_payload(self._splat_inner(arg)) for arg in positional],
                 "keywords": [
                     {"name": kw_name or "**", **self._expr_payload(kw_value)}
                     for kw_name, kw_value in keywords
@@ -1771,9 +1769,7 @@ class _TsAxisWalker:
             self._visit_children(consequence)
         for alt in node.children_by_field_name("alternative"):
             if alt.type == "elif_clause":
-                self._emit(
-                    "cfg", "branch_selector", alt, payload={"kind": "if"}, ast_kind="If"
-                )
+                self._emit("cfg", "branch_selector", alt, payload={"kind": "if"}, ast_kind="If")
                 alt_condition = _field(alt, "condition")
                 self._emit_branch_condition(alt_condition, kind="if")
                 self.visit(alt_condition)
@@ -1972,9 +1968,7 @@ class _TsAxisWalker:
         bound_name = ""
         value = node.child_by_field_name("value")
         if value is None:
-            named = [
-                ch for ch in _named_children(node) if ch.type != "block"
-            ]
+            named = [ch for ch in _named_children(node) if ch.type != "block"]
             value = named[0] if named else None
         if value is not None and value.type == "as_pattern":
             inner = _named_children(value)
@@ -2528,9 +2522,7 @@ class _TsAxisWalker:
         value = _field(node, "value")
         indexes = _fields(node, "subscript")
         key_node = (
-            indexes[0]
-            if len(indexes) == 1 and not _subscript_indexes_form_tuple(indexes)
-            else None
+            indexes[0] if len(indexes) == 1 and not _subscript_indexes_form_tuple(indexes) else None
         )
         payload: dict[str, Any] = {
             "container": self.render.render(value),
@@ -2707,5 +2699,7 @@ class _TsAxisWalker:
         if node.type == "attribute":
             return True
         return any(
-            self._contains_attr_read(ch) for ch in node.named_children if ch.type not in _IGNORED_CHILD_TYPES
+            self._contains_attr_read(ch)
+            for ch in node.named_children
+            if ch.type not in _IGNORED_CHILD_TYPES
         )

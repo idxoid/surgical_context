@@ -36,9 +36,7 @@ def test_record_tool_result_writes_compact_event(tmp_path, monkeypatch):
     }
 
 
-def test_batch_envelope_is_not_logged_because_subtools_are_already_captured(
-    tmp_path, monkeypatch
-):
+def test_batch_envelope_is_not_logged_because_subtools_are_already_captured(tmp_path, monkeypatch):
     path = tmp_path / "events.jsonl"
     monkeypatch.setenv(LOG_PATH_ENV, str(path))
     monkeypatch.setenv(INSTANCE_ID_ENV, "owner__repo-1")

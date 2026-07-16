@@ -63,9 +63,7 @@ def test_neo4j_probe_exposes_proxy_binding_as_proxy_object_marker():
     # 2nd call hits the cache/maps, no further DB runs.
     assert probe.library_marker_kinds("u:proxy") == {"proxy_object"}
     assert len(db.driver.session_obj.runs) == 3
-    assert all(
-        call[1] == {"workspace_id": "ws"} for call in db.driver.session_obj.runs
-    )
+    assert all(call[1] == {"workspace_id": "ws"} for call in db.driver.session_obj.runs)
 
 
 def test_neo4j_probe_resolves_library_marker_kind_via_catalogue():

@@ -43,9 +43,7 @@ def _partition_index_batch_paths(
     snapshot = None
     if candidates:
         snapshot = load_git_indexable_snapshot(os.path.commonpath(candidates))
-    indexable_paths = [
-        path for path in candidates if should_index_file(path, snapshot=snapshot)
-    ]
+    indexable_paths = [path for path in candidates if should_index_file(path, snapshot=snapshot)]
     return missing_paths, unsupported_paths, indexable_paths, existing_paths
 
 

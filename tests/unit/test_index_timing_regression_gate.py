@@ -10,9 +10,9 @@ from __future__ import annotations
 
 from context_engine.database.embedding_cache import EmbeddingCache, EmbeddingCacheKey
 from context_engine.database.embedding_registry import compute_chunk_hash, compute_embedding_hash
+from context_engine.index_profile import resolve_index_profile
 from context_engine.indexer.fast.pipeline import _fast_indexing_initial_stats, _stamp_total
 from context_engine.indexer.queue import IndexBatchQueue
-from context_engine.index_profile import resolve_index_profile
 
 
 def test_stamp_total_always_sets_timings_total():

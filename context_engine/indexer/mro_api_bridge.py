@@ -312,8 +312,7 @@ class MroApiBridgeIndexer:
         # Superclass traversal order decides which ancestor's method wins the
         # surface setdefault; sort content-stably (uids reshuffle per workspace).
         return {
-            sub_uid: [sup_uid for _qn, sup_uid in sorted(sups)]
-            for sub_uid, sups in pending.items()
+            sub_uid: [sup_uid for _qn, sup_uid in sorted(sups)] for sub_uid, sups in pending.items()
         }
 
     def _load_methods(self, workspace_id: str, classes: list[ClassRecord]) -> list[MethodRecord]:

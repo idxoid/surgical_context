@@ -1101,9 +1101,9 @@ class LanceDBClient:
             if self._embedding_cache
             else {}
         )
-        self._embedding_stats["cache_read_ms"] = self._embedding_stats.get(
-            "cache_read_ms", 0.0
-        ) + (time.perf_counter() - t_cache) * 1000
+        self._embedding_stats["cache_read_ms"] = (
+            self._embedding_stats.get("cache_read_ms", 0.0) + (time.perf_counter() - t_cache) * 1000
+        )
         for index, (text, content_hash) in enumerate(zip(texts, content_hashes, strict=False)):
             key = cache_keys[content_hash]
             cached = cached_vectors.get(key)
@@ -1151,9 +1151,10 @@ class LanceDBClient:
             if self._embedding_cache and cache_writes:
                 t_cache = time.perf_counter()
                 self._embedding_cache.set_many(cache_writes)
-                self._embedding_stats["cache_write_ms"] = self._embedding_stats.get(
-                    "cache_write_ms", 0.0
-                ) + (time.perf_counter() - t_cache) * 1000
+                self._embedding_stats["cache_write_ms"] = (
+                    self._embedding_stats.get("cache_write_ms", 0.0)
+                    + (time.perf_counter() - t_cache) * 1000
+                )
             if progress_callback:
                 progress_callback(
                     f"encode: {min(start + len(batch), len(missing_items))}/{len(missing_items)}"

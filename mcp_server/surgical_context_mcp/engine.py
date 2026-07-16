@@ -31,6 +31,7 @@ def _span_line_rerank_enabled() -> bool:
         "on",
     }
 
+
 # Single-user MCP session: every overlay buffer is stored and read under one
 # stable user id, so ``set_overlay`` writes and ``ask``/``impact`` reads hit the
 # same key. The overlay collapses the workspace id to its base internally, so

@@ -52,7 +52,9 @@ def _index_file_symbol_delta(
     workspace_id: str,
     *,
     include_axis_facts: bool = False,
-) -> tuple[str, list, list, list[str], list[str], list[str], dict, str, list, list, list, list | None]:
+) -> tuple[
+    str, list, list, list[str], list[str], list[str], dict, str, list, list, list, list | None
+]:
     """One-shot extract via FastExtractor when possible; else legacy multi-parse."""
     from context_engine.indexer.fast.extractor import FastExtractor
 

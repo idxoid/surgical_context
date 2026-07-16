@@ -86,9 +86,7 @@ def test_reexport_bridge_no_anchor_is_noop():
 
 
 def test_reexport_bridge_caps_total():
-    rows = [
-        {**_SHIM_ROW, "uid": f"u:{i}", "file_path": f"pkg/shim{i}.py"} for i in range(10)
-    ]
+    rows = [{**_SHIM_ROW, "uid": f"u:{i}", "file_path": f"pkg/shim{i}.py"} for i in range(10)]
     db = _Db(rows)
     scan = _scan({f"u:{i}": {"file_tier": "reexport"} for i in range(10)})
 
