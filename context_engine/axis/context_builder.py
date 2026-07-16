@@ -59,6 +59,12 @@ _RENDER_LADDER: tuple[str, ...] = (
 # at 8k. The configured threshold is therefore the 8k floor, not a fixed gate.
 _RANK_DECAY_GUARD_START_TOKENS = 8_000
 _RANK_DECAY_GUARD_END_TOKENS = 12_000
+# A lexical/semantic source span in the ranked head is direct evidence that a
+# body (rather than only a signature) can answer the request. Let those few
+# candidates cross the generic density cutoff once. Naturally qualifying
+# rungs do not consume that exception; after the first rejected-density rung
+# is rescued, the cutoff controls the rest of the ladder normally.
+_RANK_DECAY_SPAN_PROTECTED_HEAD = 5
 
 _CLASS_DEF_PREFIX = "class "
 
@@ -2879,9 +2885,11 @@ def _apply_credit_upgrades(
     phase: str = "upgrade_capped",
     credit_trace: TokenCreditTrace | None = None,
     min_utility_per_token: float | None = None,
+    protected_cutoff_bypasses: int = 0,
     allow_free_at_ceiling: bool = False,
     node_semantic_utility_weight: float = 0.0,
 ) -> int:
+    remaining_protected_cutoff_bypasses = max(0, int(protected_cutoff_bypasses))
     upgrade_heap: list[tuple[float, int, int, ContextBundle, int]] = []
     for entry_index in range(len(selected)):
         if entry_filter is not None and entry_index not in entry_filter:
@@ -2938,17 +2946,21 @@ def _apply_credit_upgrades(
                 )
                 effective_utility = max(0.001, raw_delta_utility)
         raw_density = raw_delta_utility / max(1, exact_delta)
-        if (
+        cutoff_rejected = (
             min_utility_per_token is not None
             and exact_delta > 0
             and raw_density <= min_utility_per_token
-        ):
+        )
+        cutoff_protected = exact_delta > 0 and remaining_protected_cutoff_bypasses > 0
+        if cutoff_rejected and not cutoff_protected:
             if credit_trace is not None:
                 credit_trace.cutoff_rejections += 1
             continue
         entry["rendered"] = upgraded
         entry["cost"] = upgraded_cost
         used += exact_delta
+        if cutoff_rejected and cutoff_protected:
+            remaining_protected_cutoff_bypasses -= 1
         if isinstance(entry_source, ContextBundle):
             if credit_trace is not None:
                 credit_trace.record(
@@ -3048,6 +3060,14 @@ def _apply_rank_decay_credit_upgrades(
         )
         if body_credit <= 0:
             break
+        entry_source = selected[entry_index].get("source")
+        span_protected = (
+            min_utility_per_token is not None
+            and min_utility_per_token > 0.0
+            and bundle_index + 1 <= _RANK_DECAY_SPAN_PROTECTED_HEAD
+            and isinstance(entry_source, ContextBundle)
+            and bool(entry_source.seed.retrieval_spans)
+        )
         local_ceiling = min(token_budget, used + body_credit)
         used = _apply_credit_upgrades(
             selected,
@@ -3063,6 +3083,7 @@ def _apply_rank_decay_credit_upgrades(
             phase="upgrade_rank_decay",
             credit_trace=credit_trace,
             min_utility_per_token=min_utility_per_token,
+            protected_cutoff_bypasses=1 if span_protected else 0,
             # Preserve zero-cost first-wins improvements even when the paid
             # rank credit is exactly exhausted.
             allow_free_at_ceiling=True,

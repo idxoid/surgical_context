@@ -7,6 +7,8 @@ the benchmark and the live gate.
 
 from __future__ import annotations
 
+from dataclasses import replace
+
 import pytest
 
 from context_engine.axis.context_builder import (
@@ -1074,6 +1076,119 @@ def test_upgrade_only_density_cutoff_preserves_coverage_transactions():
     assert not any(
         transaction.phase.startswith("upgrade_") for transaction in cutoff_trace.transactions
     )
+
+
+def test_rank_decay_span_head_buys_one_body_rung_before_upgrade_cutoff():
+    seed = replace(
+        _sym(
+            "span-head",
+            "def span_head():\n" + "    relevant_value = 1\n" * 80,
+            file_path="/span.py",
+        ),
+        retrieval_spans=((2, 8),),
+    )
+    bundle = ContextBundle(role="vector_seed", seed=seed, utility_score=1.0)
+    trace = TokenCreditTrace()
+
+    _apply_render_and_budget(
+        [bundle],
+        token_budget=2_000,
+        render_mode="signature_only",
+        signature_only_initial=True,
+        rank_decay_body_allocation=True,
+        rank_decay_head_share=0.90,
+        upgrade_min_utility_per_token=1_000.0,
+        credit_trace=trace,
+    )
+
+    paid_upgrades = [
+        transaction
+        for transaction in trace.transactions
+        if transaction.phase == "upgrade_rank_decay" and transaction.delta_tokens > 0
+    ]
+    assert len(paid_upgrades) == 1
+    assert paid_upgrades[0].utility_per_token < 1_000.0
+    assert trace.cutoff_rejections > 0
+
+
+def test_rank_decay_span_head_saves_first_rejected_rung_not_first_paid_rung():
+    seed = replace(
+        _sym(
+            "span-head",
+            "def span_head():\n" + "    relevant_value = 1\n" * 80,
+            file_path="/span.py",
+        ),
+        retrieval_spans=((2, 8),),
+    )
+    related = tuple(
+        replace(
+            _sym(
+                f"related-{index}",
+                f"def related_{index}():\n" + f"    value_{index} = 1\n" * 50,
+                file_path="/span.py",
+            ),
+            distance_from_seed=1,
+        )
+        for index in range(2)
+    )
+    trace = TokenCreditTrace()
+    cutoff = 0.003
+
+    _apply_render_and_budget(
+        [ContextBundle(role="vector_seed", seed=seed, related=related, utility_score=1.0)],
+        token_budget=12_000,
+        render_mode="signature_only",
+        signature_only_initial=True,
+        rank_decay_body_allocation=True,
+        rank_decay_head_share=0.90,
+        upgrade_min_utility_per_token=cutoff,
+        credit_trace=trace,
+    )
+
+    paid_upgrades = [
+        transaction
+        for transaction in trace.transactions
+        if transaction.phase == "upgrade_rank_decay" and transaction.delta_tokens > 0
+    ]
+    assert len(paid_upgrades) == 2
+    assert paid_upgrades[0].utility_per_token > cutoff
+    assert paid_upgrades[1].utility_per_token <= cutoff
+    assert trace.cutoff_rejections > 0
+
+
+def test_rank_decay_span_cutoff_bypass_does_not_extend_into_ranked_tail():
+    bundles = [
+        ContextBundle(
+            role="vector_seed",
+            seed=replace(
+                _sym(
+                    f"seed-{index}",
+                    f"def seed_{index}():\n" + f"    value_{index} = 1\n" * 40,
+                    file_path=f"/seed-{index}.py",
+                ),
+                retrieval_spans=((2, 4),) if index == 5 else (),
+            ),
+            utility_score=1.0 - index * 0.01,
+        )
+        for index in range(6)
+    ]
+    trace = TokenCreditTrace()
+
+    _apply_render_and_budget(
+        bundles,
+        token_budget=12_000,
+        render_mode="signature_only",
+        signature_only_initial=True,
+        rank_decay_body_allocation=True,
+        upgrade_min_utility_per_token=1_000.0,
+        credit_trace=trace,
+    )
+
+    assert not any(
+        transaction.phase == "upgrade_rank_decay" and transaction.delta_tokens > 0
+        for transaction in trace.transactions
+    )
+    assert trace.cutoff_rejections > 0
 
 
 def test_token_credit_plateau_freeze_leaves_rejected_budget_unspent():
