@@ -260,6 +260,7 @@ class ContextRenderBudget:
     file_soft_cap_share: float = 0.25
     signature_only_initial: bool = False
     min_utility_per_token: float | None = None
+    upgrade_min_utility_per_token: float | None = None
     freeze_at_utility_plateau: bool = False
     plateau_upgrade_reserve_share: float = 0.0
     node_semantic_utility_weight: float = 0.0
@@ -3111,6 +3112,7 @@ def _apply_token_credit_budget(
     signature_only_initial: bool = False,
     credit_trace: TokenCreditTrace | None = None,
     min_utility_per_token: float | None = None,
+    upgrade_min_utility_per_token: float | None = None,
     freeze_at_utility_plateau: bool = False,
     plateau_upgrade_reserve_share: float = 0.0,
     node_semantic_utility_weight: float = 0.0,
@@ -3163,13 +3165,20 @@ def _apply_token_credit_budget(
         token_budget,
         leader_count=leader_count,
     )
+    upgrade_cutoff = (
+        min_utility_per_token
+        if upgrade_min_utility_per_token is None
+        else upgrade_min_utility_per_token
+    )
     if credit_trace is not None:
         credit_trace.begin(
             token_budget=token_budget,
             noise_level=noise_level,
             leader_count=leader_count,
             transaction_limit=transaction_limit,
-            cutoff_density=min_utility_per_token,
+            cutoff_density=(
+                min_utility_per_token if min_utility_per_token is not None else upgrade_cutoff
+            ),
         )
     peak_utility = max((st.base_utility for st in static), default=0.0)
     leader_indices = {
@@ -3233,7 +3242,7 @@ def _apply_token_credit_budget(
             head_share=rank_decay_head_share,
             decay_rate=rank_decay_rate,
             credit_trace=credit_trace,
-            min_utility_per_token=min_utility_per_token,
+            min_utility_per_token=upgrade_cutoff,
             node_semantic_utility_weight=node_semantic_utility_weight,
         )
         return _selected_credit_rendered_bundles(selected)
@@ -3249,7 +3258,7 @@ def _apply_token_credit_budget(
         used=used,
         phase="upgrade_capped",
         credit_trace=credit_trace,
-        min_utility_per_token=min_utility_per_token,
+        min_utility_per_token=upgrade_cutoff,
         allow_free_at_ceiling=freeze_at_utility_plateau,
         node_semantic_utility_weight=node_semantic_utility_weight,
     )
@@ -3286,7 +3295,7 @@ def _apply_token_credit_budget(
                 entry_filter=relaxed_entries,
                 phase="upgrade_leader_relaxed",
                 credit_trace=credit_trace,
-                min_utility_per_token=min_utility_per_token,
+                min_utility_per_token=upgrade_cutoff,
                 allow_free_at_ceiling=freeze_at_utility_plateau,
                 node_semantic_utility_weight=node_semantic_utility_weight,
             )
@@ -3310,7 +3319,7 @@ def _apply_token_credit_budget(
             used=used,
             phase="upgrade_tail_relaxed",
             credit_trace=credit_trace,
-            min_utility_per_token=min_utility_per_token,
+            min_utility_per_token=upgrade_cutoff,
             allow_free_at_ceiling=freeze_at_utility_plateau,
             node_semantic_utility_weight=node_semantic_utility_weight,
         )
@@ -3328,6 +3337,7 @@ def _apply_render_and_budget(
     signature_only_initial: bool = False,
     credit_trace: TokenCreditTrace | None = None,
     min_utility_per_token: float | None = None,
+    upgrade_min_utility_per_token: float | None = None,
     freeze_at_utility_plateau: bool = False,
     plateau_upgrade_reserve_share: float = 0.0,
     node_semantic_utility_weight: float = 0.0,
@@ -3367,6 +3377,7 @@ def _apply_render_and_budget(
             signature_only_initial=signature_only_initial,
             credit_trace=credit_trace,
             min_utility_per_token=min_utility_per_token,
+            upgrade_min_utility_per_token=upgrade_min_utility_per_token,
             freeze_at_utility_plateau=freeze_at_utility_plateau,
             plateau_upgrade_reserve_share=plateau_upgrade_reserve_share,
             node_semantic_utility_weight=node_semantic_utility_weight,
@@ -3806,6 +3817,7 @@ def _pack_with_render_budget(
         signature_only_initial=budget.signature_only_initial,
         credit_trace=credit_trace,
         min_utility_per_token=budget.min_utility_per_token,
+        upgrade_min_utility_per_token=budget.upgrade_min_utility_per_token,
         freeze_at_utility_plateau=budget.freeze_at_utility_plateau,
         plateau_upgrade_reserve_share=budget.plateau_upgrade_reserve_share,
         node_semantic_utility_weight=budget.node_semantic_utility_weight,

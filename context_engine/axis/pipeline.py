@@ -486,6 +486,7 @@ class _SymbolTargetedRetrievalOptions:
     include_tests_in_walks: bool
     budget_trace: context_builder.TokenCreditTrace | None
     min_utility_per_token: float | None
+    upgrade_min_utility_per_token: float | None
     freeze_at_utility_plateau: bool
     plateau_upgrade_reserve_share: float
     node_semantic_utility_weight: float
@@ -518,6 +519,7 @@ class _ContextBuildOptions:
     user_id: str
     credit_trace: context_builder.TokenCreditTrace | None
     min_utility_per_token: float | None
+    upgrade_min_utility_per_token: float | None
     freeze_at_utility_plateau: bool
     plateau_upgrade_reserve_share: float
     node_semantic_utility_weight: float
@@ -549,6 +551,7 @@ def _build_context_bundles_with_budget(
         file_soft_cap_share=profile.file_soft_cap_share if profile else 0.25,
         signature_only_initial=profile.signature_only_initial if profile else False,
         min_utility_per_token=options.min_utility_per_token,
+        upgrade_min_utility_per_token=options.upgrade_min_utility_per_token,
         freeze_at_utility_plateau=options.freeze_at_utility_plateau,
         plateau_upgrade_reserve_share=options.plateau_upgrade_reserve_share,
         node_semantic_utility_weight=options.node_semantic_utility_weight,
@@ -708,6 +711,7 @@ def _try_symbol_targeted_retrieval(
                     user_id=options.user_id,
                     credit_trace=options.budget_trace,
                     min_utility_per_token=options.min_utility_per_token,
+                    upgrade_min_utility_per_token=(options.upgrade_min_utility_per_token),
                     freeze_at_utility_plateau=options.freeze_at_utility_plateau,
                     plateau_upgrade_reserve_share=(options.plateau_upgrade_reserve_share),
                     node_semantic_utility_weight=options.node_semantic_utility_weight,
@@ -1477,12 +1481,20 @@ class AxisRetrievalConfig:
     # 8k it displaced recall-safe coverage. Gate it on the same effective
     # profile envelope the downstream packer receives.
     role_consensus_min_effective_tokens: int = 10_000
+    # Independent retrieval families (symbol-vector, lexical, semantic chunk,
+    # doc anchor) and exact-symbol evidence are stronger than a single channel,
+    # but remain off until their own A/B clears the same budget envelope.
+    channel_consensus_score_boost: float = 0.0
+    channel_consensus_max_extra_families: int = 2
+    exact_symbol_score_boost: float = 0.0
+    channel_consensus_min_effective_tokens: int = 10_000
     # Optional coverage-width arm: active intent roles keep the normal cap;
     # only profiled structural roles outside the intent get the tighter cap.
     # Universal lexical/vector/doc channels and mode roles are unaffected.
     non_intent_structural_role_soft_cap: int | None = None
     capture_budget_trace: bool = False
     token_credit_min_utility_per_token: float | None = None
+    token_credit_upgrade_min_utility_per_token: float | None = None
     token_credit_freeze_at_plateau: bool = False
     token_credit_plateau_upgrade_reserve_share: float = 0.0
     node_semantic_utility_weight: float = 0.0
@@ -1533,6 +1545,26 @@ def _gated_role_consensus_score_boost(
     if effective_tokens < max(0, int(cfg.role_consensus_min_effective_tokens)):
         return 0.0
     return max(0.0, float(cfg.role_consensus_score_boost))
+
+
+def _gated_channel_score_boosts(
+    cfg: AxisRetrievalConfig,
+    intent: list[IntentMatch],
+) -> tuple[float, float]:
+    """Return channel/exact priors only in their benchmarked budget arm."""
+    if not cfg.intent_budget:
+        return 0.0, 0.0
+    profile = ARCHITECTURE if (cfg.anchor_symbol or "").strip() else budget_for_intent(intent)
+    effective_tokens = profile.effective_tokens(cfg.base_token_budget)
+    if effective_tokens < max(
+        0,
+        int(cfg.channel_consensus_min_effective_tokens),
+    ):
+        return 0.0, 0.0
+    return (
+        max(0.0, float(cfg.channel_consensus_score_boost)),
+        max(0.0, float(cfg.exact_symbol_score_boost)),
+    )
 
 
 def _request_embedder(lance: Any):
@@ -1673,6 +1705,7 @@ def _run_axis_retrieval_impl(
                 include_tests_in_walks=False,
                 budget_trace=budget_trace,
                 min_utility_per_token=cfg.token_credit_min_utility_per_token,
+                upgrade_min_utility_per_token=(cfg.token_credit_upgrade_min_utility_per_token),
                 freeze_at_utility_plateau=cfg.token_credit_freeze_at_plateau,
                 plateau_upgrade_reserve_share=(cfg.token_credit_plateau_upgrade_reserve_share),
                 node_semantic_utility_weight=cfg.node_semantic_utility_weight,
@@ -1944,12 +1977,18 @@ def _run_axis_retrieval_impl(
             )
             raw_by_role = _attach_lexical_probe_spans(raw_by_role, lexical_span_evidence)
 
+    channel_consensus_score_boost, exact_symbol_score_boost = _gated_channel_score_boosts(
+        cfg, intent
+    )
     candidates_for_context, seed_selection_trace = seed_selector.select_context_seeds(
         raw_by_role,
         (match.role for match in intent),
         per_role_soft_cap=cfg.context_seeds_per_role,
         role_consensus_score_boost=_gated_role_consensus_score_boost(cfg, intent),
         role_consensus_max_extra_roles=cfg.role_consensus_max_extra_roles,
+        channel_consensus_score_boost=channel_consensus_score_boost,
+        channel_consensus_max_extra_families=(cfg.channel_consensus_max_extra_families),
+        exact_symbol_score_boost=exact_symbol_score_boost,
         non_intent_structural_role_soft_cap=(cfg.non_intent_structural_role_soft_cap),
     )
     active, token_budget, render_mode, budget_profile, utility_score_fn = (
@@ -2015,6 +2054,7 @@ def _run_axis_retrieval_impl(
                     user_id=cfg.user_id,
                     credit_trace=budget_trace,
                     min_utility_per_token=cfg.token_credit_min_utility_per_token,
+                    upgrade_min_utility_per_token=(cfg.token_credit_upgrade_min_utility_per_token),
                     freeze_at_utility_plateau=cfg.token_credit_freeze_at_plateau,
                     plateau_upgrade_reserve_share=(cfg.token_credit_plateau_upgrade_reserve_share),
                     node_semantic_utility_weight=cfg.node_semantic_utility_weight,

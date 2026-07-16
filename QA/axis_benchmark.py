@@ -50,6 +50,7 @@ import yaml
 from context_engine.axis.axis_profiles import AXIS_EDGES, axes_for_kinds
 from context_engine.axis.axis_ranking import intent_axes
 from context_engine.axis.pipeline import AxisRetrievalConfig, run_axis_retrieval
+from context_engine.axis.role_retrieval import retrieval_channel_families
 from context_engine.database.lancedb_client import LanceDBClient
 from context_engine.database.neo4j_client import Neo4jClient
 from context_engine.index_profile import AXIS_PYTHON_V1_PROFILE, resolve_index_profile
@@ -847,6 +848,10 @@ def _candidate_audit_row(candidate: Any, rank: int) -> dict[str, Any]:
         "supporting_roles": list(getattr(candidate, "supporting_roles", ()) or ()),
         "selection_reasons": list(getattr(candidate, "selection_reasons", ()) or ()),
         "role_consensus_bonus": _float_or_none(getattr(candidate, "role_consensus_bonus", None)),
+        "channel_consensus_bonus": _float_or_none(
+            getattr(candidate, "channel_consensus_bonus", None)
+        ),
+        "exact_symbol_bonus": _float_or_none(getattr(candidate, "exact_symbol_bonus", None)),
     }
 
 
@@ -993,6 +998,10 @@ def _candidate_cohort_audit(
             "by_axis",
             "by_axis_basis",
             "by_intent_alignment",
+            "by_channel",
+            "by_channel_signature",
+            "by_channel_count",
+            "by_exact_symbol_prior",
         )
     }
     cross: defaultdict[str, dict[str, int | float]] = defaultdict(_new_candidate_cohort_row)
@@ -1008,6 +1017,14 @@ def _candidate_cohort_audit(
             if value
         )
         role_signature = "+".join(sorted(supporting_roles)) or "(none)"
+        channel_families = retrieval_channel_families(
+            getattr(candidate, "retrieval_channels", ()) or ()
+        )
+        channel_signature = "+".join(channel_families) or "(none)"
+        channel_count = str(len(channel_families))
+        exact_symbol_prior = (
+            "exact_symbol" if bool(getattr(candidate, "exact_symbol_match", False)) else "non_exact"
+        )
         if len(supporting_roles) > 1:
             multi_role_candidates += 1
         axis, axis_basis = _candidate_axis_signature(candidate)
@@ -1058,8 +1075,13 @@ def _candidate_cohort_audit(
             ("by_axis", axis),
             ("by_axis_basis", axis_basis),
             ("by_intent_alignment", alignment),
+            ("by_channel_signature", channel_signature),
+            ("by_channel_count", channel_count),
+            ("by_exact_symbol_prior", exact_symbol_prior),
         ):
             update(groups[dimension][key])
+        for channel in channel_families or ("(none)",):
+            update(groups["by_channel"][channel])
         for supporting_role in supporting_roles or {"(none)"}:
             update(groups["by_role"][supporting_role])
             update(groups["by_role_intent_alignment"][f"{supporting_role}|{alignment}"])
@@ -1379,8 +1401,13 @@ def _run_axis_retrieval_for_question(
     role_consensus_score_boost: float,
     role_consensus_max_extra_roles: int,
     role_consensus_min_effective_tokens: int,
+    channel_consensus_score_boost: float,
+    channel_consensus_max_extra_families: int,
+    exact_symbol_score_boost: float,
+    channel_consensus_min_effective_tokens: int,
     non_intent_structural_role_soft_cap: int | None,
     token_credit_min_utility_per_token: float | None,
+    token_credit_upgrade_min_utility_per_token: float | None,
     token_credit_freeze_at_plateau: bool,
     token_credit_plateau_upgrade_reserve_share: float,
     node_semantic_utility_weight: float,
@@ -1440,11 +1467,16 @@ def _run_axis_retrieval_for_question(
             role_consensus_score_boost=role_consensus_score_boost,
             role_consensus_max_extra_roles=role_consensus_max_extra_roles,
             role_consensus_min_effective_tokens=(role_consensus_min_effective_tokens),
+            channel_consensus_score_boost=channel_consensus_score_boost,
+            channel_consensus_max_extra_families=(channel_consensus_max_extra_families),
+            exact_symbol_score_boost=exact_symbol_score_boost,
+            channel_consensus_min_effective_tokens=(channel_consensus_min_effective_tokens),
             non_intent_structural_role_soft_cap=(non_intent_structural_role_soft_cap),
             # Report-only transaction capture. TokenCreditTrace records
             # accepted purchases but never changes selection.
             capture_budget_trace=True,
             token_credit_min_utility_per_token=token_credit_min_utility_per_token,
+            token_credit_upgrade_min_utility_per_token=(token_credit_upgrade_min_utility_per_token),
             token_credit_freeze_at_plateau=token_credit_freeze_at_plateau,
             token_credit_plateau_upgrade_reserve_share=(token_credit_plateau_upgrade_reserve_share),
             node_semantic_utility_weight=node_semantic_utility_weight,
@@ -1505,8 +1537,13 @@ def run_question(
     role_consensus_score_boost: float = 0.05,
     role_consensus_max_extra_roles: int = 2,
     role_consensus_min_effective_tokens: int = 10_000,
+    channel_consensus_score_boost: float = 0.0,
+    channel_consensus_max_extra_families: int = 2,
+    exact_symbol_score_boost: float = 0.0,
+    channel_consensus_min_effective_tokens: int = 10_000,
     non_intent_structural_role_soft_cap: int | None = None,
     token_credit_min_utility_per_token: float | None = None,
+    token_credit_upgrade_min_utility_per_token: float | None = None,
     token_credit_freeze_at_plateau: bool = False,
     token_credit_plateau_upgrade_reserve_share: float = 0.0,
     node_semantic_utility_weight: float = 0.0,
@@ -1581,8 +1618,13 @@ def run_question(
         role_consensus_score_boost=role_consensus_score_boost,
         role_consensus_max_extra_roles=role_consensus_max_extra_roles,
         role_consensus_min_effective_tokens=role_consensus_min_effective_tokens,
+        channel_consensus_score_boost=channel_consensus_score_boost,
+        channel_consensus_max_extra_families=(channel_consensus_max_extra_families),
+        exact_symbol_score_boost=exact_symbol_score_boost,
+        channel_consensus_min_effective_tokens=(channel_consensus_min_effective_tokens),
         non_intent_structural_role_soft_cap=(non_intent_structural_role_soft_cap),
         token_credit_min_utility_per_token=token_credit_min_utility_per_token,
+        token_credit_upgrade_min_utility_per_token=(token_credit_upgrade_min_utility_per_token),
         token_credit_freeze_at_plateau=token_credit_freeze_at_plateau,
         token_credit_plateau_upgrade_reserve_share=(token_credit_plateau_upgrade_reserve_share),
         node_semantic_utility_weight=node_semantic_utility_weight,
@@ -1903,6 +1945,10 @@ def _aggregate_candidate_cohorts(results: list[QuestionResult]) -> dict[str, Any
         "by_axis",
         "by_axis_basis",
         "by_intent_alignment",
+        "by_channel",
+        "by_channel_signature",
+        "by_channel_count",
+        "by_exact_symbol_prior",
         "by_role_axis_intent",
     )
     groups = {dimension: defaultdict(_new_candidate_cohort_row) for dimension in dimensions}
@@ -2421,6 +2467,18 @@ def _render_markdown(results: list[QuestionResult], summary: dict[str, Any]) -> 
             candidate_cohorts.get("by_intent_alignment", {}),
         )
         append_cohort_table(
+            "Independent retrieval-channel count",
+            candidate_cohorts.get("by_channel_count", {}),
+        )
+        append_cohort_table(
+            "Retrieval-channel signature",
+            candidate_cohorts.get("by_channel_signature", {}),
+        )
+        append_cohort_table(
+            "Exact-symbol prior",
+            candidate_cohorts.get("by_exact_symbol_prior", {}),
+        )
+        append_cohort_table(
             "Top classified intent",
             candidate_cohorts.get("by_top_intent", {}),
         )
@@ -2917,6 +2975,23 @@ def main() -> None:
         ),
     )
     parser.add_argument(
+        "--channel-consensus-score-boost",
+        type=float,
+        default=0.0,
+        help="Add this score per extra independent retrieval family.",
+    )
+    parser.add_argument(
+        "--channel-consensus-max-extra-families",
+        type=int,
+        default=2,
+    )
+    parser.add_argument("--exact-symbol-score-boost", type=float, default=0.0)
+    parser.add_argument(
+        "--channel-consensus-min-effective-tokens",
+        type=int,
+        default=10_000,
+    )
+    parser.add_argument(
         "--non-intent-structural-role-soft-cap",
         type=int,
         default=None,
@@ -2930,6 +3005,15 @@ def main() -> None:
         type=float,
         default=None,
         help="Experimental Token Credit cutoff; unset preserves full-budget selection.",
+    )
+    parser.add_argument(
+        "--upgrade-min-utility-per-token",
+        type=float,
+        default=None,
+        help=(
+            "Experimental paid-upgrade cutoff; coverage remains unchanged. "
+            "Unset inherits --min-utility-per-token."
+        ),
     )
     parser.add_argument(
         "--freeze-at-utility-plateau",
@@ -3115,8 +3199,13 @@ def main() -> None:
             role_consensus_score_boost=args.role_consensus_score_boost,
             role_consensus_max_extra_roles=(args.role_consensus_max_extra_roles),
             role_consensus_min_effective_tokens=(args.role_consensus_min_effective_tokens),
+            channel_consensus_score_boost=args.channel_consensus_score_boost,
+            channel_consensus_max_extra_families=(args.channel_consensus_max_extra_families),
+            exact_symbol_score_boost=args.exact_symbol_score_boost,
+            channel_consensus_min_effective_tokens=(args.channel_consensus_min_effective_tokens),
             non_intent_structural_role_soft_cap=(args.non_intent_structural_role_soft_cap),
             token_credit_min_utility_per_token=args.min_utility_per_token,
+            token_credit_upgrade_min_utility_per_token=(args.upgrade_min_utility_per_token),
             token_credit_freeze_at_plateau=args.freeze_at_utility_plateau,
             token_credit_plateau_upgrade_reserve_share=(args.plateau_upgrade_reserve_share),
             node_semantic_utility_weight=args.node_semantic_utility_weight,
@@ -3203,8 +3292,13 @@ def main() -> None:
         "role_consensus_score_boost": args.role_consensus_score_boost,
         "role_consensus_max_extra_roles": args.role_consensus_max_extra_roles,
         "role_consensus_min_effective_tokens": (args.role_consensus_min_effective_tokens),
+        "channel_consensus_score_boost": args.channel_consensus_score_boost,
+        "channel_consensus_max_extra_families": (args.channel_consensus_max_extra_families),
+        "exact_symbol_score_boost": args.exact_symbol_score_boost,
+        "channel_consensus_min_effective_tokens": (args.channel_consensus_min_effective_tokens),
         "non_intent_structural_role_soft_cap": (args.non_intent_structural_role_soft_cap),
         "token_credit_min_utility_per_token": args.min_utility_per_token,
+        "token_credit_upgrade_min_utility_per_token": (args.upgrade_min_utility_per_token),
         "token_credit_freeze_at_plateau": args.freeze_at_utility_plateau,
         "token_credit_plateau_upgrade_reserve_share": (args.plateau_upgrade_reserve_share),
         "node_semantic_utility_weight": args.node_semantic_utility_weight,

@@ -174,6 +174,62 @@ def test_opt_in_role_consensus_boost_is_saturating_and_traceable() -> None:
     assert trace.reason_counts["role_consensus_boost"] == 1
 
 
+def test_channel_consensus_collapses_correlated_lexical_evidence_and_saturates() -> None:
+    selected, trace = select_context_seeds(
+        {
+            "hybrid_seed": [
+                _candidate(
+                    "shared",
+                    role="hybrid_seed",
+                    score=0.60,
+                    channels=(
+                        "lexical",
+                        "lexical_span",
+                        "vector",
+                        "semantic_chunk",
+                    ),
+                    exact=True,
+                )
+            ]
+        },
+        ["routing_surface"],
+        per_role_soft_cap=1,
+        channel_consensus_score_boost=0.04,
+        channel_consensus_max_extra_families=2,
+        exact_symbol_score_boost=0.08,
+    )
+
+    candidate = selected[0]
+    assert abs(candidate.score - 0.76) < 1e-9
+    assert abs(candidate.channel_consensus_bonus - 0.08) < 1e-9
+    assert abs(candidate.exact_symbol_bonus - 0.08) < 1e-9
+    assert "channel_consensus_boost" in candidate.selection_reasons
+    assert "exact_symbol_boost" in candidate.selection_reasons
+    assert trace.reason_counts["channel_consensus_boost"] == 1
+    assert trace.reason_counts["exact_symbol_boost"] == 1
+
+
+def test_lexical_and_lexical_span_alone_are_one_channel_family() -> None:
+    selected, _trace = select_context_seeds(
+        {
+            "hybrid_seed": [
+                _candidate(
+                    "lexical",
+                    role="hybrid_seed",
+                    score=0.60,
+                    channels=("lexical", "lexical_span"),
+                )
+            ]
+        },
+        ["routing_surface"],
+        per_role_soft_cap=1,
+        channel_consensus_score_boost=0.04,
+    )
+
+    assert selected[0].score == 0.60
+    assert selected[0].channel_consensus_bonus == 0.0
+
+
 def test_non_intent_structural_cap_preserves_active_and_universal_channels() -> None:
     selected, trace = select_context_seeds(
         {

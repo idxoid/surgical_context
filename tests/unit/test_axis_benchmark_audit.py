@@ -172,6 +172,11 @@ def test_candidate_cohort_audit_splits_role_axis_intent_and_token_spend() -> Non
     assert audit["by_intent_alignment"]["role_only"]["candidates"] == 1
     assert audit["by_intent_alignment"]["axis_only"]["candidates"] == 1
     assert audit["by_intent_alignment"]["none"]["candidates"] == 1
+    assert audit["by_channel_signature"]["symbol_vector"]["candidates"] == 1
+    assert audit["by_channel_signature"]["(none)"]["candidates"] == 3
+    assert audit["by_channel_count"]["1"]["candidates"] == 1
+    assert audit["by_channel_count"]["0"]["candidates"] == 3
+    assert audit["by_exact_symbol_prior"]["non_exact"]["candidates"] == 4
 
     result = QuestionResult(
         question_id="cohorts",

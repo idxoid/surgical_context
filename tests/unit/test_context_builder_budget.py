@@ -1027,6 +1027,55 @@ def test_token_credit_density_cutoff_rejects_paid_nonpositive_tail_only_when_ena
     )
 
 
+def test_upgrade_only_density_cutoff_preserves_coverage_transactions():
+    bundles = [
+        ContextBundle(
+            role="r",
+            seed=_sym(
+                f"seed-{index}",
+                f"def seed_{index}():\n" + f"    value_{index} = {index}\n" * 20,
+                file_path=f"/seed-{index}.py",
+            ),
+            utility_score=1.0 - index * 0.1,
+        )
+        for index in range(3)
+    ]
+    control_trace = TokenCreditTrace()
+    cutoff_trace = TokenCreditTrace()
+
+    _apply_render_and_budget(
+        bundles,
+        token_budget=1_000,
+        render_mode="full",
+        rank_decay_body_allocation=True,
+        credit_trace=control_trace,
+    )
+    _apply_render_and_budget(
+        bundles,
+        token_budget=1_000,
+        render_mode="full",
+        rank_decay_body_allocation=True,
+        upgrade_min_utility_per_token=1_000.0,
+        credit_trace=cutoff_trace,
+    )
+
+    control_coverage = [
+        transaction.uid
+        for transaction in control_trace.transactions
+        if transaction.phase == "coverage"
+    ]
+    cutoff_coverage = [
+        transaction.uid
+        for transaction in cutoff_trace.transactions
+        if transaction.phase == "coverage"
+    ]
+    assert cutoff_coverage == control_coverage
+    assert cutoff_trace.cutoff_rejections > 0
+    assert not any(
+        transaction.phase.startswith("upgrade_") for transaction in cutoff_trace.transactions
+    )
+
+
 def test_token_credit_plateau_freeze_leaves_rejected_budget_unspent():
     bundles = [
         ContextBundle(

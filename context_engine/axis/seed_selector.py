@@ -24,7 +24,7 @@ from dataclasses import dataclass, replace
 
 from context_engine.axis.axis_profiles import axes_for_kinds
 from context_engine.axis.role_resolver import ROLE_EVIDENCE_MAP
-from context_engine.axis.role_retrieval import RoleCandidate
+from context_engine.axis.role_retrieval import RoleCandidate, retrieval_channel_families
 
 _ANCHOR_ROLES = frozenset({"anchor_symbol", "overlay_anchor"})
 
@@ -139,6 +139,9 @@ def select_context_seeds(
     exact_reserve_per_role: int = 1,
     role_consensus_score_boost: float = 0.0,
     role_consensus_max_extra_roles: int = 2,
+    channel_consensus_score_boost: float = 0.0,
+    channel_consensus_max_extra_families: int = 2,
+    exact_symbol_score_boost: float = 0.0,
     non_intent_structural_role_soft_cap: int | None = None,
 ) -> tuple[list[RoleCandidate], SeedSelectionTrace]:
     """Aggregate retrieval evidence and select context seeds.
@@ -155,6 +158,8 @@ def select_context_seeds(
         raise ValueError("exact_reserve_per_role must be >= 0")
     if role_consensus_max_extra_roles < 0:
         raise ValueError("role_consensus_max_extra_roles must be >= 0")
+    if channel_consensus_max_extra_families < 0:
+        raise ValueError("channel_consensus_max_extra_families must be >= 0")
     if non_intent_structural_role_soft_cap is not None and non_intent_structural_role_soft_cap < 1:
         raise ValueError("non_intent_structural_role_soft_cap must be >= 1 or None")
 
@@ -275,16 +280,41 @@ def select_context_seeds(
             max(0, len(aggregate.source_role_set) - 1),
         )
         consensus_bonus = max(0.0, float(role_consensus_score_boost)) * extra_roles
+        channel_families = retrieval_channel_families(aggregate.candidate.retrieval_channels)
+        extra_channel_families = min(
+            channel_consensus_max_extra_families,
+            max(0, len(channel_families) - 1),
+        )
+        channel_consensus_bonus = (
+            max(0.0, float(channel_consensus_score_boost)) * extra_channel_families
+        )
+        exact_symbol_bonus = (
+            max(0.0, float(exact_symbol_score_boost))
+            if aggregate.candidate.exact_symbol_match
+            else 0.0
+        )
         reasons = list(selected_reasons.get(key, ()))
         if consensus_bonus > 0.0 and "role_consensus_boost" not in reasons:
             reasons.append("role_consensus_boost")
+        if channel_consensus_bonus > 0.0 and "channel_consensus_boost" not in reasons:
+            reasons.append("channel_consensus_boost")
+        if exact_symbol_bonus > 0.0 and "exact_symbol_boost" not in reasons:
+            reasons.append("exact_symbol_boost")
         selected.append(
             replace(
                 aggregate.candidate,
-                score=min(1.0, aggregate.candidate.score + consensus_bonus),
+                score=min(
+                    1.0,
+                    aggregate.candidate.score
+                    + consensus_bonus
+                    + channel_consensus_bonus
+                    + exact_symbol_bonus,
+                ),
                 supporting_roles=tuple(aggregate.source_roles),
                 selection_reasons=tuple(reasons),
                 role_consensus_bonus=consensus_bonus,
+                channel_consensus_bonus=channel_consensus_bonus,
+                exact_symbol_bonus=exact_symbol_bonus,
             )
         )
 

@@ -30,6 +30,7 @@ from __future__ import annotations
 import json
 import os
 from collections import defaultdict
+from collections.abc import Iterable
 from dataclasses import dataclass, field, replace
 from typing import Any, cast
 
@@ -98,6 +99,8 @@ class RoleCandidate:
     # telemetry can distinguish cross-role consensus from the producer's raw
     # structural/query score.
     role_consensus_bonus: float = 0.0
+    channel_consensus_bonus: float = 0.0
+    exact_symbol_bonus: float = 0.0
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -124,7 +127,34 @@ class RoleCandidate:
             "supporting_roles": list(self.supporting_roles),
             "selection_reasons": list(self.selection_reasons),
             "role_consensus_bonus": self.role_consensus_bonus,
+            "channel_consensus_bonus": self.channel_consensus_bonus,
+            "exact_symbol_bonus": self.exact_symbol_bonus,
         }
+
+
+_RETRIEVAL_CHANNEL_FAMILY = {
+    # Symbol-level and within-symbol lexical evidence share the same token
+    # family; counting both as independent votes would reward one mechanism
+    # twice. Chunk and doc-anchor searches use distinct indexed payloads.
+    "lexical": "lexical",
+    "lexical_span": "lexical",
+    "vector": "symbol_vector",
+    "semantic_chunk": "semantic_chunk",
+    "doc_anchor": "doc_anchor",
+}
+
+
+def retrieval_channel_families(channels: Iterable[str]) -> tuple[str, ...]:
+    """Return deterministic independent retrieval evidence families."""
+    return tuple(
+        sorted(
+            {
+                _RETRIEVAL_CHANNEL_FAMILY.get(str(channel), str(channel))
+                for channel in channels
+                if str(channel)
+            }
+        )
+    )
 
 
 def _structural_score(
@@ -1294,6 +1324,7 @@ def _doc_anchor_candidate(
         score=_semantic_score(distance) * tier_w,
         query_similarity=_cosine_from_l2_distance(distance),
         graph_score=0.0,
+        retrieval_channels=("doc_anchor",),
     )
 
 
@@ -1364,6 +1395,7 @@ __all__ = [
     "find_symbols_by_role",
     "find_symbols_by_roles",
     "invalidate_workspace_scan_cache",
+    "retrieval_channel_families",
     "fuse_seed_channels",
     "scan_workspace_rows",
 ]

@@ -677,6 +677,24 @@ def test_role_consensus_boost_uses_impact_and_anchor_profiles():
     assert axis_pipeline._gated_role_consensus_score_boost(anchored, impact_intent) == 0.05
 
 
+@pytest.mark.parametrize(
+    ("base_token_budget", "expected"),
+    [(4_000, (0.0, 0.0)), (5_000, (0.04, 0.08))],
+)
+def test_channel_score_boosts_use_the_effective_budget_gate(
+    base_token_budget,
+    expected,
+):
+    config = axis_pipeline.AxisRetrievalConfig(
+        base_token_budget=base_token_budget,
+        channel_consensus_score_boost=0.04,
+        exact_symbol_score_boost=0.08,
+    )
+    intent = [IntentMatch(role="routing_surface", similarity=0.7, description="d")]
+
+    assert axis_pipeline._gated_channel_score_boosts(config, intent) == expected
+
+
 def test_span_line_rerank_threads_batch_scorer_and_budget_knobs(stub_stages, monkeypatch):
     import context_engine.axis.context_builder as _ctx_mod
 
