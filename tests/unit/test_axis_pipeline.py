@@ -654,6 +654,19 @@ def test_role_consensus_defaults_to_validated_boost():
     assert axis_pipeline._gated_role_consensus_score_boost(config, intent) == 0.05
 
 
+def test_regular_retrieval_defaults_to_validated_all_positive_envelope():
+    config = axis_pipeline.AxisRetrievalConfig()
+
+    assert config.rank_decay_body_allocation is True
+    assert config.token_credit_upgrade_min_utility_per_token == 0.00025
+    assert config.pregraph_lexical_span_probe is True
+    assert config.lexical_span_utility_weight == 0.15
+    assert config.evidence_graph_fanout is True
+    assert config.channel_consensus_score_boost == 0.0
+    assert config.exact_symbol_score_boost == 0.0
+    assert config.span_line_rerank is False
+
+
 def test_role_consensus_boost_is_off_without_intent_budget():
     config = axis_pipeline.AxisRetrievalConfig(
         intent_budget=False,

@@ -44,11 +44,11 @@ benchmark defaults to the production value and exposes
 rows include `seed_selection`, and audited candidates include
 `supporting_roles` plus `selection_reasons`.
 
-## Query-time lexical span probe (experimental)
+## Query-time lexical span probe
 
 When semantic chunk materialization is disabled, metadata BM25 can identify an
 owner symbol but cannot honestly claim which body lines answer the question.
-The opt-in `pregraph_lexical_span_probe` fills that gap without reindexing:
+The default-on `pregraph_lexical_span_probe` fills that gap without reindexing:
 
 1. round-robin the ranked role slices that can reach the seed selector;
 2. fetch their symbol payloads as one bounded exact-UID batch;
@@ -60,8 +60,8 @@ The opt-in `pregraph_lexical_span_probe` fills that gap without reindexing:
 
 `lexical_span_score` is kept separate from the existing structural/vector
 score. A report-only gold audit measures its AUC; it does not receive a hard
-reserve. `lexical_span_utility_weight` can apply a small additive Token Credit
-prior after selection, and defaults to `0.0`.
+reserve. `lexical_span_utility_weight` applies a small additive Token Credit
+prior after selection and defaults to the validated `0.15` arm.
 
 On the 98-question pack, the probe produced `10.30%` pool line recall versus
 `2.63%` at the seed layer, with score AUC `0.728` (`0.173` mean score for exact
@@ -69,8 +69,10 @@ gold owners vs `0.085` for other selected candidates). On the version-aligned
 repos specifically, pool line recall moved from `0%` without the probe to
 `10.58%` with it. It cost `103 ms` mean / `344 ms` max. A `0.15` utility arm
 changed bundle line recall by only `+0.31 pp` (5 wins, 1 loss) and left token
-precision effectively flat, so both the probe and its utility weight remain
-off by default.
+precision effectively flat in isolation. In the later all-positive envelope
+(rank decay, role consensus, evidence graph fanout, and the upgrade-only
+density cutoff), the probe and `0.15` prior were recall-safe and improved
+aggregate line/span recall, so both are now regular defaults.
 
 ## Index lifecycle
 

@@ -649,6 +649,16 @@ def _candidate_rank_spend_audit(
         "rank_decay_coverage_threshold": float(
             getattr(budget_trace, "rank_decay_coverage_threshold", 0.0) or 0.0
         ),
+        "graph_fanout": {
+            "base_limit": int(getattr(budget_trace, "graph_fanout_base_limit", 0) or 0),
+            "tier_counts": dict(getattr(budget_trace, "graph_fanout_tier_counts", {}) or {}),
+            "limit_counts": {
+                str(limit): count
+                for limit, count in dict(
+                    getattr(budget_trace, "graph_fanout_limit_counts", {}) or {}
+                ).items()
+            },
+        },
         **totals,
         "upgrade_tokens_at": upgrade_tokens_at,
         "upgrade_share_at": {
@@ -1422,6 +1432,9 @@ def _run_axis_retrieval_for_question(
     context_semantic_expansion: bool,
     context_semantic_expansion_alpha: float,
     context_semantic_expansion_structural_reserve: int,
+    evidence_graph_fanout: bool,
+    evidence_graph_fanout_min: int,
+    evidence_graph_fanout_protected_head: int,
     lexical_retrieval: bool,
     semantic_chunk_retrieval: bool,
     hybrid_seed_limit: int,
@@ -1493,6 +1506,9 @@ def _run_axis_retrieval_for_question(
             context_semantic_expansion_structural_reserve=(
                 context_semantic_expansion_structural_reserve
             ),
+            evidence_graph_fanout=evidence_graph_fanout,
+            evidence_graph_fanout_min=evidence_graph_fanout_min,
+            evidence_graph_fanout_protected_head=(evidence_graph_fanout_protected_head),
             lexical_retrieval=lexical_retrieval,
             semantic_chunk_retrieval=semantic_chunk_retrieval,
             hybrid_seed_limit=hybrid_seed_limit,
@@ -1543,11 +1559,11 @@ def run_question(
     channel_consensus_min_effective_tokens: int = 10_000,
     non_intent_structural_role_soft_cap: int | None = None,
     token_credit_min_utility_per_token: float | None = None,
-    token_credit_upgrade_min_utility_per_token: float | None = None,
+    token_credit_upgrade_min_utility_per_token: float | None = 0.00025,
     token_credit_freeze_at_plateau: bool = False,
     token_credit_plateau_upgrade_reserve_share: float = 0.0,
     node_semantic_utility_weight: float = 0.0,
-    rank_decay_body_allocation: bool = False,
+    rank_decay_body_allocation: bool = True,
     rank_decay_head_share: float = 0.15,
     rank_decay_rate: float = 0.75,
     rank_decay_max_coverage_share: float = 0.65,
@@ -1558,14 +1574,17 @@ def run_question(
     context_semantic_expansion: bool = True,
     context_semantic_expansion_alpha: float = 0.70,
     context_semantic_expansion_structural_reserve: int = 1,
+    evidence_graph_fanout: bool = True,
+    evidence_graph_fanout_min: int = 2,
+    evidence_graph_fanout_protected_head: int = 5,
     lexical_retrieval: bool = True,
     semantic_chunk_retrieval: bool = True,
     hybrid_seed_limit: int = 12,
-    pregraph_lexical_span_probe: bool = False,
+    pregraph_lexical_span_probe: bool = True,
     lexical_span_probe_max_symbols: int = 96,
     lexical_span_probe_max_windows_per_symbol: int = 3,
     lexical_span_probe_window_lines: int = 6,
-    lexical_span_utility_weight: float = 0.0,
+    lexical_span_utility_weight: float = 0.15,
     workspace_overrides: dict[str, str] | None = None,
 ) -> QuestionResult:
     result = _question_result_from_entry(question_entry)
@@ -1641,6 +1660,9 @@ def run_question(
         context_semantic_expansion_structural_reserve=(
             context_semantic_expansion_structural_reserve
         ),
+        evidence_graph_fanout=evidence_graph_fanout,
+        evidence_graph_fanout_min=evidence_graph_fanout_min,
+        evidence_graph_fanout_protected_head=evidence_graph_fanout_protected_head,
         lexical_retrieval=lexical_retrieval,
         semantic_chunk_retrieval=semantic_chunk_retrieval,
         hybrid_seed_limit=hybrid_seed_limit,
@@ -1875,6 +1897,16 @@ def _aggregate_candidate_rank_spend(results: list[QuestionResult]) -> dict[str, 
         )
         for cutoff in _GOLD_RANK_CUTOFFS
     }
+    fanout_tiers: Counter[str] = Counter()
+    fanout_limits: Counter[str] = Counter()
+    fanout_questions = 0
+    for audit in audits:
+        fanout = audit.get("graph_fanout", {}) or {}
+        if not fanout.get("base_limit"):
+            continue
+        fanout_questions += 1
+        fanout_tiers.update(fanout.get("tier_counts", {}) or {})
+        fanout_limits.update(fanout.get("limit_counts", {}) or {})
     return {
         "questions": len(audits),
         "allocation_mode_counts": dict(
@@ -1891,6 +1923,11 @@ def _aggregate_candidate_rank_spend(results: list[QuestionResult]) -> dict[str, 
             if audits
             else 0.0
         ),
+        "graph_fanout": {
+            "questions": fanout_questions,
+            "tier_counts": dict(fanout_tiers),
+            "limit_counts": dict(fanout_limits),
+        },
         **totals,
         "upgrade_tokens_at": upgrade_tokens_at,
         "upgrade_share_at": {
@@ -3009,10 +3046,10 @@ def main() -> None:
     parser.add_argument(
         "--upgrade-min-utility-per-token",
         type=float,
-        default=None,
+        default=0.00025,
         help=(
-            "Experimental paid-upgrade cutoff; coverage remains unchanged. "
-            "Unset inherits --min-utility-per-token."
+            "Paid-upgrade density cutoff; coverage remains unchanged. "
+            "Default 0.00025; pass 0 for the unrestricted control."
         ),
     )
     parser.add_argument(
@@ -3037,9 +3074,10 @@ def main() -> None:
     )
     parser.add_argument(
         "--rank-decay-body-allocation",
-        action="store_true",
+        action=argparse.BooleanOptionalAction,
+        default=True,
         help=(
-            "Experimental Token Credit arm: keep coverage unchanged, then spend "
+            "Keep coverage unchanged, then spend "
             "geometrically decaying body credits in pre-budget candidate-rank order."
         ),
     )
@@ -3076,7 +3114,7 @@ def main() -> None:
     parser.add_argument(
         "--pregraph-lexical-span-probe",
         action=argparse.BooleanOptionalAction,
-        default=False,
+        default=True,
         help=(
             "Fetch a bounded pre-context-graph symbol batch and attach query-matching "
             "lexical source windows without a persistent chunk index."
@@ -3085,7 +3123,7 @@ def main() -> None:
     parser.add_argument("--lexical-span-probe-max-symbols", type=int, default=96)
     parser.add_argument("--lexical-span-probe-max-windows-per-symbol", type=int, default=3)
     parser.add_argument("--lexical-span-probe-window-lines", type=int, default=6)
-    parser.add_argument("--lexical-span-utility-weight", type=float, default=0.0)
+    parser.add_argument("--lexical-span-utility-weight", type=float, default=0.15)
     parser.add_argument(
         "--context-semantic-expansion",
         action=argparse.BooleanOptionalAction,
@@ -3100,6 +3138,21 @@ def main() -> None:
         "--context-semantic-expansion-structural-reserve",
         type=int,
         default=1,
+    )
+    parser.add_argument(
+        "--evidence-graph-fanout",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help=(
+            "Reduce the batched graph reservoir and final neighbours for weak "
+            "tail seeds while preserving retrieval-backed and head seeds."
+        ),
+    )
+    parser.add_argument("--evidence-graph-fanout-min", type=int, default=2)
+    parser.add_argument(
+        "--evidence-graph-fanout-protected-head",
+        type=int,
+        default=5,
     )
     parser.add_argument(
         "--compare",
@@ -3222,6 +3275,9 @@ def main() -> None:
             context_semantic_expansion_structural_reserve=(
                 args.context_semantic_expansion_structural_reserve
             ),
+            evidence_graph_fanout=args.evidence_graph_fanout,
+            evidence_graph_fanout_min=args.evidence_graph_fanout_min,
+            evidence_graph_fanout_protected_head=(args.evidence_graph_fanout_protected_head),
             lexical_retrieval=args.lexical_retrieval,
             semantic_chunk_retrieval=args.semantic_chunk_retrieval,
             hybrid_seed_limit=args.hybrid_seed_limit,
@@ -3265,8 +3321,10 @@ def main() -> None:
     summary["caps"] = {
         "per_role_limit": args.per_role_limit,
         "max_impacted": args.max_impacted,
+        "context_per_seed": args.context_per_seed,
         "context_seeds_per_role": args.context_seeds_per_role,
         "intent_budget": args.intent_budget,
+        "base_token_budget": args.token_budget,
         "query_node_rerank": args.query_node_rerank,
         "query_node_semantic_weight": args.query_node_weight,
         "lexical_retrieval": args.lexical_retrieval,
@@ -3316,6 +3374,9 @@ def main() -> None:
             args.context_semantic_expansion_structural_reserve
         ),
         "context_semantic_expansion_roles": ["dependency_solver"],
+        "evidence_graph_fanout": args.evidence_graph_fanout,
+        "evidence_graph_fanout_min": args.evidence_graph_fanout_min,
+        "evidence_graph_fanout_protected_head": (args.evidence_graph_fanout_protected_head),
     }
     if args.repo:
         summary["repo_filter"] = args.repo

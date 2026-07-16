@@ -34,7 +34,7 @@ decides what a node *means*.
 from __future__ import annotations
 
 import re
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Literal
 
@@ -347,8 +347,11 @@ def _grouped_walk_edge_frag(direction: Direction, rel: str, hops: int) -> str:
     return f"(s)-[r:{rel}*1..{hops}]-(n:Symbol)"
 
 
-def _grouped_walk_limit_sql(limit_per_seed: int | None) -> str:
-    if limit_per_seed is None:
+def _grouped_walk_limit_sql(
+    limit_per_seed: int | None,
+    limit_per_seed_by_uid: Mapping[str, int] | None,
+) -> str:
+    if limit_per_seed is None and not limit_per_seed_by_uid:
         return """
     RETURN
         su AS seed_uid,
@@ -358,14 +361,21 @@ def _grouped_walk_limit_sql(limit_per_seed: int | None) -> str:
         depth AS depth
     ORDER BY seed_uid ASC, depth ASC, uid ASC
     """
-    return """
+    limit_expression = (
+        "coalesce($limit_per_seed_by_uid[su], $limit_per_seed)"
+        if limit_per_seed_by_uid
+        else "$limit_per_seed"
+    )
+    return f"""
+    WITH su, n, fn, depth, {limit_expression} AS seed_limit
     ORDER BY su ASC, depth ASC, n.uid ASC
-    WITH su, collect({
+    WITH su, collect({{
         uid: n.uid,
         name: coalesce(n.name, ''),
         file_path: fn.path,
         depth: depth
-    })[..$limit_per_seed] AS rows
+    }}) AS all_rows, seed_limit
+    WITH su, all_rows[..seed_limit] AS rows
     UNWIND rows AS row
     RETURN
         su AS seed_uid,
@@ -383,6 +393,7 @@ def _build_walk_neighbours_grouped_cypher(
     direction: Direction,
     max_hops: int,
     limit_per_seed: int | None,
+    limit_per_seed_by_uid: Mapping[str, int] | None = None,
 ) -> str:
     rel = _safe_rel_pattern(edge_types)
     hops = _safe_max_hops(max_hops)
@@ -394,7 +405,7 @@ def _build_walk_neighbours_grouped_cypher(
     MATCH (fn:File {{workspace_id: $workspace_id}})-[:CONTAINS]->(n)
     WHERE all(rel IN r WHERE coalesce(rel.workspace_id, $workspace_id) = $workspace_id)
     WITH su, n, fn, min(size(r)) AS depth
-    {_grouped_walk_limit_sql(limit_per_seed)}
+    {_grouped_walk_limit_sql(limit_per_seed, limit_per_seed_by_uid)}
     """
 
 
@@ -423,6 +434,7 @@ def _run_walk_neighbours_grouped_cypher(
     seeds: list[str],
     workspace_id: str,
     limit_per_seed: int | None,
+    limit_per_seed_by_uid: Mapping[str, int] | None = None,
 ) -> dict[str, list[Neighbour]]:
     try:
         with db.driver.session() as session:
@@ -431,6 +443,7 @@ def _run_walk_neighbours_grouped_cypher(
                 seed_uids=list(seeds),
                 workspace_id=workspace_id,
                 limit_per_seed=limit_per_seed,
+                limit_per_seed_by_uid=dict(limit_per_seed_by_uid or {}),
             )
             return _grouped_neighbours_from_cypher_records(records)
     except Exception as exc:
@@ -443,6 +456,7 @@ def _run_walk_neighbours_grouped_cypher(
                 "workspace_id": workspace_id,
                 "seed_count": len(seeds),
                 "limit_per_seed": limit_per_seed,
+                "variable_seed_limits": bool(limit_per_seed_by_uid),
             },
         )
         return {}
@@ -622,6 +636,7 @@ def walk_neighbours_grouped(
     direction: Direction = "undirected",
     max_hops: int = 2,
     limit_per_seed: int | None = None,
+    limit_per_seed_by_uid: Mapping[str, int] | None = None,
 ) -> dict[str, list[Neighbour]]:
     """Per-seed neighbour walk — ONE batched Cypher over the whole seed
     list, returning ``{seed_uid: [neighbours]}`` instead of the flat,
@@ -636,8 +651,23 @@ def walk_neighbours_grouped(
     ``(seed, neighbour)`` via ``min(size(r))``, applies the same
     per-relationship workspace filter, and does NOT exclude the seed from
     its own neighbourhood. ``reach`` is set to 1 (per-seed, meaningless
-    here). Empty dict on any driver error — expansion is best-effort.
+    here). ``limit_per_seed_by_uid`` overrides the scalar limit without
+    splitting the batch into per-seed queries. Empty dict on any driver error
+    — expansion is best-effort.
     """
+    seeds = [u for u in seed_uids if u]
+    if not seeds:
+        return {}
+    if limit_per_seed is not None and (type(limit_per_seed) is not int or limit_per_seed < 1):
+        raise ValueError("limit_per_seed must be an integer >= 1")
+    seed_limits = {
+        str(uid): limit for uid, limit in (limit_per_seed_by_uid or {}).items() if str(uid)
+    }
+    if any(type(limit) is not int or limit < 1 for limit in seed_limits.values()):
+        raise ValueError("limit_per_seed_by_uid values must be integers >= 1")
+    if seed_limits and limit_per_seed is None:
+        limit_per_seed = max(seed_limits.values())
+
     from context_engine.axis import graph_walk_inproc
 
     if graph_walk_inproc.should_use(workspace_id):
@@ -645,11 +675,12 @@ def walk_neighbours_grouped(
             return graph_walk_inproc.walk_neighbours_grouped(
                 db,
                 workspace_id,
-                seed_uids,
+                seeds,
                 edges=edges,
                 direction=direction,
                 max_hops=max_hops,
                 limit_per_seed=limit_per_seed,
+                limit_per_seed_by_uid=seed_limits,
             )
         except Exception as exc:
             record_stage_warning(
@@ -657,19 +688,15 @@ def walk_neighbours_grouped(
                 "graph_walk_inproc_grouped_failed",
                 "In-process grouped graph walk failed; falling back to Neo4j traversal.",
                 error=exc,
-                details={"workspace_id": workspace_id, "seed_count": len(seed_uids)},
+                details={"workspace_id": workspace_id, "seed_count": len(seeds)},
             )
-    seeds = [u for u in seed_uids if u]
-    if not seeds:
-        return {}
-    if limit_per_seed is not None and (type(limit_per_seed) is not int or limit_per_seed < 1):
-        raise ValueError("limit_per_seed must be an integer >= 1")
 
     cypher = _build_walk_neighbours_grouped_cypher(
         edge_types=edges,
         direction=direction,
         max_hops=max_hops,
         limit_per_seed=limit_per_seed,
+        limit_per_seed_by_uid=seed_limits,
     )
     return _run_walk_neighbours_grouped_cypher(
         db,
@@ -677,6 +704,7 @@ def walk_neighbours_grouped(
         seeds,
         workspace_id,
         limit_per_seed,
+        seed_limits,
     )
 
 

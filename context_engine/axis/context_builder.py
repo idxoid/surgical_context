@@ -34,7 +34,11 @@ from typing import Any, cast
 
 from context_engine.axis.graph_walk import steps_for_mode, walk_neighbours_grouped
 from context_engine.axis.query_node_ranking import semantic_noise_floor
-from context_engine.axis.role_retrieval import QueryScoringContext, RoleCandidate
+from context_engine.axis.role_retrieval import (
+    QueryScoringContext,
+    RoleCandidate,
+    retrieval_channel_families,
+)
 from context_engine.axis.test_file_filter import is_test_path
 from context_engine.observability.metrics import estimate_text_tokens
 
@@ -332,6 +336,9 @@ class TokenCreditTrace:
     coverage_share: float = 0.0
     allocation_mode: str = "legacy"
     rank_decay_coverage_threshold: float = 0.0
+    graph_fanout_base_limit: int = 0
+    graph_fanout_tier_counts: dict[str, int] = field(default_factory=dict)
+    graph_fanout_limit_counts: dict[int, int] = field(default_factory=dict)
 
     def begin(
         self,
@@ -409,6 +416,9 @@ class TokenCreditTrace:
             "coverage_share": self.coverage_share,
             "allocation_mode": self.allocation_mode,
             "rank_decay_coverage_threshold": self.rank_decay_coverage_threshold,
+            "graph_fanout_base_limit": self.graph_fanout_base_limit,
+            "graph_fanout_tier_counts": dict(self.graph_fanout_tier_counts),
+            "graph_fanout_limit_counts": dict(self.graph_fanout_limit_counts),
             "transactions": [transaction.to_dict() for transaction in self.transactions],
         }
 
@@ -3479,6 +3489,40 @@ def _candidate_utility_score(
     return utility_score_fn(candidate)
 
 
+def _evidence_graph_fanout_limit(
+    candidate: RoleCandidate,
+    *,
+    rank: int,
+    max_per_seed: int,
+    min_per_seed: int,
+    protected_head: int,
+) -> tuple[int, str]:
+    """Allocate a reduce-only neighbour cap from pre-graph evidence.
+
+    Exact/anchor seeds, the ranked head, and any retrieval-backed or
+    independently corroborated candidates retain the established fanout. Only
+    unique graph-only tail candidates fall toward half of the base fanout,
+    bounded by ``min_per_seed``.
+    """
+    ceiling = max(1, int(max_per_seed))
+    floor = min(ceiling, max(1, int(min_per_seed)))
+    weak_limit = max(floor, (ceiling + 1) // 2)
+    supporting_roles = frozenset((candidate.role, *candidate.supporting_roles))
+    channel_families = retrieval_channel_families(candidate.retrieval_channels)
+    anchor = candidate.role in {"anchor_symbol", "overlay_anchor"} or bool(
+        supporting_roles.intersection({"anchor_symbol", "overlay_anchor"})
+    )
+    if anchor or candidate.exact_symbol_match:
+        return ceiling, "protected"
+    if rank <= max(0, int(protected_head)):
+        return ceiling, "ranked_head"
+    if len(channel_families) >= 2 or len(supporting_roles) >= 3:
+        return ceiling, "strong_consensus"
+    if channel_families or len(supporting_roles) >= 2 or candidate.retrieval_spans:
+        return ceiling, "supported_tail"
+    return weak_limit, "weak_tail"
+
+
 def _merge_grouped_walk_hits(
     hits_per_seed: dict[str, list[_Hit]],
     grouped: dict[str, list],
@@ -3517,6 +3561,7 @@ def _collect_hits_per_seed(
     max_per_seed: int,
     hook_transparency: bool,
     semantic_rerank: bool = False,
+    max_per_seed_by_uid: dict[str, int] | None = None,
 ) -> dict[str, list[_Hit]]:
     """Batch graph walks for every seed; optionally attach hook-transparency hits.
 
@@ -3531,6 +3576,17 @@ def _collect_hits_per_seed(
         # depth-2 node is unlikely to disappear before query scoring sees it.
         # The cap still bounds high-fanout hubs on the Neo4j fallback path.
         candidate_limit = max(256, max_per_seed * 32) if semantic_rerank else max_per_seed * 4
+        candidate_limits_by_uid = None
+        if max_per_seed_by_uid:
+            candidate_limits_by_uid = {}
+            for uid in seed_uids:
+                selected_limit = max_per_seed_by_uid.get(uid, max_per_seed)
+                if selected_limit >= max_per_seed:
+                    candidate_limits_by_uid[uid] = candidate_limit
+                elif semantic_rerank:
+                    candidate_limits_by_uid[uid] = max(64, selected_limit * 32)
+                else:
+                    candidate_limits_by_uid[uid] = max(1, selected_limit * 4)
         grouped = walk_neighbours_grouped(
             db,
             workspace_id,
@@ -3539,6 +3595,7 @@ def _collect_hits_per_seed(
             direction=direction,
             max_hops=max_hops,
             limit_per_seed=candidate_limit,
+            limit_per_seed_by_uid=candidate_limits_by_uid,
         )
         _merge_grouped_walk_hits(hits_per_seed, grouped, step_name)
 
@@ -3655,6 +3712,7 @@ def _plan_candidate_expansions(
     *,
     include_tests: bool,
     max_per_seed: int,
+    max_per_seed_by_uid: dict[str, int] | None = None,
     query_scoring: QueryScoringContext | None = None,
     semantic_alpha: float = 0.70,
     structural_reserve: int = 1,
@@ -3664,10 +3722,15 @@ def _plan_candidate_expansions(
     uids_to_fetch: set[str] = set()
     for cand in candidates:
         uids_to_fetch.add(cand.uid)
+        candidate_limit = (
+            max_per_seed_by_uid.get(cand.uid, max_per_seed)
+            if max_per_seed_by_uid is not None
+            else max_per_seed
+        )
         ordered = _nearest_expansion_hits(
             hits_per_seed.get(cand.uid, []),
             include_tests=include_tests,
-            max_per_seed=max_per_seed,
+            max_per_seed=candidate_limit,
             query_scoring=query_scoring,
             semantic_alpha=semantic_alpha,
             structural_reserve=structural_reserve,
@@ -3844,6 +3907,9 @@ def build_context_for_candidates(
     semantic_expansion_alpha: float = 0.70,
     semantic_expansion_structural_reserve: int = 1,
     semantic_expansion_rerank: bool = False,
+    evidence_graph_fanout: bool = False,
+    evidence_graph_fanout_min: int = 2,
+    evidence_graph_fanout_protected_head: int = 5,
     span_query_text: str = "",
     span_score_fn: SpanScoreFn | None = None,
     credit_trace: TokenCreditTrace | None = None,
@@ -3880,6 +3946,31 @@ def build_context_for_candidates(
         return []
 
     budget = render_budget or ContextRenderBudget()
+    fanout_limits = None
+    if credit_trace is not None:
+        credit_trace.graph_fanout_base_limit = 0
+        credit_trace.graph_fanout_tier_counts = {}
+        credit_trace.graph_fanout_limit_counts = {}
+    if evidence_graph_fanout:
+        fanout_decisions = {
+            candidate.uid: _evidence_graph_fanout_limit(
+                candidate,
+                rank=rank,
+                max_per_seed=max_per_seed,
+                min_per_seed=evidence_graph_fanout_min,
+                protected_head=evidence_graph_fanout_protected_head,
+            )
+            for rank, candidate in enumerate(candidates, start=1)
+        }
+        fanout_limits = {uid: decision[0] for uid, decision in fanout_decisions.items()}
+        if credit_trace is not None:
+            credit_trace.graph_fanout_base_limit = max(1, int(max_per_seed))
+            credit_trace.graph_fanout_tier_counts = dict(
+                Counter(decision[1] for decision in fanout_decisions.values())
+            )
+            credit_trace.graph_fanout_limit_counts = dict(
+                Counter(decision[0] for decision in fanout_decisions.values())
+            )
     all_uids = [c.uid for c in candidates]
     hits_per_seed = _collect_hits_per_seed(
         db,
@@ -3889,12 +3980,14 @@ def build_context_for_candidates(
         max_per_seed=max_per_seed,
         hook_transparency=hook_transparency,
         semantic_rerank=semantic_expansion_rerank,
+        max_per_seed_by_uid=fanout_limits,
     )
     expansion_per_candidate, uids_to_fetch = _plan_candidate_expansions(
         candidates,
         hits_per_seed,
         include_tests=include_tests,
         max_per_seed=max_per_seed,
+        max_per_seed_by_uid=fanout_limits,
         query_scoring=query_scoring,
         semantic_alpha=semantic_expansion_alpha,
         structural_reserve=semantic_expansion_structural_reserve,

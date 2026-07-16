@@ -97,6 +97,64 @@ def test_grouped_walk_driver_error_returns_warning():
     assert payload[0]["code"] == "graph_walk_grouped_cypher_failed"
 
 
+def test_grouped_walk_threads_variable_per_seed_limits_into_one_query():
+    db = FakeNeo4jDB([])
+
+    walk_neighbours_grouped(
+        db,
+        AXIS_TEST_WORKSPACE,
+        ["u:head", "u:tail"],
+        edges=EdgeProfile.CALLS,
+        limit_per_seed=24,
+        limit_per_seed_by_uid={"u:head": 24, "u:tail": 12},
+    )
+
+    query, params = db.session_obj.runs[0]
+    assert "coalesce($limit_per_seed_by_uid[su], $limit_per_seed)" in query
+    assert params["limit_per_seed"] == 24
+    assert params["limit_per_seed_by_uid"] == {"u:head": 24, "u:tail": 12}
+
+
+def test_grouped_walk_rejects_invalid_variable_limit():
+    with pytest.raises(ValueError, match="limit_per_seed_by_uid"):
+        walk_neighbours_grouped(
+            FakeNeo4jDB(),
+            AXIS_TEST_WORKSPACE,
+            ["u:tail"],
+            edges=EdgeProfile.CALLS,
+            limit_per_seed_by_uid={"u:tail": 0},
+        )
+
+
+def test_inproc_grouped_walk_stops_before_deeper_hops_once_limit_is_full():
+    from context_engine.axis.graph_walk_inproc import _grouped_neighbours_by_seed
+
+    calls: list[str] = []
+    edges = {
+        "u:seed": frozenset({"u:c", "u:a", "u:b"}),
+        "u:a": frozenset({"u:deep"}),
+    }
+
+    def neighbours(uid: str):
+        calls.append(uid)
+        return edges.get(uid, frozenset())
+
+    meta = {
+        uid: (uid, f"/{uid}.py", "function") for uid in ("u:seed", "u:a", "u:b", "u:c", "u:deep")
+    }
+    grouped = _grouped_neighbours_by_seed(
+        ["u:seed"],
+        neigh=neighbours,
+        meta=meta,
+        max_hops=2,
+        limit_per_seed=4,
+        limit_per_seed_by_uid={"u:seed": 2},
+    )
+
+    assert [row.uid for row in grouped["u:seed"]] == ["u:a", "u:b"]
+    assert calls == ["u:seed"]
+
+
 def test_empty_inproc_walk_falls_back_to_neo4j(monkeypatch):
     from context_engine.axis import graph_walk_inproc
 

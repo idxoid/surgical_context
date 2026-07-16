@@ -48,17 +48,20 @@ class AskAxisRequest(BaseModel):
     with_context: bool = True
     context_seeds_per_role: int | None = Field(default=7, ge=1, le=10)
     context_per_seed: int = Field(default=4, ge=1, le=20)
+    evidence_graph_fanout: bool = True
+    evidence_graph_fanout_min: int = Field(default=2, ge=1, le=20)
+    evidence_graph_fanout_protected_head: int = Field(default=5, ge=0, le=100)
     intent_budget: bool = True
     token_budget: int = Field(default=6000, ge=TOKEN_BUDGET_MIN, le=TOKEN_BUDGET_MAX)
     span_line_rerank: bool = False
     lexical_retrieval: bool = True
     semantic_chunk_retrieval: bool = True
     hybrid_seed_limit: int = Field(default=12, ge=1, le=100)
-    pregraph_lexical_span_probe: bool = False
+    pregraph_lexical_span_probe: bool = True
     lexical_span_probe_max_symbols: int = Field(default=96, ge=1, le=256)
     lexical_span_probe_max_windows_per_symbol: int = Field(default=3, ge=1, le=12)
     lexical_span_probe_window_lines: int = Field(default=6, ge=2, le=40)
-    lexical_span_utility_weight: float = Field(default=0.0, ge=0.0, le=1.0)
+    lexical_span_utility_weight: float = Field(default=0.15, ge=0.0, le=1.0)
 
 
 class AxisIntentMatchResponse(BaseModel):

@@ -494,6 +494,9 @@ class _SymbolTargetedRetrievalOptions:
     rank_decay_head_share: float
     rank_decay_rate: float
     rank_decay_max_coverage_share: float
+    evidence_graph_fanout: bool
+    evidence_graph_fanout_min: int
+    evidence_graph_fanout_protected_head: int
     span_line_rerank: bool
     span_rank_max_symbols: int
     span_rank_max_candidates_per_symbol: int
@@ -531,6 +534,9 @@ class _ContextBuildOptions:
     semantic_expansion_alpha: float
     semantic_expansion_structural_reserve: int
     semantic_expansion_rerank: bool
+    evidence_graph_fanout: bool
+    evidence_graph_fanout_min: int
+    evidence_graph_fanout_protected_head: int
     span_line_rerank: bool
     span_rank_max_symbols: int
     span_rank_max_candidates_per_symbol: int
@@ -582,6 +588,9 @@ def _build_context_bundles_with_budget(
         semantic_expansion_alpha=options.semantic_expansion_alpha,
         semantic_expansion_structural_reserve=(options.semantic_expansion_structural_reserve),
         semantic_expansion_rerank=options.semantic_expansion_rerank,
+        evidence_graph_fanout=options.evidence_graph_fanout,
+        evidence_graph_fanout_min=options.evidence_graph_fanout_min,
+        evidence_graph_fanout_protected_head=(options.evidence_graph_fanout_protected_head),
         span_query_text=options.span_query_text,
         span_score_fn=options.span_score_fn,
     )
@@ -723,6 +732,11 @@ def _try_symbol_targeted_retrieval(
                     semantic_expansion_alpha=0.70,
                     semantic_expansion_structural_reserve=1,
                     semantic_expansion_rerank=False,
+                    evidence_graph_fanout=options.evidence_graph_fanout,
+                    evidence_graph_fanout_min=options.evidence_graph_fanout_min,
+                    evidence_graph_fanout_protected_head=(
+                        options.evidence_graph_fanout_protected_head
+                    ),
                     span_line_rerank=options.span_line_rerank,
                     span_rank_max_symbols=options.span_rank_max_symbols,
                     span_rank_max_candidates_per_symbol=(
@@ -1494,13 +1508,13 @@ class AxisRetrievalConfig:
     non_intent_structural_role_soft_cap: int | None = None
     capture_budget_trace: bool = False
     token_credit_min_utility_per_token: float | None = None
-    token_credit_upgrade_min_utility_per_token: float | None = None
+    token_credit_upgrade_min_utility_per_token: float | None = 0.00025
     token_credit_freeze_at_plateau: bool = False
     token_credit_plateau_upgrade_reserve_share: float = 0.0
     node_semantic_utility_weight: float = 0.0
-    # Experimental body allocator: preserve coverage, then spend a geometric
+    # Validated body allocator: preserve coverage, then spend a geometric
     # percentage of the total budget in pre-budget candidate-rank order.
-    rank_decay_body_allocation: bool = False
+    rank_decay_body_allocation: bool = True
     rank_decay_head_share: float = 0.15
     rank_decay_rate: float = 0.75
     rank_decay_max_coverage_share: float = 0.65
@@ -1515,6 +1529,12 @@ class AxisRetrievalConfig:
     context_semantic_expansion_alpha: float = 0.70
     context_semantic_expansion_structural_reserve: int = 1
     context_semantic_expansion_roles: tuple[str, ...] = ("dependency_solver",)
+    # Reduce the batched graph reservoir and final payload for graph-only
+    # ranked-tail seeds while retrieval-backed, exact, and head seeds keep the
+    # base limit.
+    evidence_graph_fanout: bool = True
+    evidence_graph_fanout_min: int = 2
+    evidence_graph_fanout_protected_head: int = 5
     # Pre-graph retrieval channels.  Lexical is an in-memory fielded BM25
     # view over the cached symbol scan; semantic chunks live in a separate
     # Lance table and resolve back to owner symbols with source spans.
@@ -1524,13 +1544,13 @@ class AxisRetrievalConfig:
     hybrid_rrf_k: int = 60
     # Query-time lexical windows over a bounded candidate payload batch. This
     # runs immediately before the expensive context graph walk and needs no
-    # persistent semantic-chunk index. Off until span-gold A/B validates it.
-    pregraph_lexical_span_probe: bool = False
+    # persistent semantic-chunk index.
+    pregraph_lexical_span_probe: bool = True
     lexical_span_probe_max_symbols: int = 96
     lexical_span_probe_max_windows_per_symbol: int = 3
     lexical_span_probe_max_candidates_per_symbol: int = 24
     lexical_span_probe_window_lines: int = 6
-    lexical_span_utility_weight: float = 0.0
+    lexical_span_utility_weight: float = 0.15
 
 
 def _gated_role_consensus_score_boost(
@@ -1713,6 +1733,9 @@ def _run_axis_retrieval_impl(
                 rank_decay_head_share=cfg.rank_decay_head_share,
                 rank_decay_rate=cfg.rank_decay_rate,
                 rank_decay_max_coverage_share=cfg.rank_decay_max_coverage_share,
+                evidence_graph_fanout=cfg.evidence_graph_fanout,
+                evidence_graph_fanout_min=cfg.evidence_graph_fanout_min,
+                evidence_graph_fanout_protected_head=(cfg.evidence_graph_fanout_protected_head),
                 span_line_rerank=cfg.span_line_rerank,
                 span_rank_max_symbols=cfg.span_rank_max_symbols,
                 span_rank_max_candidates_per_symbol=(cfg.span_rank_max_candidates_per_symbol),
@@ -2068,6 +2091,9 @@ def _run_axis_retrieval_impl(
                         cfg.context_semantic_expansion_structural_reserve
                     ),
                     semantic_expansion_rerank=semantic_expansion_enabled,
+                    evidence_graph_fanout=cfg.evidence_graph_fanout,
+                    evidence_graph_fanout_min=cfg.evidence_graph_fanout_min,
+                    evidence_graph_fanout_protected_head=(cfg.evidence_graph_fanout_protected_head),
                     span_line_rerank=cfg.span_line_rerank,
                     span_rank_max_symbols=cfg.span_rank_max_symbols,
                     span_rank_max_candidates_per_symbol=(cfg.span_rank_max_candidates_per_symbol),

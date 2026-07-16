@@ -144,9 +144,12 @@ def test_ask_axis_request_default_uses_evidence_aware_context_cap() -> None:
     assert req.intent_budget is True
     assert req.token_budget == 6000
     assert req.span_line_rerank is False
-    assert req.pregraph_lexical_span_probe is False
+    assert req.pregraph_lexical_span_probe is True
     assert req.lexical_span_probe_max_symbols == 96
-    assert req.lexical_span_utility_weight == 0.0
+    assert req.lexical_span_utility_weight == 0.15
+    assert req.evidence_graph_fanout is True
+    assert req.evidence_graph_fanout_min == 2
+    assert req.evidence_graph_fanout_protected_head == 5
 
 
 def test_ask_axis_returns_well_formed_payload(patch_axis_pipeline):
