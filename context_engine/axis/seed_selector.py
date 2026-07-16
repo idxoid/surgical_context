@@ -22,6 +22,8 @@ from collections import Counter
 from collections.abc import Iterable
 from dataclasses import dataclass, replace
 
+from context_engine.axis.axis_profiles import axes_for_kinds
+from context_engine.axis.role_resolver import ROLE_EVIDENCE_MAP
 from context_engine.axis.role_retrieval import RoleCandidate
 
 _ANCHOR_ROLES = frozenset({"anchor_symbol", "overlay_anchor"})
@@ -90,16 +92,12 @@ def _merge_candidate(
     # changes post-graph packing.
     return replace(
         existing,
-        retrieval_channels=_ordered_union(
-            existing.retrieval_channels, incoming.retrieval_channels
-        ),
+        retrieval_channels=_ordered_union(existing.retrieval_channels, incoming.retrieval_channels),
         retrieval_spans=spans,
         exact_symbol_match=existing.exact_symbol_match or incoming.exact_symbol_match,
         lexical_span_score=max(lexical_span_scores) if lexical_span_scores else None,
         supporting_roles=roles,
-        selection_reasons=_ordered_union(
-            existing.selection_reasons, incoming.selection_reasons
-        ),
+        selection_reasons=_ordered_union(existing.selection_reasons, incoming.selection_reasons),
     )
 
 
@@ -127,12 +125,21 @@ def _is_hard_reserved(reasons: Iterable[str]) -> bool:
     return "explicit_anchor" in set(reasons)
 
 
+def _is_structural_retrieval_role(role: str) -> bool:
+    """True for profiled surface roles, not universal channels or modes."""
+    evidence = ROLE_EVIDENCE_MAP.get(role)
+    return bool(evidence and axes_for_kinds(evidence.kinds))
+
+
 def select_context_seeds(
     raw_by_role: dict[str, list[RoleCandidate]],
     intent_roles: Iterable[str],
     *,
     per_role_soft_cap: int | None,
     exact_reserve_per_role: int = 1,
+    role_consensus_score_boost: float = 0.0,
+    role_consensus_max_extra_roles: int = 2,
+    non_intent_structural_role_soft_cap: int | None = None,
 ) -> tuple[list[RoleCandidate], SeedSelectionTrace]:
     """Aggregate retrieval evidence and select context seeds.
 
@@ -146,6 +153,10 @@ def select_context_seeds(
         raise ValueError("per_role_soft_cap must be >= 1 or None")
     if exact_reserve_per_role < 0:
         raise ValueError("exact_reserve_per_role must be >= 0")
+    if role_consensus_max_extra_roles < 0:
+        raise ValueError("role_consensus_max_extra_roles must be >= 0")
+    if non_intent_structural_role_soft_cap is not None and non_intent_structural_role_soft_cap < 1:
+        raise ValueError("non_intent_structural_role_soft_cap must be >= 1 or None")
 
     intent_role_list = list(intent_roles)
     ordered_roles = _ordered_role_keys(raw_by_role, intent_role_list)
@@ -166,9 +177,7 @@ def select_context_seeds(
             if key not in seen_in_role:
                 memberships[role].append(key)
                 seen_in_role.add(key)
-            source_roles = _ordered_union(
-                (role,), candidate.supporting_roles or (candidate.role,)
-            )
+            source_roles = _ordered_union((role,), candidate.supporting_roles or (candidate.role,))
             aggregate = aggregates.get(key)
             if aggregate is None:
                 aggregates[key] = _Aggregate(
@@ -220,13 +229,18 @@ def select_context_seeds(
     else:
         for role in ordered_roles:
             role_keys = memberships[role]
-            ranked_slice = set(role_keys[:per_role_soft_cap])
-            anchor_keys = [
-                key for key in role_keys if _is_hard_reserved(reasons_by_key[key])
-            ]
+            role_cap = per_role_soft_cap
+            non_intent_cap_active = (
+                non_intent_structural_role_soft_cap is not None
+                and role not in active_intent_roles
+                and _is_structural_retrieval_role(role)
+            )
+            if non_intent_cap_active:
+                role_cap = min(role_cap, non_intent_structural_role_soft_cap)
+            ranked_slice = set(role_keys[:role_cap])
+            anchor_keys = [key for key in role_keys if _is_hard_reserved(reasons_by_key[key])]
             exact_already_covered = any(
-                role in aggregates[key].exact_source_roles
-                for key in ranked_slice | selected_set
+                role in aggregates[key].exact_source_roles for key in ranked_slice | selected_set
             )
             exact_keys = (
                 []
@@ -241,7 +255,7 @@ def select_context_seeds(
                 ][:exact_reserve_per_role]
             )
             hard_keys = [key for key in [*anchor_keys, *exact_keys] if key not in selected_set]
-            target = max(per_role_soft_cap, len(hard_keys))
+            target = max(role_cap, len(hard_keys))
             selected_for_role: list[str] = list(hard_keys)
             for key in role_keys:
                 if len(selected_for_role) >= target:
@@ -250,23 +264,32 @@ def select_context_seeds(
                     selected_for_role.append(key)
             hard_set = set(hard_keys)
             for key in selected_for_role:
-                admit(key, "hard_reserve" if key in hard_set else "ranked_fill")
+                fill_reason = "non_intent_ranked_fill" if non_intent_cap_active else "ranked_fill"
+                admit(key, "hard_reserve" if key in hard_set else fill_reason)
 
     selected: list[RoleCandidate] = []
     for key in selected_keys:
         aggregate = aggregates[key]
+        extra_roles = min(
+            role_consensus_max_extra_roles,
+            max(0, len(aggregate.source_role_set) - 1),
+        )
+        consensus_bonus = max(0.0, float(role_consensus_score_boost)) * extra_roles
+        reasons = list(selected_reasons.get(key, ()))
+        if consensus_bonus > 0.0 and "role_consensus_boost" not in reasons:
+            reasons.append("role_consensus_boost")
         selected.append(
             replace(
                 aggregate.candidate,
+                score=min(1.0, aggregate.candidate.score + consensus_bonus),
                 supporting_roles=tuple(aggregate.source_roles),
-                selection_reasons=tuple(selected_reasons.get(key, ())),
+                selection_reasons=tuple(reasons),
+                role_consensus_bonus=consensus_bonus,
             )
         )
 
     reason_counts = Counter(
-        reason
-        for candidate in selected
-        for reason in candidate.selection_reasons
+        reason for candidate in selected for reason in candidate.selection_reasons
     )
     trace = SeedSelectionTrace(
         input_occurrences=input_occurrences,

@@ -48,6 +48,14 @@ _RENDER_LADDER: tuple[str, ...] = (
     "full",
 )
 
+# Rank-decay needs a pressure guard at small envelopes, where coverage leaves
+# too little room for a useful large body. Relax that guard as the absolute
+# envelope grows: aligned 8k/10k/12k sweeps show that high-coverage requests at
+# 10–12k can still afford (and benefit from) head bodies that are inaccessible
+# at 8k. The configured threshold is therefore the 8k floor, not a fixed gate.
+_RANK_DECAY_GUARD_START_TOKENS = 8_000
+_RANK_DECAY_GUARD_END_TOKENS = 12_000
+
 _CLASS_DEF_PREFIX = "class "
 
 # DECOUPLED-ALLOCATION experiment (exp/decoupled-allocation) — REFUTED, kept OFF.
@@ -62,9 +70,12 @@ _CLASS_DEF_PREFIX = "class "
 # the profile's precision-tuned rich render + _freeze_cross_file_member_bodies.
 # Left env-gated + OFF as a documented dead-end; do NOT enable. See memory
 # project-ranker-ordering-gold-blind "REFUTED IN THE REAL AUCTION".
-_AUCTION_SEMANTIC_PRIMARY = os.getenv(
-    "AXIS_AUCTION_SEMANTIC_PRIMARY", ""
-).strip().lower() in {"1", "true", "yes", "on"}
+_AUCTION_SEMANTIC_PRIMARY = os.getenv("AXIS_AUCTION_SEMANTIC_PRIMARY", "").strip().lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+}
 
 
 # One expansion hit: a neighbour reached from a seed, tagged with the
@@ -219,9 +230,7 @@ class ContextSymbol:
         payload["rendered_spans"] = self.effective_rendered_spans()
         payload["retrieval_spans"] = self.retrieval_spans
         if self.represented_owners:
-            payload["represented_owners"] = [
-                owner.to_dict() for owner in self.represented_owners
-            ]
+            payload["represented_owners"] = [owner.to_dict() for owner in self.represented_owners]
         return payload
 
 
@@ -254,6 +263,10 @@ class ContextRenderBudget:
     freeze_at_utility_plateau: bool = False
     plateau_upgrade_reserve_share: float = 0.0
     node_semantic_utility_weight: float = 0.0
+    rank_decay_body_allocation: bool = False
+    rank_decay_head_share: float = 0.15
+    rank_decay_rate: float = 0.75
+    rank_decay_max_coverage_share: float = 0.65
     span_line_rerank: bool = False
     span_rank_max_symbols: int = 48
     span_rank_max_candidates_per_symbol: int = 24
@@ -314,6 +327,10 @@ class TokenCreditTrace:
     cutoff_density: float | None = None
     cutoff_rejections: int = 0
     spend_ceiling: int = 0
+    coverage_tokens: int = 0
+    coverage_share: float = 0.0
+    allocation_mode: str = "legacy"
+    rank_decay_coverage_threshold: float = 0.0
 
     def begin(
         self,
@@ -334,6 +351,10 @@ class TokenCreditTrace:
         self.cutoff_density = cutoff_density
         self.cutoff_rejections = 0
         self.spend_ceiling = token_budget
+        self.coverage_tokens = 0
+        self.coverage_share = 0.0
+        self.allocation_mode = "legacy"
+        self.rank_decay_coverage_threshold = 0.0
 
     def record(
         self,
@@ -383,6 +404,10 @@ class TokenCreditTrace:
             "cutoff_density": self.cutoff_density,
             "cutoff_rejections": self.cutoff_rejections,
             "spend_ceiling": self.spend_ceiling,
+            "coverage_tokens": self.coverage_tokens,
+            "coverage_share": self.coverage_share,
+            "allocation_mode": self.allocation_mode,
+            "rank_decay_coverage_threshold": self.rank_decay_coverage_threshold,
             "transactions": [transaction.to_dict() for transaction in self.transactions],
         }
 
@@ -1049,10 +1074,7 @@ def _sample_evenly(values: list[int], limit: int) -> list[int]:
         return list(values)
     if limit == 1:
         return [values[len(values) // 2]]
-    indices = {
-        round(index * (len(values) - 1) / (limit - 1))
-        for index in range(limit)
-    }
+    indices = {round(index * (len(values) - 1) / (limit - 1)) for index in range(limit)}
     return [values[index] for index in sorted(indices)]
 
 
@@ -1156,9 +1178,7 @@ def _span_candidates(
     seen: set[tuple[int, ...]] = set()
     for start in starts:
         indices = tuple(
-            index
-            for index in range(start, min(len(lines), start + width))
-            if index in renderable
+            index for index in range(start, min(len(lines), start + width)) if index in renderable
         )
         if not indices or indices in seen:
             continue
@@ -1166,16 +1186,12 @@ def _span_candidates(
         text = "\n".join(lines[index] for index in indices)
         candidate_terms = _span_terms(text)
         lexical_score = (
-            len(query_terms & candidate_terms) / max(1, len(query_terms))
-            if query_terms
-            else 0.0
+            len(query_terms & candidate_terms) / max(1, len(query_terms)) if query_terms else 0.0
         )
         structural_score = sum(
             1.0 for index in indices if _keep_compact_body_line(lines[index].strip())
         ) / max(1, len(indices))
-        source_lines = {
-            sym.start_line + index for index in indices if sym.start_line > 0
-        }
+        source_lines = {sym.start_line + index for index in indices if sym.start_line > 0}
         anchored_indices = tuple(
             index
             for index in indices
@@ -1260,19 +1276,14 @@ def probe_candidate_lexical_spans(
     query_terms = _span_terms(query_text)
     query_lines = _span_query_line_numbers(query_text)
     payload_terms = {
-        uid: _span_terms(str(payload.get("code") or ""))
-        for uid, payload in payloads.items()
+        uid: _span_terms(str(payload.get("code") or "")) for uid, payload in payloads.items()
     }
     document_frequency = Counter(
-        term
-        for terms in payload_terms.values()
-        for term in query_terms & terms
+        term for terms in payload_terms.values() for term in query_terms & terms
     )
     document_count = max(1, len(payload_terms))
     term_weights = {
-        term: math.log(
-            1.0 + (document_count - frequency + 0.5) / (frequency + 0.5)
-        )
+        term: math.log(1.0 + (document_count - frequency + 0.5) / (frequency + 0.5))
         for term, frequency in document_frequency.items()
     }
     weight_ceiling = sum(term_weights.values()) or 1.0
@@ -1308,8 +1319,7 @@ def probe_candidate_lexical_spans(
         for window in windows:
             matched_terms = query_terms & _span_terms(window.text)
             weighted_score = (
-                sum(term_weights.get(term, 0.0) for term in matched_terms)
-                / weight_ceiling
+                sum(term_weights.get(term, 0.0) for term in matched_terms) / weight_ceiling
             )
             if window.line_anchor_score <= 0.0 and weighted_score <= 0.0:
                 continue
@@ -1341,8 +1351,7 @@ def probe_candidate_lexical_spans(
         if not selected_indices:
             continue
         spans = _merge_rendered_spans(
-            (start_line + index, start_line + index)
-            for index in selected_indices
+            (start_line + index, start_line + index) for index in selected_indices
         )
         score = sum(term_weights.get(term, 0.0) for term in selected_terms) / weight_ceiling
         evidence_by_uid[candidate.uid] = LexicalSpanEvidence(
@@ -1392,11 +1401,7 @@ def _span_semantic_excess(scores: list[float]) -> list[float]:
         return []
     ordered = sorted(float(score) for score in scores)
     middle = len(ordered) // 2
-    floor = (
-        ordered[middle]
-        if len(ordered) % 2
-        else (ordered[middle - 1] + ordered[middle]) / 2.0
-    )
+    floor = ordered[middle] if len(ordered) % 2 else (ordered[middle - 1] + ordered[middle]) / 2.0
     ceiling = ordered[-1]
     span = ceiling - floor
     if span <= 1e-9:
@@ -2827,9 +2832,7 @@ def _enqueue_credit_upgrade(
         state,
         semantic_delta_utility=semantic_delta_utility,
         node_semantic_utility_weight=node_semantic_utility_weight,
-    ) / max(
-        1, exact_delta
-    )
+    ) / max(1, exact_delta)
     if _AUCTION_SEMANTIC_PRIMARY:
         # Decoupled design: order upgrades by the seed's RAW query↔node cosine so
         # the budget flows to the most query-relevant bundles first, fully
@@ -2965,6 +2968,100 @@ def _apply_credit_upgrades(
     return used
 
 
+def _rank_decay_body_credit(
+    token_budget: int,
+    *,
+    candidate_rank: int,
+    head_share: float,
+    decay_rate: float,
+) -> int:
+    """Maximum paid body tokens for one pre-budget candidate rank.
+
+    Rank is one-based. With the experimental defaults (15%, 0.75), the
+    infinite geometric envelope is bounded by 60% of the total budget. The
+    global budget still includes the recall-safe coverage floor, so this is an
+    eligibility ceiling rather than a reservation. The first five ranks
+    receive ~76% of the body envelope, while the far tail quickly falls below
+    the price of any paid render rung.
+    """
+    if token_budget <= 0 or candidate_rank <= 0:
+        return 0
+    share = min(1.0, max(0.0, float(head_share)))
+    decay = min(0.999, max(0.0, float(decay_rate)))
+    return max(0, int(token_budget * share * (decay ** (candidate_rank - 1))))
+
+
+def _apply_rank_decay_credit_upgrades(
+    selected: list[dict[str, object]],
+    static: list[_BundleStatic],
+    state: _TokenCreditCoverageState,
+    *,
+    render_mode: str,
+    full_render_max_depth: int,
+    token_budget: int,
+    used: int,
+    head_share: float,
+    decay_rate: float,
+    credit_trace: TokenCreditTrace | None,
+    min_utility_per_token: float | None,
+    node_semantic_utility_weight: float,
+) -> int:
+    """Spend geometrically decaying body credits in candidate-rank order.
+
+    The legacy allocator gives every robust-tail "leader" the same render cap
+    and orders all cheap upgrades by density before rich leader relaxation.
+    That erases the pre-budget rank: small tail upgrades can consume the
+    8k→10k interval before a large rank-1 body is even eligible. This arm keeps
+    coverage unchanged, then gives each selected candidate an independent
+    paid-upgrade credit and resolves ranks strictly head-first. A candidate's
+    unused credit is deliberately not rolled into the tail.
+
+    ``transaction_limit`` is the global budget here, so the candidate's rich
+    ladder rungs are visible immediately. The local spend ceiling below prices
+    them by exact first-wins delta and enforces the rank credit.
+    """
+    ordered_entries = sorted(
+        range(len(selected)),
+        key=lambda entry_index: int(selected[entry_index].get("index", 1 << 30)),
+    )
+    render_cache: dict[tuple[int, str], tuple[ContextBundle, int]] = {}
+    for entry_index in ordered_entries:
+        bundle_index = selected[entry_index].get("index")
+        if not isinstance(bundle_index, int):
+            continue
+        body_credit = _rank_decay_body_credit(
+            token_budget,
+            candidate_rank=bundle_index + 1,
+            head_share=head_share,
+            decay_rate=decay_rate,
+        )
+        if body_credit <= 0:
+            break
+        local_ceiling = min(token_budget, used + body_credit)
+        used = _apply_credit_upgrades(
+            selected,
+            static,
+            state,
+            render_mode=render_mode,
+            transaction_limit=token_budget,
+            full_render_max_depth=full_render_max_depth,
+            render_cache=render_cache,
+            token_budget=local_ceiling,
+            used=used,
+            entry_filter={entry_index},
+            phase="upgrade_rank_decay",
+            credit_trace=credit_trace,
+            min_utility_per_token=min_utility_per_token,
+            # Preserve zero-cost first-wins improvements even when the paid
+            # rank credit is exactly exhausted.
+            allow_free_at_ceiling=True,
+            node_semantic_utility_weight=node_semantic_utility_weight,
+        )
+        if used >= token_budget:
+            break
+    return used
+
+
 def _selected_credit_rendered_bundles(selected: list[dict[str, object]]) -> list[ContextBundle]:
     return [
         rendered_bundle
@@ -3017,6 +3114,10 @@ def _apply_token_credit_budget(
     freeze_at_utility_plateau: bool = False,
     plateau_upgrade_reserve_share: float = 0.0,
     node_semantic_utility_weight: float = 0.0,
+    rank_decay_body_allocation: bool = False,
+    rank_decay_head_share: float = 0.15,
+    rank_decay_rate: float = 0.75,
+    rank_decay_max_coverage_share: float = 0.65,
 ) -> list[ContextBundle]:
     """Token Credit System v2 prototype: coverage-first marginal transactions.
 
@@ -3095,17 +3196,47 @@ def _apply_token_credit_budget(
         min_utility_per_token=min_utility_per_token,
         node_semantic_utility_weight=node_semantic_utility_weight,
     )
-    reserve_tokens = int(
-        token_budget * min(1.0, max(0.0, plateau_upgrade_reserve_share))
+    coverage_share = used / token_budget if token_budget > 0 else 1.0
+    base_coverage_share = min(1.0, max(0.0, rank_decay_max_coverage_share))
+    guard_span = _RANK_DECAY_GUARD_END_TOKENS - _RANK_DECAY_GUARD_START_TOKENS
+    guard_progress = min(
+        1.0,
+        max(
+            0.0,
+            (token_budget - _RANK_DECAY_GUARD_START_TOKENS) / max(1, guard_span),
+        ),
     )
+    max_coverage_share = base_coverage_share + ((1.0 - base_coverage_share) * guard_progress)
+    rank_decay_active = rank_decay_body_allocation and coverage_share <= max_coverage_share
+    if credit_trace is not None:
+        credit_trace.coverage_tokens = used
+        credit_trace.coverage_share = coverage_share
+        credit_trace.allocation_mode = "rank_decay" if rank_decay_active else "legacy"
+        credit_trace.rank_decay_coverage_threshold = max_coverage_share
+    reserve_tokens = int(token_budget * min(1.0, max(0.0, plateau_upgrade_reserve_share)))
     upgrade_budget = (
         min(token_budget, used + reserve_tokens)
-        if freeze_at_utility_plateau
-        and state.cutoff_rejections > 0
+        if freeze_at_utility_plateau and state.cutoff_rejections > 0
         else token_budget
     )
     if credit_trace is not None:
         credit_trace.spend_ceiling = upgrade_budget
+    if rank_decay_active:
+        _apply_rank_decay_credit_upgrades(
+            selected,
+            static,
+            state,
+            render_mode=render_mode,
+            full_render_max_depth=full_render_max_depth,
+            token_budget=upgrade_budget,
+            used=used,
+            head_share=rank_decay_head_share,
+            decay_rate=rank_decay_rate,
+            credit_trace=credit_trace,
+            min_utility_per_token=min_utility_per_token,
+            node_semantic_utility_weight=node_semantic_utility_weight,
+        )
+        return _selected_credit_rendered_bundles(selected)
     used = _apply_credit_upgrades(
         selected,
         static,
@@ -3200,6 +3331,10 @@ def _apply_render_and_budget(
     freeze_at_utility_plateau: bool = False,
     plateau_upgrade_reserve_share: float = 0.0,
     node_semantic_utility_weight: float = 0.0,
+    rank_decay_body_allocation: bool = False,
+    rank_decay_head_share: float = 0.15,
+    rank_decay_rate: float = 0.75,
+    rank_decay_max_coverage_share: float = 0.65,
 ) -> list[ContextBundle]:
     """Echelon 2: render-trim then token-pack the assembled bundles.
 
@@ -3235,6 +3370,10 @@ def _apply_render_and_budget(
             freeze_at_utility_plateau=freeze_at_utility_plateau,
             plateau_upgrade_reserve_share=plateau_upgrade_reserve_share,
             node_semantic_utility_weight=node_semantic_utility_weight,
+            rank_decay_body_allocation=rank_decay_body_allocation,
+            rank_decay_head_share=rank_decay_head_share,
+            rank_decay_rate=rank_decay_rate,
+            rank_decay_max_coverage_share=rank_decay_max_coverage_share,
         )
 
     if render_mode in (
@@ -3380,9 +3519,7 @@ def _collect_hits_per_seed(
         # safety reservoir than the historical 4x depth/uid cut so a relevant
         # depth-2 node is unlikely to disappear before query scoring sees it.
         # The cap still bounds high-fanout hubs on the Neo4j fallback path.
-        candidate_limit = (
-            max(256, max_per_seed * 32) if semantic_rerank else max_per_seed * 4
-        )
+        candidate_limit = max(256, max_per_seed * 32) if semantic_rerank else max_per_seed * 4
         grouped = walk_neighbours_grouped(
             db,
             workspace_id,
@@ -3456,9 +3593,7 @@ def _nearest_expansion_hits(
     for hit in structural:
         similarity = similarities.get(hit.uid)
         semantic_excess = (
-            min(1.0, max(0.0, (similarity - floor) / span))
-            if similarity is not None
-            else 0.0
+            min(1.0, max(0.0, (similarity - floor) / span)) if similarity is not None else 0.0
         )
         tier_weight = _tier_weight_for_path(hit.file_path, impact_mode=impact_mode)
         structural_weight = 1.0 / max(1, int(hit.depth))
@@ -3674,6 +3809,10 @@ def _pack_with_render_budget(
         freeze_at_utility_plateau=budget.freeze_at_utility_plateau,
         plateau_upgrade_reserve_share=budget.plateau_upgrade_reserve_share,
         node_semantic_utility_weight=budget.node_semantic_utility_weight,
+        rank_decay_body_allocation=budget.rank_decay_body_allocation,
+        rank_decay_head_share=budget.rank_decay_head_share,
+        rank_decay_rate=budget.rank_decay_rate,
+        rank_decay_max_coverage_share=budget.rank_decay_max_coverage_share,
     )
 
 
@@ -3778,9 +3917,7 @@ def build_context_for_candidates(
     # run the real budget pass over their pruned bodies so accounting remains
     # exact and no later render upgrade can restore discarded source lines.
     provisional = _pack_with_render_budget(bundles, budget, credit_trace=None)
-    source_by_uid = {
-        bundle.seed.uid: bundle for bundle in _dedupe_bundles_by_seed_uid(bundles)
-    }
+    source_by_uid = {bundle.seed.uid: bundle for bundle in _dedupe_bundles_by_seed_uid(bundles)}
     selected_sources = [
         source
         for rendered in provisional

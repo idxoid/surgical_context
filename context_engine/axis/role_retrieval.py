@@ -94,6 +94,10 @@ class RoleCandidate:
     # They are telemetry rather than ranking inputs for later graph/token
     # stages, so a benchmark can explain why a seed survived the cap.
     selection_reasons: tuple[str, ...] = ()
+    # Experimental post-selection rank signal.  Kept explicit so benchmark
+    # telemetry can distinguish cross-role consensus from the producer's raw
+    # structural/query score.
+    role_consensus_bonus: float = 0.0
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -119,6 +123,7 @@ class RoleCandidate:
             "lexical_span_score": self.lexical_span_score,
             "supporting_roles": list(self.supporting_roles),
             "selection_reasons": list(self.selection_reasons),
+            "role_consensus_bonus": self.role_consensus_bonus,
         }
 
 

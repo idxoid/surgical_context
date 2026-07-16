@@ -8,6 +8,8 @@ from types import SimpleNamespace
 from context_engine.axis.context_builder import ContextBundle, ContextSymbol, RenderedOwner
 from context_engine.axis.role_retrieval import RoleCandidate
 from QA.axis_benchmark import (
+    QuestionResult,
+    _candidate_cohort_audit,
     _compute_span_owner_recall,
     _expected_file_layers,
     _gold_rank_audit,
@@ -111,6 +113,80 @@ def test_axis_benchmark_records_candidate_audit_and_expected_layers() -> None:
     summary = summarise([result])
     assert summary["candidate_relation_totals"]["structural_neighbour"] == 2
     assert summary["bundle_relation_totals"]["reverse_calls"] == 1
+
+
+def test_candidate_cohort_audit_splits_role_axis_intent_and_token_spend() -> None:
+    gold = replace(
+        _candidate("route", "/repo/src/routes.py", "routing_surface", score=0.9),
+        name="add_route",
+        satisfying_kinds=("keyed_register_callable",),
+        supporting_roles=("routing_surface", "binding_surface"),
+    )
+    trace = replace(
+        _candidate("trace", "/repo/src/trace.py", "trace_dependency", score=0.8),
+        satisfying_kinds=("trace_callers",),
+        supporting_roles=("trace_dependency",),
+    )
+    impact = replace(
+        _candidate("impact", "/repo/src/impact.py", "impact_analysis", score=0.75),
+        edge_type="CALLS_*",
+        satisfying_kinds=("reverse_calls",),
+        supporting_roles=("impact_analysis",),
+    )
+    vector = replace(
+        _candidate("vector", "/repo/src/noise.py", "vector_seed", score=0.7),
+        retrieval_channels=("vector",),
+        supporting_roles=("vector_seed",),
+    )
+    budget_trace = SimpleNamespace(
+        transactions=[
+            SimpleNamespace(phase="coverage", uid="route", delta_tokens=20),
+            SimpleNamespace(phase="coverage", uid="trace", delta_tokens=10),
+            SimpleNamespace(phase="coverage", uid="impact", delta_tokens=5),
+            SimpleNamespace(phase="upgrade_rank_decay", uid="route", delta_tokens=80),
+        ]
+    )
+
+    audit = _candidate_cohort_audit(
+        [gold, trace, impact, vector],
+        expected_files=["src/routes.py"],
+        expected_symbols=["add_route"],
+        expected_spans=[],
+        intent_matches=[("routing_surface", 0.8), ("trace_dependency", 0.7)],
+        budget_trace=budget_trace,
+    )
+
+    assert audit["candidate_count"] == 4
+    assert audit["multi_role_candidates"] == 1
+    assert audit["by_role"]["routing_surface"]["symbol_gold"] == 1
+    assert audit["by_role"]["binding_surface"]["symbol_gold"] == 1
+    assert audit["by_role_signature"]["binding_surface+routing_surface"]["candidates"] == 1
+    assert audit["by_role_intent_alignment"]["routing_surface|role+axis"]["candidates"] == 1
+    assert audit["by_role"]["routing_surface"]["upgrade_tokens"] == 80
+    assert audit["by_role"]["routing_surface"]["mean_exact_gold_rank"] == 1.0
+    assert audit["by_role"]["routing_surface"]["exact_gold_top10_share"] == 1.0
+    assert audit["by_axis"]["registry"]["candidates"] == 1
+    assert audit["by_axis"]["control"]["candidates"] == 1
+    assert audit["by_axis"]["axisless"]["candidates"] == 2
+    assert audit["by_intent_alignment"]["role+axis"]["candidates"] == 1
+    assert audit["by_intent_alignment"]["role_only"]["candidates"] == 1
+    assert audit["by_intent_alignment"]["axis_only"]["candidates"] == 1
+    assert audit["by_intent_alignment"]["none"]["candidates"] == 1
+
+    result = QuestionResult(
+        question_id="cohorts",
+        repo="repo",
+        workspace_id="ws",
+        question="where is routing?",
+        mechanism="audit",
+        expected_files=[],
+        candidate_cohort_audit=audit,
+    )
+    aggregate = summarise([result])["candidate_cohorts"]
+    assert aggregate["totals"]["candidates"] == 4
+    assert aggregate["totals"]["exact_gold"] == 1
+    assert aggregate["by_top_intent"]["routing_surface"]["candidates"] == 4
+    assert aggregate["by_top_intent_role"]["routing_surface|vector_seed"]["candidates"] == 1
 
 
 def test_axis_benchmark_records_precision_layers_and_token_split() -> None:
@@ -301,9 +377,7 @@ def test_span_owner_recall_matches_all_honest_owners_of_folded_render() -> None:
 
 
 def test_lexical_span_score_audit_compares_exact_owner_pair_with_pool() -> None:
-    expected = [
-        {"file_path": "worker.py", "symbol": "run_once", "start_line": 10, "end_line": 12}
-    ]
+    expected = [{"file_path": "worker.py", "symbol": "run_once", "start_line": 10, "end_line": 12}]
     gold = replace(
         _candidate("gold", "/repo/worker.py", "hybrid_seed"),
         name="run_once",
@@ -330,6 +404,8 @@ def test_lexical_span_score_audit_compares_exact_owner_pair_with_pool() -> None:
 
 
 def test_gold_rank_audit_tracks_complete_budget_and_prompt_funnel() -> None:
+    from QA.axis_benchmark import QuestionResult
+
     expected_spans = [
         {"file_path": "worker.py", "symbol": "run_once", "start_line": 10, "end_line": 12},
         {"file_path": "missing.py", "symbol": "rescued", "start_line": 20, "end_line": 22},
@@ -354,9 +430,11 @@ def test_gold_rank_audit_tracks_complete_budget_and_prompt_funnel() -> None:
     )
     trace = SimpleNamespace(
         transactions=[
-            SimpleNamespace(phase="upgrade_capped", uid="gold"),
-            SimpleNamespace(phase="coverage", uid="gold"),
-            SimpleNamespace(phase="coverage", uid="other"),
+            SimpleNamespace(phase="upgrade_capped", uid="gold", delta_tokens=80),
+            SimpleNamespace(phase="coverage", uid="gold", delta_tokens=10),
+            SimpleNamespace(phase="coverage", uid="other", delta_tokens=20),
+            SimpleNamespace(phase="upgrade_leader_relaxed", uid="other", delta_tokens=5),
+            SimpleNamespace(phase="upgrade_tail_relaxed", uid="rescued", delta_tokens=7),
         ]
     )
 
@@ -377,3 +455,26 @@ def test_gold_rank_audit_tracks_complete_budget_and_prompt_funnel() -> None:
     assert audit["owner_funnel"]["retrieval_missing_but_final"] == 1
     assert audit["owner_funnel"]["utility"]["recall_at"]["1"] == 0.0
     assert audit["owner_funnel"]["utility"]["recall_at"]["3"] == 0.5
+    spend = audit["candidate_rank_spend"]
+    assert spend["coverage_tokens"] == 30
+    assert spend["upgrade_tokens"] == 92
+    assert spend["by_rank"]["1"]["upgrade_tokens"] == 5
+    assert spend["by_rank"]["2-3"]["upgrade_tokens"] == 80
+    assert spend["by_rank"]["unranked"]["upgrade_tokens"] == 7
+    assert spend["upgrade_tokens_at"]["1"] == 5
+    assert spend["upgrade_tokens_at"]["3"] == 85
+
+    result = QuestionResult(
+        question_id="rank-spend",
+        repo="repo",
+        workspace_id="ws",
+        question="where did the body tokens go?",
+        mechanism="audit",
+        expected_files=[],
+        gold_rank_audit=audit,
+    )
+    aggregate = summarise([result])["candidate_rank_token_spend"]
+    assert aggregate["upgrade_tokens"] == 92
+    assert aggregate["by_rank"]["2-3"]["upgrade_tokens"] == 80
+    assert aggregate["upgrade_share_at"]["3"] == 85 / 92
+    assert aggregate["allocation_mode_counts"] == {"legacy": 1}

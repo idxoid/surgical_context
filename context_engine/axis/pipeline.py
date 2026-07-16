@@ -489,6 +489,10 @@ class _SymbolTargetedRetrievalOptions:
     freeze_at_utility_plateau: bool
     plateau_upgrade_reserve_share: float
     node_semantic_utility_weight: float
+    rank_decay_body_allocation: bool
+    rank_decay_head_share: float
+    rank_decay_rate: float
+    rank_decay_max_coverage_share: float
     span_line_rerank: bool
     span_rank_max_symbols: int
     span_rank_max_candidates_per_symbol: int
@@ -517,6 +521,10 @@ class _ContextBuildOptions:
     freeze_at_utility_plateau: bool
     plateau_upgrade_reserve_share: float
     node_semantic_utility_weight: float
+    rank_decay_body_allocation: bool
+    rank_decay_head_share: float
+    rank_decay_rate: float
+    rank_decay_max_coverage_share: float
     query_scoring: role_retrieval.QueryScoringContext | None
     semantic_expansion_alpha: float
     semantic_expansion_structural_reserve: int
@@ -544,6 +552,10 @@ def _build_context_bundles_with_budget(
         freeze_at_utility_plateau=options.freeze_at_utility_plateau,
         plateau_upgrade_reserve_share=options.plateau_upgrade_reserve_share,
         node_semantic_utility_weight=options.node_semantic_utility_weight,
+        rank_decay_body_allocation=options.rank_decay_body_allocation,
+        rank_decay_head_share=options.rank_decay_head_share,
+        rank_decay_rate=options.rank_decay_rate,
+        rank_decay_max_coverage_share=options.rank_decay_max_coverage_share,
         span_line_rerank=options.span_line_rerank,
         span_rank_max_symbols=options.span_rank_max_symbols,
         span_rank_max_candidates_per_symbol=options.span_rank_max_candidates_per_symbol,
@@ -565,9 +577,7 @@ def _build_context_bundles_with_budget(
         credit_trace=options.credit_trace,
         query_scoring=options.query_scoring,
         semantic_expansion_alpha=options.semantic_expansion_alpha,
-        semantic_expansion_structural_reserve=(
-            options.semantic_expansion_structural_reserve
-        ),
+        semantic_expansion_structural_reserve=(options.semantic_expansion_structural_reserve),
         semantic_expansion_rerank=options.semantic_expansion_rerank,
         span_query_text=options.span_query_text,
         span_score_fn=options.span_score_fn,
@@ -699,10 +709,12 @@ def _try_symbol_targeted_retrieval(
                     credit_trace=options.budget_trace,
                     min_utility_per_token=options.min_utility_per_token,
                     freeze_at_utility_plateau=options.freeze_at_utility_plateau,
-                    plateau_upgrade_reserve_share=(
-                        options.plateau_upgrade_reserve_share
-                    ),
+                    plateau_upgrade_reserve_share=(options.plateau_upgrade_reserve_share),
                     node_semantic_utility_weight=options.node_semantic_utility_weight,
+                    rank_decay_body_allocation=options.rank_decay_body_allocation,
+                    rank_decay_head_share=options.rank_decay_head_share,
+                    rank_decay_rate=options.rank_decay_rate,
+                    rank_decay_max_coverage_share=(options.rank_decay_max_coverage_share),
                     query_scoring=None,
                     semantic_expansion_alpha=0.70,
                     semantic_expansion_structural_reserve=1,
@@ -931,12 +943,15 @@ def _run_http_endpoint_bridge(
     include_tests: bool,
     trace: Any,
 ) -> set[str]:
-    http_bridge_roles = {m.role for m in intent} | {
-        "routing_surface",
-        "trace_dependency",
-        "vector_seed",
-        "hybrid_seed",
-    }
+    http_bridge_roles = sorted(
+        {m.role for m in intent}
+        | {
+            "routing_surface",
+            "trace_dependency",
+            "vector_seed",
+            "hybrid_seed",
+        }
+    )
     http_bridge_seeds = [
         c for role in http_bridge_roles for c in raw_by_role.get(role, []) if getattr(c, "uid", "")
     ]
@@ -963,13 +978,16 @@ def _run_hook_api_bridge(
     include_tests: bool,
     trace: Any,
 ) -> set[str]:
-    hook_bridge_roles = {m.role for m in intent} | {
-        "routing_surface",
-        "trace_dependency",
-        "vector_seed",
-        "hybrid_seed",
-        "binding_surface",
-    }
+    hook_bridge_roles = sorted(
+        {m.role for m in intent}
+        | {
+            "routing_surface",
+            "trace_dependency",
+            "vector_seed",
+            "hybrid_seed",
+            "binding_surface",
+        }
+    )
     hook_bridge_seeds = [
         c for role in hook_bridge_roles for c in raw_by_role.get(role, []) if getattr(c, "uid", "")
     ]
@@ -1033,10 +1051,14 @@ def _run_structural_pool_passes(
     ]
     if not existing_pool_for_struct:
         return
-    distances = query_scoring.distances if query_scoring is not None else (
-        role_retrieval._scan_distances(scanned, query_text, embed_fn)  # noqa: SLF001
-        if scanned is not None and query_text and embed_fn is not None
-        else None
+    distances = (
+        query_scoring.distances
+        if query_scoring is not None
+        else (
+            role_retrieval._scan_distances(scanned, query_text, embed_fn)  # noqa: SLF001
+            if scanned is not None and query_text and embed_fn is not None
+            else None
+        )
     )
 
     def _distance_for(uid: str) -> float | None:
@@ -1228,9 +1250,7 @@ def _apply_vector_seed_connectivity_gate(
     }
     if not other_uids:
         return
-    conn = _vector_seed_connectivity(
-        db, [c.uid for c in vseeds if c.uid], list(other_uids)
-    )
+    conn = _vector_seed_connectivity(db, [c.uid for c in vseeds if c.uid], list(other_uids))
     if conn is None:
         return
     # Files already covered by any OTHER pool candidate (any non-vector_seed role):
@@ -1352,8 +1372,7 @@ def _bounded_lexical_span_probe_candidates(
         extras = [
             candidate
             for candidate in candidates[len(ranked) :]
-            if candidate.exact_symbol_match
-            or candidate.role in {"anchor_symbol", "overlay_anchor"}
+            if candidate.exact_symbol_match or candidate.role in {"anchor_symbol", "overlay_anchor"}
         ]
         eligible_by_role.append([*ranked, *extras])
 
@@ -1445,11 +1464,34 @@ class AxisRetrievalConfig:
     query_node_rrf_weight: float = 1.0
     query_node_mode_rrf_weight: float = 0.25
     query_node_rrf_k: int = 60
+    # Experimental pre-budget rank signals.  Weighted role-axis preserves the
+    # full intent bonus for an exact role and discounts broad axis-only
+    # overlap; role consensus boosts UIDs independently supported by several
+    # retrieval/structural pools after deduplication.
+    weighted_intent_role_axis_boost: bool = False
+    intent_role_axis_boost: float = 0.15
+    intent_axis_only_share: float = 0.25
+    role_consensus_score_boost: float = 0.05
+    role_consensus_max_extra_roles: int = 2
+    # Pre-score consensus helped architecture questions at 10k/12k, but at
+    # 8k it displaced recall-safe coverage. Gate it on the same effective
+    # profile envelope the downstream packer receives.
+    role_consensus_min_effective_tokens: int = 10_000
+    # Optional coverage-width arm: active intent roles keep the normal cap;
+    # only profiled structural roles outside the intent get the tighter cap.
+    # Universal lexical/vector/doc channels and mode roles are unaffected.
+    non_intent_structural_role_soft_cap: int | None = None
     capture_budget_trace: bool = False
     token_credit_min_utility_per_token: float | None = None
     token_credit_freeze_at_plateau: bool = False
     token_credit_plateau_upgrade_reserve_share: float = 0.0
     node_semantic_utility_weight: float = 0.0
+    # Experimental body allocator: preserve coverage, then spend a geometric
+    # percentage of the total budget in pre-budget candidate-rank order.
+    rank_decay_body_allocation: bool = False
+    rank_decay_head_share: float = 0.15
+    rank_decay_rate: float = 0.75
+    rank_decay_max_coverage_share: float = 0.65
     # Opt-in within-symbol reranker: body windows compete by query similarity
     # before Token Credit, so later render upgrades cannot restore discarded
     # non-answer lines from an otherwise relevant symbol.
@@ -1477,6 +1519,20 @@ class AxisRetrievalConfig:
     lexical_span_probe_max_candidates_per_symbol: int = 24
     lexical_span_probe_window_lines: int = 6
     lexical_span_utility_weight: float = 0.0
+
+
+def _gated_role_consensus_score_boost(
+    cfg: AxisRetrievalConfig,
+    intent: list[IntentMatch],
+) -> float:
+    """Return the pre-score consensus boost only in its validated envelope."""
+    if not cfg.intent_budget:
+        return 0.0
+    profile = ARCHITECTURE if (cfg.anchor_symbol or "").strip() else budget_for_intent(intent)
+    effective_tokens = profile.effective_tokens(cfg.base_token_budget)
+    if effective_tokens < max(0, int(cfg.role_consensus_min_effective_tokens)):
+        return 0.0
+    return max(0.0, float(cfg.role_consensus_score_boost))
 
 
 def _request_embedder(lance: Any):
@@ -1618,15 +1674,15 @@ def _run_axis_retrieval_impl(
                 budget_trace=budget_trace,
                 min_utility_per_token=cfg.token_credit_min_utility_per_token,
                 freeze_at_utility_plateau=cfg.token_credit_freeze_at_plateau,
-                plateau_upgrade_reserve_share=(
-                    cfg.token_credit_plateau_upgrade_reserve_share
-                ),
+                plateau_upgrade_reserve_share=(cfg.token_credit_plateau_upgrade_reserve_share),
                 node_semantic_utility_weight=cfg.node_semantic_utility_weight,
+                rank_decay_body_allocation=cfg.rank_decay_body_allocation,
+                rank_decay_head_share=cfg.rank_decay_head_share,
+                rank_decay_rate=cfg.rank_decay_rate,
+                rank_decay_max_coverage_share=cfg.rank_decay_max_coverage_share,
                 span_line_rerank=cfg.span_line_rerank,
                 span_rank_max_symbols=cfg.span_rank_max_symbols,
-                span_rank_max_candidates_per_symbol=(
-                    cfg.span_rank_max_candidates_per_symbol
-                ),
+                span_rank_max_candidates_per_symbol=(cfg.span_rank_max_candidates_per_symbol),
                 span_rank_max_body_lines=cfg.span_rank_max_body_lines,
                 span_query_text=question,
                 span_score_fn=span_score_fn,
@@ -1837,11 +1893,17 @@ def _run_axis_retrieval_impl(
     vseed_conn_min = int(os.getenv("AXIS_VSEED_CONN_MIN", "1") or "0")
     if vseed_conn_min > 0:
         with tr.stage("vseed_connectivity_gate"):
-            _apply_vector_seed_connectivity_gate(
-                raw_by_role, db=db, min_conn=vseed_conn_min
-            )
+            _apply_vector_seed_connectivity_gate(raw_by_role, db=db, min_conn=vseed_conn_min)
 
-    raw_by_role = axis_ranking.apply_intent_axis_boost(raw_by_role, [m.role for m in intent])
+    if cfg.weighted_intent_role_axis_boost:
+        raw_by_role = axis_ranking.apply_weighted_intent_role_axis_boost(
+            raw_by_role,
+            {match.role: match.similarity for match in intent},
+            boost=cfg.intent_role_axis_boost,
+            axis_only_share=cfg.intent_axis_only_share,
+        )
+    else:
+        raw_by_role = axis_ranking.apply_intent_axis_boost(raw_by_role, [m.role for m in intent])
 
     if cfg.query_node_rerank:
         with tr.stage("query_node_similarity"):
@@ -1875,23 +1937,20 @@ def _run_axis_retrieval_impl(
                     db=db,
                     query_text=question,
                     max_symbols=cfg.lexical_span_probe_max_symbols,
-                    max_windows_per_symbol=(
-                        cfg.lexical_span_probe_max_windows_per_symbol
-                    ),
-                    max_candidates_per_symbol=(
-                        cfg.lexical_span_probe_max_candidates_per_symbol
-                    ),
+                    max_windows_per_symbol=(cfg.lexical_span_probe_max_windows_per_symbol),
+                    max_candidates_per_symbol=(cfg.lexical_span_probe_max_candidates_per_symbol),
                     window_lines=cfg.lexical_span_probe_window_lines,
                 )
             )
-            raw_by_role = _attach_lexical_probe_spans(
-                raw_by_role, lexical_span_evidence
-            )
+            raw_by_role = _attach_lexical_probe_spans(raw_by_role, lexical_span_evidence)
 
     candidates_for_context, seed_selection_trace = seed_selector.select_context_seeds(
         raw_by_role,
         (match.role for match in intent),
         per_role_soft_cap=cfg.context_seeds_per_role,
+        role_consensus_score_boost=_gated_role_consensus_score_boost(cfg, intent),
+        role_consensus_max_extra_roles=cfg.role_consensus_max_extra_roles,
+        non_intent_structural_role_soft_cap=(cfg.non_intent_structural_role_soft_cap),
     )
     active, token_budget, render_mode, budget_profile, utility_score_fn = (
         _prepare_budgeted_candidates(
@@ -1957,10 +2016,12 @@ def _run_axis_retrieval_impl(
                     credit_trace=budget_trace,
                     min_utility_per_token=cfg.token_credit_min_utility_per_token,
                     freeze_at_utility_plateau=cfg.token_credit_freeze_at_plateau,
-                    plateau_upgrade_reserve_share=(
-                        cfg.token_credit_plateau_upgrade_reserve_share
-                    ),
+                    plateau_upgrade_reserve_share=(cfg.token_credit_plateau_upgrade_reserve_share),
                     node_semantic_utility_weight=cfg.node_semantic_utility_weight,
+                    rank_decay_body_allocation=cfg.rank_decay_body_allocation,
+                    rank_decay_head_share=cfg.rank_decay_head_share,
+                    rank_decay_rate=cfg.rank_decay_rate,
+                    rank_decay_max_coverage_share=(cfg.rank_decay_max_coverage_share),
                     query_scoring=query_scoring,
                     semantic_expansion_alpha=cfg.context_semantic_expansion_alpha,
                     semantic_expansion_structural_reserve=(
@@ -1969,9 +2030,7 @@ def _run_axis_retrieval_impl(
                     semantic_expansion_rerank=semantic_expansion_enabled,
                     span_line_rerank=cfg.span_line_rerank,
                     span_rank_max_symbols=cfg.span_rank_max_symbols,
-                    span_rank_max_candidates_per_symbol=(
-                        cfg.span_rank_max_candidates_per_symbol
-                    ),
+                    span_rank_max_candidates_per_symbol=(cfg.span_rank_max_candidates_per_symbol),
                     span_rank_max_body_lines=cfg.span_rank_max_body_lines,
                     span_query_text=question,
                     span_score_fn=span_score_fn,

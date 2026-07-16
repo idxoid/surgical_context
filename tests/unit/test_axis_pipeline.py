@@ -284,9 +284,7 @@ def test_hybrid_flags_preserve_shipped_off_order_and_enable_pregraph_sources(
     seen_at_lookahead: list[tuple[bool, bool]] = []
 
     def _lookahead(_roles, candidates, **_kwargs):
-        seen_at_lookahead.append(
-            ("vector_seed" in candidates, "hybrid_seed" in candidates)
-        )
+        seen_at_lookahead.append(("vector_seed" in candidates, "hybrid_seed" in candidates))
         return dict(candidates)
 
     monkeypatch.setattr(_lookahead_mod, "expand_candidates_via_neighbourhood", _lookahead)
@@ -332,9 +330,7 @@ def test_vector_seed_connectivity_uses_symbol_index_seek_cypher():
     assert captured["params"] == {"V": ["vector"], "O": ["structural"]}
 
 
-def test_vector_seed_connectivity_gate_is_on_by_default_with_env_off_arm(
-    stub_stages, monkeypatch
-):
+def test_vector_seed_connectivity_gate_is_on_by_default_with_env_off_arm(stub_stages, monkeypatch):
     import context_engine.axis.role_retrieval as _retr_mod
 
     monkeypatch.setattr(
@@ -630,6 +626,55 @@ def test_intent_budget_defaults_to_architecture_profile(stub_stages, monkeypatch
     assert captured["token_budget"] == 8000
     assert captured["n_seeds"] == 3
     assert result.render_mode == "hybrid"
+
+
+@pytest.mark.parametrize(
+    ("base_token_budget", "expected"),
+    [(4_000, 0.0), (5_000, 0.05), (6_000, 0.05)],
+)
+def test_role_consensus_boost_is_gated_by_effective_profile_budget(
+    base_token_budget,
+    expected,
+):
+    config = axis_pipeline.AxisRetrievalConfig(
+        base_token_budget=base_token_budget,
+        role_consensus_score_boost=0.05,
+        role_consensus_min_effective_tokens=10_000,
+    )
+    intent = [IntentMatch(role="routing_surface", similarity=0.7, description="d")]
+
+    assert axis_pipeline._gated_role_consensus_score_boost(config, intent) == expected
+
+
+def test_role_consensus_defaults_to_validated_boost():
+    config = axis_pipeline.AxisRetrievalConfig(base_token_budget=5_000)
+    intent = [IntentMatch(role="routing_surface", similarity=0.7, description="d")]
+
+    assert config.role_consensus_score_boost == 0.05
+    assert axis_pipeline._gated_role_consensus_score_boost(config, intent) == 0.05
+
+
+def test_role_consensus_boost_is_off_without_intent_budget():
+    config = axis_pipeline.AxisRetrievalConfig(
+        intent_budget=False,
+        role_consensus_score_boost=0.05,
+        role_consensus_min_effective_tokens=0,
+    )
+    intent = [IntentMatch(role="routing_surface", similarity=0.7, description="d")]
+
+    assert axis_pipeline._gated_role_consensus_score_boost(config, intent) == 0.0
+
+
+def test_role_consensus_boost_uses_impact_and_anchor_profiles():
+    impact_intent = [IntentMatch(role="impact_analysis", similarity=0.7, description="d")]
+    impact = axis_pipeline.AxisRetrievalConfig(
+        base_token_budget=6_000,
+        role_consensus_score_boost=0.05,
+    )
+    anchored = replace(impact, base_token_budget=5_000, anchor_symbol="target")
+
+    assert axis_pipeline._gated_role_consensus_score_boost(impact, impact_intent) == 0.0
+    assert axis_pipeline._gated_role_consensus_score_boost(anchored, impact_intent) == 0.05
 
 
 def test_span_line_rerank_threads_batch_scorer_and_budget_knobs(stub_stages, monkeypatch):

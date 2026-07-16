@@ -26,6 +26,7 @@ from context_engine.axis.context_builder import (
     _mad,
     _median,
     _noise_level_from_tail,
+    _rank_decay_body_credit,
     _render_bundle,
     _span_candidate_oracle_recall,
     _TokenCreditCoverageState,
@@ -887,6 +888,110 @@ def test_token_credit_trace_does_not_change_render_selection_and_records_upgrade
     assert any(transaction.phase.startswith("upgrade_") for transaction in trace.transactions)
 
 
+def test_rank_decay_body_credit_is_front_loaded_and_bounded():
+    credits = [
+        _rank_decay_body_credit(
+            12_000,
+            candidate_rank=rank,
+            head_share=0.15,
+            decay_rate=0.75,
+        )
+        for rank in range(1, 40)
+    ]
+
+    assert credits[:5] == [1800, 1350, 1012, 759, 569]
+    assert all(left >= right for left, right in zip(credits, credits[1:]))
+    assert sum(credits) <= int(12_000 * 0.15 / (1.0 - 0.75))
+
+
+def test_rank_decay_upgrades_head_body_without_relaxing_tail():
+    head_code = "def head():\n" + "    head_value = 1\n" * 40
+    tail_code = "def tail():\n" + "    tail_value = 2\n" * 40
+    bundles = [
+        ContextBundle(
+            role="r",
+            seed=_sym("head", head_code, file_path="/head.py"),
+            utility_score=1.0,
+        ),
+        ContextBundle(
+            role="r",
+            seed=_sym("tail", tail_code, file_path="/tail.py"),
+            utility_score=0.5,
+        ),
+    ]
+    trace = TokenCreditTrace()
+
+    out = _apply_render_and_budget(
+        bundles,
+        token_budget=1_000,
+        render_mode="full",
+        rank_decay_body_allocation=True,
+        rank_decay_head_share=0.50,
+        rank_decay_rate=0.0,
+        credit_trace=trace,
+    )
+
+    rendered = {bundle.seed.uid: bundle.seed.code or "" for bundle in out}
+    assert "head_value" in rendered["head"]
+    assert "tail_value" not in rendered["tail"]
+    assert trace.allocation_mode == "rank_decay"
+    assert 0.0 < trace.coverage_share <= 0.65
+    assert any(transaction.phase == "upgrade_rank_decay" for transaction in trace.transactions)
+    assert not any(
+        transaction.phase in {"upgrade_leader_relaxed", "upgrade_tail_relaxed"}
+        for transaction in trace.transactions
+    )
+
+
+def test_rank_decay_falls_back_to_legacy_when_coverage_pressure_is_high():
+    bundle = ContextBundle(
+        role="r",
+        seed=_sym(
+            "head",
+            "def head():\n" + "    value = 1\n" * 20,
+            file_path="/head.py",
+        ),
+        utility_score=1.0,
+    )
+    trace = TokenCreditTrace()
+
+    _apply_render_and_budget(
+        [bundle],
+        token_budget=500,
+        render_mode="full",
+        rank_decay_body_allocation=True,
+        rank_decay_max_coverage_share=0.0,
+        credit_trace=trace,
+    )
+
+    assert trace.coverage_share > 0.0
+    assert trace.allocation_mode == "legacy"
+    assert not any(transaction.phase == "upgrade_rank_decay" for transaction in trace.transactions)
+
+
+def test_rank_decay_pressure_threshold_relaxes_from_8k_to_12k():
+    bundle = ContextBundle(
+        role="r",
+        seed=_sym("head", "def head():\n    return 1\n", file_path="/head.py"),
+        utility_score=1.0,
+    )
+    thresholds: list[float] = []
+
+    for budget in (8_000, 10_000, 12_000):
+        trace = TokenCreditTrace()
+        _apply_render_and_budget(
+            [bundle],
+            token_budget=budget,
+            render_mode="full",
+            rank_decay_body_allocation=True,
+            rank_decay_max_coverage_share=0.65,
+            credit_trace=trace,
+        )
+        thresholds.append(trace.rank_decay_coverage_threshold)
+
+    assert thresholds == pytest.approx([0.65, 0.825, 1.0])
+
+
 def test_token_credit_density_cutoff_rejects_paid_nonpositive_tail_only_when_enabled():
     bundles = [
         ContextBundle(
@@ -1105,8 +1210,7 @@ def test_fold_groups_class_members_and_signatures_siblings():
     assert out.seed.qualified_name == "pkg.mod.Service.target"
     assert out.seed.expansion_step == "fold"
     assert {
-        (owner.uid, owner.name, owner.qualified_name)
-        for owner in out.seed.represented_owners
+        (owner.uid, owner.name, owner.qualified_name) for owner in out.seed.represented_owners
     } == {
         ("target", "target", "pkg.mod.Service.target"),
         ("helper", "helper", "pkg.mod.Service.helper"),

@@ -47,6 +47,8 @@ from typing import Any, TextIO
 
 import yaml
 
+from context_engine.axis.axis_profiles import AXIS_EDGES, axes_for_kinds
+from context_engine.axis.axis_ranking import intent_axes
 from context_engine.axis.pipeline import AxisRetrievalConfig, run_axis_retrieval
 from context_engine.database.lancedb_client import LanceDBClient
 from context_engine.database.neo4j_client import Neo4jClient
@@ -178,6 +180,7 @@ class QuestionResult:
     lexical_span_probe_seconds: float = 0.0
     lexical_span_score_audit: dict[str, Any] = field(default_factory=dict)
     gold_rank_audit: dict[str, Any] = field(default_factory=dict)
+    candidate_cohort_audit: dict[str, Any] = field(default_factory=dict)
     expected_file_layers: list[dict[str, Any]] = field(default_factory=list)
     seed_symbol_recall: float = 0.0
     pool_symbol_recall: float = 0.0
@@ -233,6 +236,7 @@ class QuestionResult:
             "lexical_span_probe_seconds": self.lexical_span_probe_seconds,
             "lexical_span_score_audit": self.lexical_span_score_audit,
             "gold_rank_audit": self.gold_rank_audit,
+            "candidate_cohort_audit": self.candidate_cohort_audit,
             "expected_file_layers": self.expected_file_layers,
             "seed_symbol_recall": self.seed_symbol_recall,
             "pool_symbol_recall": self.pool_symbol_recall,
@@ -544,18 +548,23 @@ def _lexical_span_score_audit(
         "scored_other_candidates": sum(
             getattr(item, "lexical_span_score", None) is not None for item in other_items
         ),
-        "mean_gold_owner_score": (
-            sum(gold_scores) / len(gold_scores) if gold_scores else 0.0
-        ),
-        "mean_other_score": (
-            sum(other_scores) / len(other_scores) if other_scores else 0.0
-        ),
+        "mean_gold_owner_score": (sum(gold_scores) / len(gold_scores) if gold_scores else 0.0),
+        "mean_other_score": (sum(other_scores) / len(other_scores) if other_scores else 0.0),
         "auc": auc,
         "gold_precision_at_owner_count": top_gold / cutoff if cutoff else 0.0,
     }
 
 
 _GOLD_RANK_CUTOFFS = (1, 3, 5, 10, 20, 40, 80, 160)
+_RANK_SPEND_BUCKETS = (
+    ("1", 1, 1),
+    ("2-3", 2, 3),
+    ("4-5", 4, 5),
+    ("6-10", 6, 10),
+    ("11-20", 11, 20),
+    ("21-40", 21, 40),
+    ("41+", 41, None),
+)
 
 
 def _first_matching_rank(items: list[Any], predicate) -> int | None:
@@ -565,6 +574,90 @@ def _first_matching_rank(items: list[Any], predicate) -> int | None:
     )
 
 
+def _candidate_rank_spend_audit(
+    ranked_candidates: list[Any],
+    budget_trace: Any | None,
+) -> dict[str, Any]:
+    """Relate Token Credit spend to the pre-budget candidate rank.
+
+    Coverage is intentionally reported separately from upgrades: a wide cheap
+    signature floor can be recall-safe while body/rich-render spend should be
+    concentrated in the ranked head. Transactions are keyed by bundle seed
+    UID, which is also the stable identity in ``ranked_candidates``.
+    """
+    rank_by_uid: dict[str, int] = {}
+    for rank, candidate in enumerate(ranked_candidates, start=1):
+        uid = str(getattr(candidate, "uid", "") or "")
+        if uid:
+            rank_by_uid.setdefault(uid, rank)
+
+    bucket_rows = {
+        label: {
+            "coverage_tokens": 0,
+            "upgrade_tokens": 0,
+            "other_tokens": 0,
+            "transactions": 0,
+        }
+        for label, _lower, _upper in _RANK_SPEND_BUCKETS
+    }
+    bucket_rows["unranked"] = {
+        "coverage_tokens": 0,
+        "upgrade_tokens": 0,
+        "other_tokens": 0,
+        "transactions": 0,
+    }
+    totals = {"coverage_tokens": 0, "upgrade_tokens": 0, "other_tokens": 0}
+    upgrade_tokens_at = {str(cutoff): 0 for cutoff in _GOLD_RANK_CUTOFFS}
+
+    def bucket_for(rank: int | None) -> str:
+        if rank is None:
+            return "unranked"
+        for label, lower, upper in _RANK_SPEND_BUCKETS:
+            if rank >= lower and (upper is None or rank <= upper):
+                return label
+        return "unranked"
+
+    for transaction in list(getattr(budget_trace, "transactions", ()) or ()):
+        # A fold swap can theoretically reduce first-wins printed size. This
+        # audit measures tokens bought, not net render compaction, so only
+        # positive deltas count as spend.
+        tokens = max(0, int(getattr(transaction, "delta_tokens", 0) or 0))
+        phase = str(getattr(transaction, "phase", "") or "")
+        if phase == "coverage":
+            field = "coverage_tokens"
+        elif phase.startswith("upgrade_"):
+            field = "upgrade_tokens"
+        else:
+            field = "other_tokens"
+        uid = str(getattr(transaction, "uid", "") or "")
+        rank = rank_by_uid.get(uid)
+        row = bucket_rows[bucket_for(rank)]
+        row[field] += tokens
+        row["transactions"] += 1
+        totals[field] += tokens
+        if field == "upgrade_tokens" and rank is not None:
+            for cutoff in _GOLD_RANK_CUTOFFS:
+                if rank <= cutoff:
+                    upgrade_tokens_at[str(cutoff)] += tokens
+
+    upgrade_total = totals["upgrade_tokens"]
+    return {
+        "candidate_count": len(rank_by_uid),
+        "allocation_mode": str(getattr(budget_trace, "allocation_mode", "legacy")),
+        "coverage_share": float(getattr(budget_trace, "coverage_share", 0.0) or 0.0),
+        "rank_decay_coverage_threshold": float(
+            getattr(budget_trace, "rank_decay_coverage_threshold", 0.0) or 0.0
+        ),
+        **totals,
+        "upgrade_tokens_at": upgrade_tokens_at,
+        "upgrade_share_at": {
+            cutoff: tokens / upgrade_total if upgrade_total else 0.0
+            for cutoff, tokens in upgrade_tokens_at.items()
+        },
+        "by_rank": bucket_rows,
+    }
+
+
 def _gold_rank_funnel(rows: list[dict[str, Any]]) -> dict[str, Any]:
     def stage(field: str) -> dict[str, Any]:
         ranks = [int(row[field]) for row in rows if row.get(field) is not None]
@@ -572,9 +665,7 @@ def _gold_rank_funnel(rows: list[dict[str, Any]]) -> dict[str, Any]:
             "present": len(ranks),
             "recall": len(ranks) / len(rows) if rows else 0.0,
             "recall_at": {
-                str(cutoff): (
-                    sum(rank <= cutoff for rank in ranks) / len(rows) if rows else 0.0
-                )
+                str(cutoff): (sum(rank <= cutoff for rank in ranks) / len(rows) if rows else 0.0)
                 for cutoff in _GOLD_RANK_CUTOFFS
             },
         }
@@ -585,8 +676,7 @@ def _gold_rank_funnel(rows: list[dict[str, Any]]) -> dict[str, Any]:
         "coverage": stage("coverage_rank"),
         "final": stage("final_rank"),
         "retrieval_missing_but_final": sum(
-            row.get("utility_rank") is None and row.get("final_rank") is not None
-            for row in rows
+            row.get("utility_rank") is None and row.get("final_rank") is not None for row in rows
         ),
         "utility_not_coverage_but_final": sum(
             row.get("utility_rank") is not None
@@ -595,8 +685,7 @@ def _gold_rank_funnel(rows: list[dict[str, Any]]) -> dict[str, Any]:
             for row in rows
         ),
         "coverage_not_final": sum(
-            row.get("coverage_rank") is not None and row.get("final_rank") is None
-            for row in rows
+            row.get("coverage_rank") is not None and row.get("final_rank") is None for row in rows
         ),
     }
 
@@ -614,8 +703,7 @@ def _gold_rank_audit(
         if str(getattr(transaction, "phase", "") or "") == "coverage"
     ]
     coverage_uids = [
-        str(getattr(transaction, "uid", "") or "")
-        for transaction in coverage_transactions
+        str(getattr(transaction, "uid", "") or "") for transaction in coverage_transactions
     ]
 
     owners: dict[tuple[str, str], dict[str, Any]] = {}
@@ -628,6 +716,7 @@ def _gold_rank_audit(
 
     owner_rows: list[dict[str, Any]] = []
     for (file_path, symbol_key), gold in owners.items():
+
         def matches_owner(item: Any, expected: dict[str, Any] = gold) -> bool:
             return _item_matches_span_owner(item, expected)
 
@@ -637,9 +726,7 @@ def _gold_rank_audit(
             if matches_owner(candidate)
         }
         utility_rank = _first_matching_rank(ranked_candidates, matches_owner)
-        ranked_match = (
-            ranked_candidates[utility_rank - 1] if utility_rank is not None else None
-        )
+        ranked_match = ranked_candidates[utility_rank - 1] if utility_rank is not None else None
         owner_rows.append(
             {
                 "file_path": file_path,
@@ -665,6 +752,7 @@ def _gold_rank_audit(
         symbol = str(expected_symbol or "").strip()
         if not symbol:
             continue
+
         def matches_symbol(item: Any, expected: str = symbol) -> bool:
             return _symbol_matches(item, expected)
 
@@ -674,9 +762,7 @@ def _gold_rank_audit(
             if matches_symbol(candidate)
         }
         utility_rank = _first_matching_rank(ranked_candidates, matches_symbol)
-        ranked_match = (
-            ranked_candidates[utility_rank - 1] if utility_rank is not None else None
-        )
+        ranked_match = ranked_candidates[utility_rank - 1] if utility_rank is not None else None
         symbol_rows.append(
             {
                 "symbol": symbol,
@@ -700,6 +786,10 @@ def _gold_rank_audit(
         "candidate_count": len(ranked_candidates),
         "coverage_count": len(coverage_transactions),
         "rendered_symbol_count": len(rendered_symbols),
+        "candidate_rank_spend": _candidate_rank_spend_audit(
+            ranked_candidates,
+            budget_trace,
+        ),
         "owners": owner_rows,
         "symbols": symbol_rows,
         "owner_funnel": _gold_rank_funnel(owner_rows),
@@ -753,11 +843,248 @@ def _candidate_audit_row(candidate: Any, rank: int) -> dict[str, Any]:
         "retrieval_channels": list(getattr(candidate, "retrieval_channels", ()) or ()),
         "retrieval_spans": list(getattr(candidate, "retrieval_spans", ()) or ()),
         "exact_symbol_match": bool(getattr(candidate, "exact_symbol_match", False)),
-        "lexical_span_score": _float_or_none(
-            getattr(candidate, "lexical_span_score", None)
-        ),
+        "lexical_span_score": _float_or_none(getattr(candidate, "lexical_span_score", None)),
         "supporting_roles": list(getattr(candidate, "supporting_roles", ()) or ()),
         "selection_reasons": list(getattr(candidate, "selection_reasons", ()) or ()),
+        "role_consensus_bonus": _float_or_none(getattr(candidate, "role_consensus_bonus", None)),
+    }
+
+
+def _edge_axes(edge_type: str) -> frozenset[str]:
+    """Return traversal axes directly evidenced by a candidate edge."""
+    edge = str(edge_type or "").upper()
+    if not edge:
+        return frozenset()
+    wildcard_prefix = edge[:-1] if edge.endswith("*") else ""
+    return frozenset(
+        axis
+        for axis, relationships in AXIS_EDGES.items()
+        if any(
+            relationship == edge or (wildcard_prefix and relationship.startswith(wildcard_prefix))
+            for relationship in relationships
+        )
+    )
+
+
+def _candidate_axis_signature(candidate: Any) -> tuple[str, str]:
+    """Classify a candidate by its strongest available structural axis.
+
+    Kind evidence is strongest, followed by an explicit traversal edge.  A
+    role profile is only a fallback for candidates whose producer discarded
+    both; keeping the basis separate prevents an intent-shaped role label from
+    masquerading as direct structural evidence in the audit.
+    """
+    kind_axes = axes_for_kinds(frozenset(getattr(candidate, "satisfying_kinds", ()) or ()))
+    if kind_axes:
+        return "+".join(sorted(kind_axes)), "kind"
+    edge_axes = _edge_axes(str(getattr(candidate, "edge_type", "") or ""))
+    if edge_axes:
+        return "+".join(sorted(edge_axes)), "edge"
+    roles = tuple(getattr(candidate, "supporting_roles", ()) or ()) or (
+        str(getattr(candidate, "role", "") or ""),
+    )
+    profiled_axes = intent_axes(role for role in roles if role)
+    if profiled_axes:
+        return "+".join(sorted(profiled_axes)), "role_profile"
+    return "axisless", "none"
+
+
+def _candidate_gold_class(
+    candidate: Any,
+    *,
+    expected_files: list[str],
+    expected_symbols: list[str],
+    expected_spans: list[dict[str, Any]],
+) -> str:
+    if any(_item_matches_span_owner(candidate, span) for span in expected_spans):
+        return "owner"
+    if any(_symbol_matches(candidate, symbol) for symbol in expected_symbols):
+        return "symbol"
+    path = str(getattr(candidate, "file_path", "") or "")
+    if any(_file_matches(path, expected_file) for expected_file in expected_files):
+        return "file"
+    return "other"
+
+
+def _new_candidate_cohort_row() -> dict[str, int | float]:
+    return {
+        "candidates": 0,
+        "owner_gold": 0,
+        "symbol_gold": 0,
+        "file_gold": 0,
+        "other": 0,
+        "top5": 0,
+        "top10": 0,
+        "rank_sum": 0,
+        "exact_gold_top5": 0,
+        "exact_gold_top10": 0,
+        "exact_gold_rank_sum": 0,
+        "labelled_gold_top10": 0,
+        "labelled_gold_rank_sum": 0,
+        "coverage_candidates": 0,
+        "upgraded_candidates": 0,
+        "coverage_tokens": 0,
+        "upgrade_tokens": 0,
+    }
+
+
+def _finalise_candidate_cohort_row(
+    row: dict[str, int | float],
+) -> dict[str, int | float]:
+    candidates = int(row.get("candidates", 0))
+    labelled_gold = sum(
+        int(row.get(field, 0)) for field in ("owner_gold", "symbol_gold", "file_gold")
+    )
+    exact_gold = sum(int(row.get(field, 0)) for field in ("owner_gold", "symbol_gold"))
+    row["labelled_gold"] = labelled_gold
+    row["exact_gold"] = exact_gold
+    row["labelled_gold_rate"] = labelled_gold / candidates if candidates else 0.0
+    row["exact_gold_rate"] = exact_gold / candidates if candidates else 0.0
+    row["mean_rank"] = float(row.get("rank_sum", 0)) / candidates if candidates else 0.0
+    row["mean_exact_gold_rank"] = (
+        float(row.get("exact_gold_rank_sum", 0)) / exact_gold if exact_gold else None
+    )
+    row["exact_gold_top10_share"] = (
+        int(row.get("exact_gold_top10", 0)) / exact_gold if exact_gold else 0.0
+    )
+    row["labelled_gold_top10_share"] = (
+        int(row.get("labelled_gold_top10", 0)) / labelled_gold if labelled_gold else 0.0
+    )
+    row["coverage_rate"] = (
+        int(row.get("coverage_candidates", 0)) / candidates if candidates else 0.0
+    )
+    return row
+
+
+def _candidate_cohort_audit(
+    ranked_candidates: list[Any],
+    *,
+    expected_files: list[str],
+    expected_symbols: list[str],
+    expected_spans: list[dict[str, Any]],
+    intent_matches: list[tuple[str, float]],
+    budget_trace: Any | None,
+) -> dict[str, Any]:
+    """Explain the complete pre-budget pool by role, axis and intent fit."""
+    intent_roles = tuple(role for role, _similarity in intent_matches)
+    question_axes = intent_axes(intent_roles)
+    coverage_uids: set[str] = set()
+    upgraded_uids: set[str] = set()
+    spend_by_uid: defaultdict[str, Counter[str]] = defaultdict(Counter)
+    for transaction in list(getattr(budget_trace, "transactions", ()) or ()):
+        uid = str(getattr(transaction, "uid", "") or "")
+        if not uid:
+            continue
+        phase = str(getattr(transaction, "phase", "") or "")
+        tokens = max(0, int(getattr(transaction, "delta_tokens", 0) or 0))
+        if phase == "coverage":
+            coverage_uids.add(uid)
+            spend_by_uid[uid]["coverage_tokens"] += tokens
+        elif phase.startswith("upgrade_"):
+            upgraded_uids.add(uid)
+            spend_by_uid[uid]["upgrade_tokens"] += tokens
+
+    groups: dict[str, defaultdict[str, dict[str, int | float]]] = {
+        dimension: defaultdict(_new_candidate_cohort_row)
+        for dimension in (
+            "by_role",
+            "by_role_signature",
+            "by_role_intent_alignment",
+            "by_axis",
+            "by_axis_basis",
+            "by_intent_alignment",
+        )
+    }
+    cross: defaultdict[str, dict[str, int | float]] = defaultdict(_new_candidate_cohort_row)
+    total = _new_candidate_cohort_row()
+    multi_role_candidates = 0
+
+    for rank, candidate in enumerate(ranked_candidates, start=1):
+        uid = str(getattr(candidate, "uid", "") or "")
+        primary_role = str(getattr(candidate, "role", "") or "(none)")
+        supporting_roles = frozenset(
+            str(value)
+            for value in (getattr(candidate, "supporting_roles", ()) or (primary_role,))
+            if value
+        )
+        role_signature = "+".join(sorted(supporting_roles)) or "(none)"
+        if len(supporting_roles) > 1:
+            multi_role_candidates += 1
+        axis, axis_basis = _candidate_axis_signature(candidate)
+        candidate_axes = frozenset() if axis == "axisless" else frozenset(axis.split("+"))
+        role_match = bool(supporting_roles.intersection(intent_roles))
+        axis_match = bool(candidate_axes.intersection(question_axes))
+        if role_match and axis_match:
+            alignment = "role+axis"
+        elif role_match:
+            alignment = "role_only"
+        elif axis_match:
+            alignment = "axis_only"
+        else:
+            alignment = "none"
+        gold_class = _candidate_gold_class(
+            candidate,
+            expected_files=expected_files,
+            expected_symbols=expected_symbols,
+            expected_spans=expected_spans,
+        )
+
+        def update(
+            row: dict[str, int | float],
+            *,
+            gold_class: str = gold_class,
+            rank: int = rank,
+            uid: str = uid,
+        ) -> None:
+            row["candidates"] += 1
+            row[f"{gold_class}_gold" if gold_class != "other" else "other"] += 1
+            row["rank_sum"] += rank
+            row["top5"] += int(rank <= 5)
+            row["top10"] += int(rank <= 10)
+            if gold_class != "other":
+                row["labelled_gold_rank_sum"] += rank
+                row["labelled_gold_top10"] += int(rank <= 10)
+            if gold_class in {"owner", "symbol"}:
+                row["exact_gold_rank_sum"] += rank
+                row["exact_gold_top5"] += int(rank <= 5)
+                row["exact_gold_top10"] += int(rank <= 10)
+            row["coverage_candidates"] += int(uid in coverage_uids)
+            row["upgraded_candidates"] += int(uid in upgraded_uids)
+            row["coverage_tokens"] += spend_by_uid[uid]["coverage_tokens"]
+            row["upgrade_tokens"] += spend_by_uid[uid]["upgrade_tokens"]
+
+        for dimension, key in (
+            ("by_role_signature", role_signature),
+            ("by_axis", axis),
+            ("by_axis_basis", axis_basis),
+            ("by_intent_alignment", alignment),
+        ):
+            update(groups[dimension][key])
+        for supporting_role in supporting_roles or {"(none)"}:
+            update(groups["by_role"][supporting_role])
+            update(groups["by_role_intent_alignment"][f"{supporting_role}|{alignment}"])
+        update(cross[f"{role_signature}|{axis}|{alignment}"])
+        update(total)
+
+    def finalise_group(
+        rows: dict[str, dict[str, int | float]],
+    ) -> dict[str, dict[str, int | float]]:
+        return {
+            key: _finalise_candidate_cohort_row(dict(row))
+            for key, row in sorted(
+                rows.items(),
+                key=lambda item: (-int(item[1].get("candidates", 0)), item[0]),
+            )
+        }
+
+    return {
+        "candidate_count": len(ranked_candidates),
+        "multi_role_candidates": multi_role_candidates,
+        "intent_roles": list(intent_roles),
+        "intent_axes": sorted(question_axes),
+        "totals": _finalise_candidate_cohort_row(total),
+        **{dimension: finalise_group(rows) for dimension, rows in groups.items()},
+        "by_role_axis_intent": finalise_group(cross),
     }
 
 
@@ -835,9 +1162,7 @@ def _populate_candidate_audit(
     top_limit: int = _TOP_CANDIDATE_AUDIT_LIMIT,
 ) -> None:
     candidates = list(getattr(retrieval, "candidates_for_context", []) or [])
-    ranked_candidates = list(
-        getattr(retrieval, "budget_ranked_candidates", []) or candidates
-    )
+    ranked_candidates = list(getattr(retrieval, "budget_ranked_candidates", []) or candidates)
     rendered_symbols = _unique_rendered_symbols(getattr(retrieval, "bundles", []) or [])
 
     result.candidate_relation_histogram = _sorted_counter_dict(
@@ -862,6 +1187,14 @@ def _populate_candidate_audit(
         ranked_candidates,
         rendered_symbols,
         getattr(retrieval, "budget_trace", None),
+    )
+    result.candidate_cohort_audit = _candidate_cohort_audit(
+        ranked_candidates,
+        expected_files=result.expected_files,
+        expected_symbols=result.expected_symbols,
+        expected_spans=result.expected_spans,
+        intent_matches=result.intent_matches,
+        budget_trace=getattr(retrieval, "budget_trace", None),
     )
 
 
@@ -1040,10 +1373,21 @@ def _run_axis_retrieval_for_question(
     query_node_rrf_weight: float,
     query_node_mode_rrf_weight: float,
     query_node_rrf_k: int,
+    weighted_intent_role_axis_boost: bool,
+    intent_role_axis_boost: float,
+    intent_axis_only_share: float,
+    role_consensus_score_boost: float,
+    role_consensus_max_extra_roles: int,
+    role_consensus_min_effective_tokens: int,
+    non_intent_structural_role_soft_cap: int | None,
     token_credit_min_utility_per_token: float | None,
     token_credit_freeze_at_plateau: bool,
     token_credit_plateau_upgrade_reserve_share: float,
     node_semantic_utility_weight: float,
+    rank_decay_body_allocation: bool,
+    rank_decay_head_share: float,
+    rank_decay_rate: float,
+    rank_decay_max_coverage_share: float,
     span_line_rerank: bool,
     span_rank_max_symbols: int,
     span_rank_max_candidates_per_symbol: int,
@@ -1090,15 +1434,24 @@ def _run_axis_retrieval_for_question(
             query_node_rrf_weight=query_node_rrf_weight,
             query_node_mode_rrf_weight=query_node_mode_rrf_weight,
             query_node_rrf_k=query_node_rrf_k,
+            weighted_intent_role_axis_boost=weighted_intent_role_axis_boost,
+            intent_role_axis_boost=intent_role_axis_boost,
+            intent_axis_only_share=intent_axis_only_share,
+            role_consensus_score_boost=role_consensus_score_boost,
+            role_consensus_max_extra_roles=role_consensus_max_extra_roles,
+            role_consensus_min_effective_tokens=(role_consensus_min_effective_tokens),
+            non_intent_structural_role_soft_cap=(non_intent_structural_role_soft_cap),
             # Report-only transaction capture. TokenCreditTrace records
             # accepted purchases but never changes selection.
             capture_budget_trace=True,
             token_credit_min_utility_per_token=token_credit_min_utility_per_token,
             token_credit_freeze_at_plateau=token_credit_freeze_at_plateau,
-            token_credit_plateau_upgrade_reserve_share=(
-                token_credit_plateau_upgrade_reserve_share
-            ),
+            token_credit_plateau_upgrade_reserve_share=(token_credit_plateau_upgrade_reserve_share),
             node_semantic_utility_weight=node_semantic_utility_weight,
+            rank_decay_body_allocation=rank_decay_body_allocation,
+            rank_decay_head_share=rank_decay_head_share,
+            rank_decay_rate=rank_decay_rate,
+            rank_decay_max_coverage_share=rank_decay_max_coverage_share,
             span_line_rerank=span_line_rerank,
             span_rank_max_symbols=span_rank_max_symbols,
             span_rank_max_candidates_per_symbol=span_rank_max_candidates_per_symbol,
@@ -1113,9 +1466,7 @@ def _run_axis_retrieval_for_question(
             hybrid_seed_limit=hybrid_seed_limit,
             pregraph_lexical_span_probe=pregraph_lexical_span_probe,
             lexical_span_probe_max_symbols=lexical_span_probe_max_symbols,
-            lexical_span_probe_max_windows_per_symbol=(
-                lexical_span_probe_max_windows_per_symbol
-            ),
+            lexical_span_probe_max_windows_per_symbol=(lexical_span_probe_max_windows_per_symbol),
             lexical_span_probe_window_lines=lexical_span_probe_window_lines,
             lexical_span_utility_weight=lexical_span_utility_weight,
             trace=timer,
@@ -1148,10 +1499,21 @@ def run_question(
     query_node_rrf_weight: float = 1.0,
     query_node_mode_rrf_weight: float = 0.25,
     query_node_rrf_k: int = 60,
+    weighted_intent_role_axis_boost: bool = False,
+    intent_role_axis_boost: float = 0.15,
+    intent_axis_only_share: float = 0.25,
+    role_consensus_score_boost: float = 0.05,
+    role_consensus_max_extra_roles: int = 2,
+    role_consensus_min_effective_tokens: int = 10_000,
+    non_intent_structural_role_soft_cap: int | None = None,
     token_credit_min_utility_per_token: float | None = None,
     token_credit_freeze_at_plateau: bool = False,
     token_credit_plateau_upgrade_reserve_share: float = 0.0,
     node_semantic_utility_weight: float = 0.0,
+    rank_decay_body_allocation: bool = False,
+    rank_decay_head_share: float = 0.15,
+    rank_decay_rate: float = 0.75,
+    rank_decay_max_coverage_share: float = 0.65,
     span_line_rerank: bool = False,
     span_rank_max_symbols: int = 48,
     span_rank_max_candidates_per_symbol: int = 24,
@@ -1213,12 +1575,21 @@ def run_question(
         query_node_rrf_weight=query_node_rrf_weight,
         query_node_mode_rrf_weight=query_node_mode_rrf_weight,
         query_node_rrf_k=query_node_rrf_k,
+        weighted_intent_role_axis_boost=weighted_intent_role_axis_boost,
+        intent_role_axis_boost=intent_role_axis_boost,
+        intent_axis_only_share=intent_axis_only_share,
+        role_consensus_score_boost=role_consensus_score_boost,
+        role_consensus_max_extra_roles=role_consensus_max_extra_roles,
+        role_consensus_min_effective_tokens=role_consensus_min_effective_tokens,
+        non_intent_structural_role_soft_cap=(non_intent_structural_role_soft_cap),
         token_credit_min_utility_per_token=token_credit_min_utility_per_token,
         token_credit_freeze_at_plateau=token_credit_freeze_at_plateau,
-        token_credit_plateau_upgrade_reserve_share=(
-            token_credit_plateau_upgrade_reserve_share
-        ),
+        token_credit_plateau_upgrade_reserve_share=(token_credit_plateau_upgrade_reserve_share),
         node_semantic_utility_weight=node_semantic_utility_weight,
+        rank_decay_body_allocation=rank_decay_body_allocation,
+        rank_decay_head_share=rank_decay_head_share,
+        rank_decay_rate=rank_decay_rate,
+        rank_decay_max_coverage_share=rank_decay_max_coverage_share,
         span_line_rerank=span_line_rerank,
         span_rank_max_symbols=span_rank_max_symbols,
         span_rank_max_candidates_per_symbol=span_rank_max_candidates_per_symbol,
@@ -1233,9 +1604,7 @@ def run_question(
         hybrid_seed_limit=hybrid_seed_limit,
         pregraph_lexical_span_probe=pregraph_lexical_span_probe,
         lexical_span_probe_max_symbols=lexical_span_probe_max_symbols,
-        lexical_span_probe_max_windows_per_symbol=(
-            lexical_span_probe_max_windows_per_symbol
-        ),
+        lexical_span_probe_max_windows_per_symbol=(lexical_span_probe_max_windows_per_symbol),
         lexical_span_probe_window_lines=lexical_span_probe_window_lines,
         lexical_span_utility_weight=lexical_span_utility_weight,
     )
@@ -1396,9 +1765,7 @@ def _aggregate_gold_rank_funnel(
             "median_rank": _rank_percentile(ranks, 0.50),
             "p90_rank": _rank_percentile(ranks, 0.90),
             "recall_at": {
-                str(cutoff): (
-                    sum(rank <= cutoff for rank in ranks) / len(rows) if rows else 0.0
-                )
+                str(cutoff): (sum(rank <= cutoff for rank in ranks) / len(rows) if rows else 0.0)
                 for cutoff in _GOLD_RANK_CUTOFFS
             },
         }
@@ -1414,8 +1781,7 @@ def _aggregate_gold_rank_funnel(
         "coverage": stage("coverage_rank"),
         "final": stage("final_rank"),
         "retrieval_missing_but_final": sum(
-            row.get("utility_rank") is None and row.get("final_rank") is not None
-            for row in rows
+            row.get("utility_rank") is None and row.get("final_rank") is not None for row in rows
         ),
         "utility_not_coverage_but_final": sum(
             row.get("utility_rank") is not None
@@ -1424,9 +1790,176 @@ def _aggregate_gold_rank_funnel(
             for row in rows
         ),
         "coverage_not_final": sum(
-            row.get("coverage_rank") is not None and row.get("final_rank") is None
-            for row in rows
+            row.get("coverage_rank") is not None and row.get("final_rank") is None for row in rows
         ),
+    }
+
+
+def _aggregate_candidate_rank_spend(results: list[QuestionResult]) -> dict[str, Any]:
+    audits = [
+        spend
+        for result in results
+        if result.gold_rank_audit and (spend := result.gold_rank_audit.get("candidate_rank_spend"))
+    ]
+    totals = {
+        field: sum(int(audit.get(field, 0)) for audit in audits)
+        for field in ("coverage_tokens", "upgrade_tokens", "other_tokens")
+    }
+    bucket_labels = [label for label, _lower, _upper in _RANK_SPEND_BUCKETS] + ["unranked"]
+    by_rank: dict[str, dict[str, int | float]] = {}
+    for label in bucket_labels:
+        row = {
+            field: sum(
+                int((audit.get("by_rank", {}).get(label, {}) or {}).get(field, 0))
+                for audit in audits
+            )
+            for field in (
+                "coverage_tokens",
+                "upgrade_tokens",
+                "other_tokens",
+                "transactions",
+            )
+        }
+        row["upgrade_share"] = (
+            int(row["upgrade_tokens"]) / totals["upgrade_tokens"]
+            if totals["upgrade_tokens"]
+            else 0.0
+        )
+        by_rank[label] = row
+
+    upgrade_tokens_at = {
+        str(cutoff): sum(
+            int((audit.get("upgrade_tokens_at", {}) or {}).get(str(cutoff), 0)) for audit in audits
+        )
+        for cutoff in _GOLD_RANK_CUTOFFS
+    }
+    return {
+        "questions": len(audits),
+        "allocation_mode_counts": dict(
+            Counter(str(audit.get("allocation_mode") or "legacy") for audit in audits)
+        ),
+        "mean_coverage_share": (
+            sum(float(audit.get("coverage_share", 0.0)) for audit in audits) / len(audits)
+            if audits
+            else 0.0
+        ),
+        "mean_rank_decay_coverage_threshold": (
+            sum(float(audit.get("rank_decay_coverage_threshold", 0.0)) for audit in audits)
+            / len(audits)
+            if audits
+            else 0.0
+        ),
+        **totals,
+        "upgrade_tokens_at": upgrade_tokens_at,
+        "upgrade_share_at": {
+            cutoff: tokens / totals["upgrade_tokens"] if totals["upgrade_tokens"] else 0.0
+            for cutoff, tokens in upgrade_tokens_at.items()
+        },
+        "by_rank": by_rank,
+    }
+
+
+_CANDIDATE_COHORT_ADDITIVE_FIELDS = (
+    "candidates",
+    "owner_gold",
+    "symbol_gold",
+    "file_gold",
+    "other",
+    "top5",
+    "top10",
+    "rank_sum",
+    "exact_gold_top5",
+    "exact_gold_top10",
+    "exact_gold_rank_sum",
+    "labelled_gold_top10",
+    "labelled_gold_rank_sum",
+    "coverage_candidates",
+    "upgraded_candidates",
+    "coverage_tokens",
+    "upgrade_tokens",
+)
+
+
+def _aggregate_candidate_cohorts(results: list[QuestionResult]) -> dict[str, Any]:
+    audits = [result.candidate_cohort_audit for result in results if result.candidate_cohort_audit]
+
+    def merge_row(target: dict[str, int | float], source: dict[str, Any]) -> None:
+        for metric in _CANDIDATE_COHORT_ADDITIVE_FIELDS:
+            target[metric] += int(source.get(metric, 0) or 0)
+
+    def merge_group(
+        target: defaultdict[str, dict[str, int | float]],
+        source: dict[str, Any],
+        *,
+        prefix: str = "",
+    ) -> None:
+        for key, row in source.items():
+            merge_row(target[f"{prefix}{key}"], row)
+
+    dimensions = (
+        "by_role",
+        "by_role_signature",
+        "by_role_intent_alignment",
+        "by_axis",
+        "by_axis_basis",
+        "by_intent_alignment",
+        "by_role_axis_intent",
+    )
+    groups = {dimension: defaultdict(_new_candidate_cohort_row) for dimension in dimensions}
+    by_top_intent: defaultdict[str, dict[str, int | float]] = defaultdict(_new_candidate_cohort_row)
+    by_top_intent_role: defaultdict[str, dict[str, int | float]] = defaultdict(
+        _new_candidate_cohort_row
+    )
+    by_top_intent_axis: defaultdict[str, dict[str, int | float]] = defaultdict(
+        _new_candidate_cohort_row
+    )
+    totals = _new_candidate_cohort_row()
+    intent_role_questions: Counter[str] = Counter()
+    intent_axis_questions: Counter[str] = Counter()
+
+    for audit in audits:
+        for dimension in dimensions:
+            merge_group(groups[dimension], audit.get(dimension, {}) or {})
+        merge_row(totals, audit.get("totals", {}) or {})
+        intent_roles_for_question = list(audit.get("intent_roles", []) or [])
+        top_intent = str(intent_roles_for_question[0]) if intent_roles_for_question else "(none)"
+        intent_role_questions.update(intent_roles_for_question or ["(none)"])
+        intent_axis_questions.update(list(audit.get("intent_axes", []) or ["axisless"]))
+        merge_row(by_top_intent[top_intent], audit.get("totals", {}) or {})
+        merge_group(
+            by_top_intent_role,
+            audit.get("by_role", {}) or {},
+            prefix=f"{top_intent}|",
+        )
+        merge_group(
+            by_top_intent_axis,
+            audit.get("by_axis", {}) or {},
+            prefix=f"{top_intent}|",
+        )
+
+    def finalise_group(
+        rows: dict[str, dict[str, int | float]],
+    ) -> dict[str, dict[str, int | float]]:
+        return {
+            key: _finalise_candidate_cohort_row(dict(row))
+            for key, row in sorted(
+                rows.items(),
+                key=lambda item: (-int(item[1].get("candidates", 0)), item[0]),
+            )
+        }
+
+    return {
+        "questions": len(audits),
+        "multi_role_candidates": sum(
+            int(audit.get("multi_role_candidates", 0)) for audit in audits
+        ),
+        "intent_role_question_counts": _sorted_counter_dict(intent_role_questions),
+        "intent_axis_question_counts": _sorted_counter_dict(intent_axis_questions),
+        "totals": _finalise_candidate_cohort_row(totals),
+        **{dimension: finalise_group(rows) for dimension, rows in groups.items()},
+        "by_top_intent": finalise_group(by_top_intent),
+        "by_top_intent_role": finalise_group(by_top_intent_role),
+        "by_top_intent_axis": finalise_group(by_top_intent_axis),
     }
 
 
@@ -1540,17 +2073,15 @@ def summarise(results: list[QuestionResult]) -> dict[str, Any]:
         bundle_relation_totals.update(r.bundle_relation_histogram)
 
     lexical_score_audits = [
-        result.lexical_span_score_audit
-        for result in scored
-        if result.lexical_span_score_audit
+        result.lexical_span_score_audit for result in scored if result.lexical_span_score_audit
     ]
     lexical_score_auc_values = [
-        float(audit["auc"])
-        for audit in lexical_score_audits
-        if audit.get("auc") is not None
+        float(audit["auc"]) for audit in lexical_score_audits if audit.get("auc") is not None
     ]
     owner_gold_rank_funnel = _aggregate_gold_rank_funnel(scored, row_key="owners")
     symbol_gold_rank_funnel = _aggregate_gold_rank_funnel(scored, row_key="symbols")
+    candidate_rank_spend = _aggregate_candidate_rank_spend(scored)
+    candidate_cohorts = _aggregate_candidate_cohorts(scored)
 
     return {
         "scored": len(scored),
@@ -1599,13 +2130,13 @@ def summarise(results: list[QuestionResult]) -> dict[str, Any]:
             "owners": owner_gold_rank_funnel,
             "symbols": symbol_gold_rank_funnel,
         },
+        "candidate_rank_token_spend": candidate_rank_spend,
+        "candidate_cohorts": candidate_cohorts,
         "skipped_reasons": Counter(r.skipped_reason for r in skipped),
         # Post-processing cost (the expensive part of the budget cost model).
         "overall_mean_context_seconds": _mean("context_seconds"),
         "max_context_seconds": max((r.context_seconds for r in scored), default=0.0),
-        "overall_mean_lexical_span_probe_seconds": _mean(
-            "lexical_span_probe_seconds"
-        ),
+        "overall_mean_lexical_span_probe_seconds": _mean("lexical_span_probe_seconds"),
         "max_lexical_span_probe_seconds": max(
             (r.lexical_span_probe_seconds for r in scored), default=0.0
         ),
@@ -1795,6 +2326,105 @@ def _render_markdown(results: list[QuestionResult], summary: dict[str, Any]) -> 
             ]
         )
 
+    rank_spend = summary.get("candidate_rank_token_spend", {})
+    if rank_spend.get("questions"):
+        lines.extend(
+            [
+                "",
+                "## Token Credit spend by pre-budget candidate rank",
+                "",
+                "Coverage and body/rich-render upgrades are separated; upgrade "
+                "concentration shows whether the ranked head actually receives "
+                "the body budget.",
+                "",
+                "| candidate rank | coverage tokens | upgrade tokens | upgrade share |",
+                "|---|---:|---:|---:|",
+            ]
+        )
+        for label, row in (rank_spend.get("by_rank", {}) or {}).items():
+            lines.append(
+                f"| {label} | {int(row.get('coverage_tokens', 0))} | "
+                f"{int(row.get('upgrade_tokens', 0))} | "
+                f"{float(row.get('upgrade_share', 0.0)):.3f} |"
+            )
+        share_at = rank_spend.get("upgrade_share_at", {}) or {}
+        allocation_modes = rank_spend.get("allocation_mode_counts", {}) or {}
+        lines.extend(
+            [
+                "",
+                f"Allocation modes: **{allocation_modes}** · mean coverage share "
+                f"**{float(rank_spend.get('mean_coverage_share', 0.0)):.3f}** · "
+                "mean adaptive threshold "
+                f"**{float(rank_spend.get('mean_rank_decay_coverage_threshold', 0.0)):.3f}**.",
+                "",
+                "Upgrade share in ranked prefix: "
+                f"@1 **{float(share_at.get('1', 0.0)):.3f}** · "
+                f"@3 **{float(share_at.get('3', 0.0)):.3f}** · "
+                f"@5 **{float(share_at.get('5', 0.0)):.3f}** · "
+                f"@10 **{float(share_at.get('10', 0.0)):.3f}**.",
+            ]
+        )
+
+    candidate_cohorts = summary.get("candidate_cohorts", {}) or {}
+    if candidate_cohorts.get("questions"):
+        lines.extend(
+            [
+                "",
+                "## Pre-budget candidates by role, axis and intent alignment",
+                "",
+                "Gold labels are non-exhaustive benchmark evidence: `other` means "
+                "unlabelled, not proven noise. Axis basis is kind → edge → role-profile "
+                "fallback; alignment uses all classifier intent matches. Role rows are "
+                "overlapping memberships from the complete `supporting_roles` set.",
+            ]
+        )
+
+        def append_cohort_table(
+            title: str,
+            rows: dict[str, dict[str, Any]],
+            *,
+            limit: int | None = None,
+        ) -> None:
+            lines.extend(
+                [
+                    "",
+                    f"### {title}",
+                    "",
+                    "| cohort | candidates | exact/labelled gold | exact rate | "
+                    "exact gold rank | "
+                    "coverage/body tokens |",
+                    "|---|---:|---:|---:|---:|---:|",
+                ]
+            )
+            items = list(rows.items())
+            if limit is not None:
+                items = items[:limit]
+            for label, row in items:
+                lines.append(
+                    f"| {label} | {int(row.get('candidates', 0))} | "
+                    f"{int(row.get('exact_gold', 0))}/"
+                    f"{int(row.get('labelled_gold', 0))} | "
+                    f"{float(row.get('exact_gold_rate', 0.0)):.3f} | "
+                    f"{float(row.get('mean_exact_gold_rank') or 0.0):.1f} | "
+                    f"{int(row.get('coverage_tokens', 0))}/"
+                    f"{int(row.get('upgrade_tokens', 0))} |"
+                )
+
+        append_cohort_table(
+            "Supporting role membership",
+            candidate_cohorts.get("by_role", {}),
+            limit=15,
+        )
+        append_cohort_table("Structural axis", candidate_cohorts.get("by_axis", {}))
+        append_cohort_table(
+            "Intent alignment",
+            candidate_cohorts.get("by_intent_alignment", {}),
+        )
+        append_cohort_table(
+            "Top classified intent",
+            candidate_cohorts.get("by_top_intent", {}),
+        )
+
     def _masking_section(title: str, lower: str, upper: str, rows: list) -> None:
         if not rows:
             return
@@ -1949,9 +2579,7 @@ def _ordered_summary_for_console(summary: dict[str, Any]) -> dict[str, Any]:
         "skipped_reasons",
         "zero_recall_questions",
     ]
-    headline = sorted(
-        key for key in summary if key.startswith(("overall_", "max_"))
-    )
+    headline = sorted(key for key in summary if key.startswith(("overall_", "max_")))
     trailing_present = [key for key in trailing if key in summary]
     pinned = set(headline) | set(trailing_present)
     rest = sorted(key for key in summary if key not in pinned)
@@ -1994,9 +2622,7 @@ def _print_per_repo_table(summary: dict[str, Any]) -> None:
             )
         )
 
-    widths = [
-        max(len(headers[i]), *(len(row[i]) for row in rows)) for i in range(len(headers))
-    ]
+    widths = [max(len(headers[i]), *(len(row[i]) for row in rows)) for i in range(len(headers))]
 
     def _fmt(cells: tuple[str, ...]) -> str:
         return "  ".join(cell.ljust(widths[i]) for i, cell in enumerate(cells))
@@ -2262,6 +2888,44 @@ def main() -> None:
     parser.add_argument("--query-node-mode-rrf-weight", type=float, default=0.25)
     parser.add_argument("--query-node-rrf-k", type=int, default=60)
     parser.add_argument(
+        "--weighted-intent-role-axis-boost",
+        action="store_true",
+        help=(
+            "Experimental pre-budget rank arm: similarity-scale exact-role "
+            "intent evidence and discount broad axis-only overlap."
+        ),
+    )
+    parser.add_argument("--intent-role-axis-boost", type=float, default=0.15)
+    parser.add_argument("--intent-axis-only-share", type=float, default=0.25)
+    parser.add_argument(
+        "--role-consensus-score-boost",
+        type=float,
+        default=0.05,
+        help=(
+            "Add this score per extra supporting role after seed deduplication; "
+            "pass 0 for the control arm."
+        ),
+    )
+    parser.add_argument("--role-consensus-max-extra-roles", type=int, default=2)
+    parser.add_argument(
+        "--role-consensus-min-effective-tokens",
+        type=int,
+        default=10_000,
+        help=(
+            "Enable the pre-score consensus boost only when the selected "
+            "intent profile receives at least this many tokens."
+        ),
+    )
+    parser.add_argument(
+        "--non-intent-structural-role-soft-cap",
+        type=int,
+        default=None,
+        help=(
+            "Experimental coverage arm: tighter seed cap for profiled "
+            "structural roles absent from the active intent."
+        ),
+    )
+    parser.add_argument(
         "--min-utility-per-token",
         type=float,
         default=None,
@@ -2286,6 +2950,22 @@ def main() -> None:
             "Experimental Token Credit weight for request-local related-symbol "
             "query similarity; 0 preserves structural-only utility."
         ),
+    )
+    parser.add_argument(
+        "--rank-decay-body-allocation",
+        action="store_true",
+        help=(
+            "Experimental Token Credit arm: keep coverage unchanged, then spend "
+            "geometrically decaying body credits in pre-budget candidate-rank order."
+        ),
+    )
+    parser.add_argument("--rank-decay-head-share", type=float, default=0.15)
+    parser.add_argument("--rank-decay-rate", type=float, default=0.75)
+    parser.add_argument(
+        "--rank-decay-max-coverage-share",
+        type=float,
+        default=0.65,
+        help=("Coverage-pressure threshold at an 8k envelope; it relaxes linearly to 1.0 by 12k."),
     )
     parser.add_argument(
         "--span-line-rerank",
@@ -2319,9 +2999,7 @@ def main() -> None:
         ),
     )
     parser.add_argument("--lexical-span-probe-max-symbols", type=int, default=96)
-    parser.add_argument(
-        "--lexical-span-probe-max-windows-per-symbol", type=int, default=3
-    )
+    parser.add_argument("--lexical-span-probe-max-windows-per-symbol", type=int, default=3)
     parser.add_argument("--lexical-span-probe-window-lines", type=int, default=6)
     parser.add_argument("--lexical-span-utility-weight", type=float, default=0.0)
     parser.add_argument(
@@ -2431,17 +3109,24 @@ def main() -> None:
             query_node_rrf_weight=args.query_node_rrf_weight,
             query_node_mode_rrf_weight=args.query_node_mode_rrf_weight,
             query_node_rrf_k=args.query_node_rrf_k,
+            weighted_intent_role_axis_boost=(args.weighted_intent_role_axis_boost),
+            intent_role_axis_boost=args.intent_role_axis_boost,
+            intent_axis_only_share=args.intent_axis_only_share,
+            role_consensus_score_boost=args.role_consensus_score_boost,
+            role_consensus_max_extra_roles=(args.role_consensus_max_extra_roles),
+            role_consensus_min_effective_tokens=(args.role_consensus_min_effective_tokens),
+            non_intent_structural_role_soft_cap=(args.non_intent_structural_role_soft_cap),
             token_credit_min_utility_per_token=args.min_utility_per_token,
             token_credit_freeze_at_plateau=args.freeze_at_utility_plateau,
-            token_credit_plateau_upgrade_reserve_share=(
-                args.plateau_upgrade_reserve_share
-            ),
+            token_credit_plateau_upgrade_reserve_share=(args.plateau_upgrade_reserve_share),
             node_semantic_utility_weight=args.node_semantic_utility_weight,
+            rank_decay_body_allocation=args.rank_decay_body_allocation,
+            rank_decay_head_share=args.rank_decay_head_share,
+            rank_decay_rate=args.rank_decay_rate,
+            rank_decay_max_coverage_share=args.rank_decay_max_coverage_share,
             span_line_rerank=args.span_line_rerank,
             span_rank_max_symbols=args.span_rank_max_symbols,
-            span_rank_max_candidates_per_symbol=(
-                args.span_rank_max_candidates_per_symbol
-            ),
+            span_rank_max_candidates_per_symbol=(args.span_rank_max_candidates_per_symbol),
             span_rank_max_body_lines=args.span_rank_max_body_lines,
             context_semantic_expansion=args.context_semantic_expansion,
             context_semantic_expansion_alpha=args.context_semantic_expansion_alpha,
@@ -2512,17 +3197,24 @@ def main() -> None:
         "query_node_rrf_weight": args.query_node_rrf_weight,
         "query_node_mode_rrf_weight": args.query_node_mode_rrf_weight,
         "query_node_rrf_k": args.query_node_rrf_k,
+        "weighted_intent_role_axis_boost": (args.weighted_intent_role_axis_boost),
+        "intent_role_axis_boost": args.intent_role_axis_boost,
+        "intent_axis_only_share": args.intent_axis_only_share,
+        "role_consensus_score_boost": args.role_consensus_score_boost,
+        "role_consensus_max_extra_roles": args.role_consensus_max_extra_roles,
+        "role_consensus_min_effective_tokens": (args.role_consensus_min_effective_tokens),
+        "non_intent_structural_role_soft_cap": (args.non_intent_structural_role_soft_cap),
         "token_credit_min_utility_per_token": args.min_utility_per_token,
         "token_credit_freeze_at_plateau": args.freeze_at_utility_plateau,
-        "token_credit_plateau_upgrade_reserve_share": (
-            args.plateau_upgrade_reserve_share
-        ),
+        "token_credit_plateau_upgrade_reserve_share": (args.plateau_upgrade_reserve_share),
         "node_semantic_utility_weight": args.node_semantic_utility_weight,
+        "rank_decay_body_allocation": args.rank_decay_body_allocation,
+        "rank_decay_head_share": args.rank_decay_head_share,
+        "rank_decay_rate": args.rank_decay_rate,
+        "rank_decay_max_coverage_share": args.rank_decay_max_coverage_share,
         "span_line_rerank": args.span_line_rerank,
         "span_rank_max_symbols": args.span_rank_max_symbols,
-        "span_rank_max_candidates_per_symbol": (
-            args.span_rank_max_candidates_per_symbol
-        ),
+        "span_rank_max_candidates_per_symbol": (args.span_rank_max_candidates_per_symbol),
         "span_rank_max_body_lines": args.span_rank_max_body_lines,
         "context_semantic_expansion": args.context_semantic_expansion,
         "context_semantic_expansion_alpha": args.context_semantic_expansion_alpha,

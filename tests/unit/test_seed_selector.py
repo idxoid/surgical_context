@@ -150,6 +150,89 @@ def test_multi_intent_role_consensus_is_retained_without_reordering_fill() -> No
     assert "ranked_fill" in selected[1].selection_reasons
 
 
+def test_opt_in_role_consensus_boost_is_saturating_and_traceable() -> None:
+    selected, trace = select_context_seeds(
+        {
+            "routing_surface": [_candidate("shared", score=0.60)],
+            "binding_surface": [_candidate("shared", role="binding_surface", score=0.70)],
+            "dispatch_surface": [_candidate("shared", role="dispatch_surface", score=0.80)],
+            "metadata_surface": [_candidate("shared", role="metadata_surface", score=0.90)],
+        },
+        ["routing_surface", "binding_surface"],
+        per_role_soft_cap=1,
+        role_consensus_score_boost=0.05,
+        role_consensus_max_extra_roles=2,
+    )
+
+    assert len(selected) == 1
+    candidate = selected[0]
+    # The first role's payload remains the stable base; three extra roles are
+    # observed, but the experimental bonus saturates after two.
+    assert abs(candidate.score - 0.70) < 1e-9
+    assert abs(candidate.role_consensus_bonus - 0.10) < 1e-9
+    assert "role_consensus_boost" in candidate.selection_reasons
+    assert trace.reason_counts["role_consensus_boost"] == 1
+
+
+def test_non_intent_structural_cap_preserves_active_and_universal_channels() -> None:
+    selected, trace = select_context_seeds(
+        {
+            "routing_surface": [
+                _candidate(f"active-{index}", score=1.0 - index / 10) for index in range(3)
+            ],
+            "binding_surface": [
+                _candidate(
+                    f"non-intent-{index}",
+                    role="binding_surface",
+                    score=1.0 - index / 10,
+                )
+                for index in range(3)
+            ],
+            "vector_seed": [
+                _candidate(
+                    f"vector-{index}",
+                    role="vector_seed",
+                    score=1.0 - index / 10,
+                )
+                for index in range(3)
+            ],
+        },
+        ["routing_surface"],
+        per_role_soft_cap=3,
+        non_intent_structural_role_soft_cap=1,
+    )
+
+    uids = {candidate.uid for candidate in selected}
+    assert {f"active-{index}" for index in range(3)} <= uids
+    assert {f"vector-{index}" for index in range(3)} <= uids
+    assert "non-intent-0" in uids
+    assert "non-intent-1" not in uids
+    assert "non-intent-2" not in uids
+    assert trace.reason_counts["non_intent_ranked_fill"] == 1
+
+
+def test_non_intent_structural_cap_keeps_exact_reserve() -> None:
+    selected, _trace = select_context_seeds(
+        {
+            "binding_surface": [
+                _candidate("high", role="binding_surface", score=0.9),
+                _candidate(
+                    "exact",
+                    role="binding_surface",
+                    score=0.1,
+                    exact=True,
+                ),
+            ],
+        },
+        ["routing_surface"],
+        per_role_soft_cap=2,
+        non_intent_structural_role_soft_cap=1,
+    )
+
+    assert [candidate.uid for candidate in selected] == ["exact"]
+    assert "hard_reserve" in selected[0].selection_reasons
+
+
 def test_duplicate_uid_merges_all_retrieval_evidence() -> None:
     selected, _trace = select_context_seeds(
         {
