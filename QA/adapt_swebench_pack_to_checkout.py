@@ -71,11 +71,12 @@ def parse_patch_hunks(patch: str) -> dict[str, list[dict[str, Any]]]:
                 continue
             hunks[current_file][-1]["lines"].append(raw)
 
-
     return hunks
 
 
-def apply_hunks(base_lines: list[str], file_hunks: list[dict[str, Any]]) -> tuple[list[str], list[dict[str, Any]]]:
+def apply_hunks(
+    base_lines: list[str], file_hunks: list[dict[str, Any]]
+) -> tuple[list[str], list[dict[str, Any]]]:
     """Apply hunks to the base file; return patched lines + change runs.
 
     Each run records its NEW-side (post-patch) line numbers: added lines for
@@ -112,9 +113,7 @@ def apply_hunks(base_lines: list[str], file_hunks: list[dict[str, Any]]) -> tupl
             if line.startswith("-"):
                 expected = line[1:]
                 if cursor >= len(base_lines) or base_lines[cursor] != expected:
-                    raise ValueError(
-                        f"old-side mismatch at base line {cursor + 1}"
-                    )
+                    raise ValueError(f"old-side mismatch at base line {cursor + 1}")
                 run_deleted += 1
                 cursor += 1
             elif line.startswith("+"):
@@ -123,9 +122,7 @@ def apply_hunks(base_lines: list[str], file_hunks: list[dict[str, Any]]) -> tupl
             elif line.startswith(" "):
                 flush_run()
                 if cursor >= len(base_lines) or base_lines[cursor] != line[1:]:
-                    raise ValueError(
-                        f"context mismatch at base line {cursor + 1}"
-                    )
+                    raise ValueError(f"context mismatch at base line {cursor + 1}")
                 patched.append(base_lines[cursor])
                 cursor += 1
             elif line.startswith("\\"):
@@ -179,22 +176,16 @@ def adapt_question(
         if not current_path.is_file():
             stats["files_dropped"].append(file_path)
             continue
-        base_rc, base_text = _git(
-            repo_dir, "show", f"{question['base_commit']}:{file_path}"
-        )
+        base_rc, base_text = _git(repo_dir, "show", f"{question['base_commit']}:{file_path}")
         if base_rc != 0:
             stats["error"] = f"base blob missing for {file_path}"
             continue
         try:
-            patched, runs = apply_hunks(
-                base_text.splitlines(), hunks_by_file.get(file_path, [])
-            )
+            patched, runs = apply_hunks(base_text.splitlines(), hunks_by_file.get(file_path, []))
         except ValueError as exc:
             stats["error"] = f"{file_path}: {exc}"
             continue
-        current_lines = current_path.read_text(
-            encoding="utf-8", errors="replace"
-        ).splitlines()
+        current_lines = current_path.read_text(encoding="utf-8", errors="replace").splitlines()
         line_map = map_new_lines_to_current(patched, current_lines)
 
         expected_files.append(file_path)
@@ -277,9 +268,7 @@ def main() -> None:
     pack = yaml.safe_load(args.pack.open())
 
     keep_repos = {r.strip() for r in args.repos.split(",") if r.strip()} or {
-        entry.name
-        for entry in REPOS_DIR.iterdir()
-        if (entry / ".git").exists()
+        entry.name for entry in REPOS_DIR.iterdir() if (entry / ".git").exists()
     }
 
     checkouts: dict[str, str] = {}
@@ -302,9 +291,7 @@ def main() -> None:
         adapted, stats = adapt_question(question, patch, repo_dir)
         if stats["error"]:
             errors.append(f"{question['id']}: {stats['error']}")
-        dropped_files.extend(
-            f"{question['id']}:{path}" for path in stats["files_dropped"]
-        )
+        dropped_files.extend(f"{question['id']}:{path}" for path in stats["files_dropped"])
         if adapted is None:
             dropped_repo[repo] += 0  # question dropped for missing files
             errors.append(f"{question['id']}: all gold files missing in checkout")
@@ -320,15 +307,9 @@ def main() -> None:
         questions.append(adapted)
 
     repo_ids = {q["repo"] for q in questions}
-    repositories = [
-        entry
-        for entry in pack.get("repositories", [])
-        if entry["id"] in repo_ids
-    ]
+    repositories = [entry for entry in pack.get("repositories", []) if entry["id"] in repo_ids]
     for entry in repositories:
-        entry["swebench_instances"] = sum(
-            1 for q in questions if q["repo"] == entry["id"]
-        )
+        entry["swebench_instances"] = sum(1 for q in questions if q["repo"] == entry["id"])
 
     out = {
         "meta": {

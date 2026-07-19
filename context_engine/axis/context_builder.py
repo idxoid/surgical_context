@@ -3701,9 +3701,7 @@ def _apply_decoupled_seed_span_reserve(
         target_entry = selected[target_entry_index]
         target_source = target_entry.get("source")
         current = target_entry.get("rendered")
-        if not isinstance(target_source, ContextBundle) or not isinstance(
-            current, ContextBundle
-        ):
+        if not isinstance(target_source, ContextBundle) or not isinstance(current, ContextBundle):
             continue
         scope = "seed" if target_source.seed.uid == target.uid else "related"
         span_variant = next(

@@ -1543,9 +1543,7 @@ def _run_axis_retrieval_for_question(
             decoupled_symbol_body_allocation=decoupled_symbol_body_allocation,
             decoupled_seed_span_reserve_share=decoupled_seed_span_reserve_share,
             span_line_rerank=span_line_rerank,
-            span_line_rerank_on_explicit_line_hints=(
-                span_line_rerank_on_explicit_line_hints
-            ),
+            span_line_rerank_on_explicit_line_hints=(span_line_rerank_on_explicit_line_hints),
             span_rank_max_symbols=span_rank_max_symbols,
             span_rank_max_candidates_per_symbol=span_rank_max_candidates_per_symbol,
             span_rank_max_body_lines=span_rank_max_body_lines,
@@ -1653,9 +1651,7 @@ def run_question(
     if use_base_commit_workspace and result.base_commit:
         count_symbols = getattr(lance, "count_symbols_workspace", None)
         if callable(count_symbols) and int(count_symbols(workspace_id)) <= 0:
-            result.skipped_reason = (
-                f"exact-commit workspace {workspace_id!r} has no symbol rows"
-            )
+            result.skipped_reason = f"exact-commit workspace {workspace_id!r} has no symbol rows"
             return result
 
     # The whole read-side pipeline is the canonical ``run_axis_retrieval``
@@ -1720,9 +1716,7 @@ def run_question(
         decoupled_symbol_body_allocation=decoupled_symbol_body_allocation,
         decoupled_seed_span_reserve_share=decoupled_seed_span_reserve_share,
         span_line_rerank=span_line_rerank,
-        span_line_rerank_on_explicit_line_hints=(
-            span_line_rerank_on_explicit_line_hints
-        ),
+        span_line_rerank_on_explicit_line_hints=(span_line_rerank_on_explicit_line_hints),
         span_rank_max_symbols=span_rank_max_symbols,
         span_rank_max_candidates_per_symbol=span_rank_max_candidates_per_symbol,
         span_rank_max_body_lines=span_rank_max_body_lines,
@@ -3412,13 +3406,9 @@ def main() -> None:
             rank_decay_rate=args.rank_decay_rate,
             rank_decay_max_coverage_share=args.rank_decay_max_coverage_share,
             decoupled_symbol_body_allocation=(args.decoupled_symbol_body_allocation),
-            decoupled_seed_span_reserve_share=(
-                args.decoupled_seed_span_reserve_share
-            ),
+            decoupled_seed_span_reserve_share=(args.decoupled_seed_span_reserve_share),
             span_line_rerank=args.span_line_rerank,
-            span_line_rerank_on_explicit_line_hints=(
-                args.span_line_rerank_on_explicit_line_hints
-            ),
+            span_line_rerank_on_explicit_line_hints=(args.span_line_rerank_on_explicit_line_hints),
             span_rank_max_symbols=args.span_rank_max_symbols,
             span_rank_max_candidates_per_symbol=(args.span_rank_max_candidates_per_symbol),
             span_rank_max_body_lines=args.span_rank_max_body_lines,
@@ -3523,9 +3513,7 @@ def main() -> None:
         "decoupled_symbol_body_allocation": args.decoupled_symbol_body_allocation,
         "decoupled_seed_span_reserve_share": args.decoupled_seed_span_reserve_share,
         "span_line_rerank": args.span_line_rerank,
-        "span_line_rerank_on_explicit_line_hints": (
-            args.span_line_rerank_on_explicit_line_hints
-        ),
+        "span_line_rerank_on_explicit_line_hints": (args.span_line_rerank_on_explicit_line_hints),
         "span_rank_max_symbols": args.span_rank_max_symbols,
         "span_rank_max_candidates_per_symbol": (args.span_rank_max_candidates_per_symbol),
         "span_rank_max_body_lines": args.span_rank_max_body_lines,
