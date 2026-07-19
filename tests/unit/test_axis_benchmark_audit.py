@@ -16,6 +16,8 @@ from QA.axis_benchmark import (
     _lexical_span_score_audit,
     _populate_candidate_audit,
     _populate_recall_layers,
+    _question_result_from_entry,
+    _resolve_question_workspace,
     _split_rendered_tokens,
     summarise,
 )
@@ -48,6 +50,53 @@ def _symbol(uid: str, path: str, role: str, *, depth: int = 0, code: str = "x") 
         expansion_step=role if depth else None,
         code=code,
     )
+
+
+def test_base_commit_question_resolves_to_exact_profile_workspace() -> None:
+    entry = {
+        "id": "django_django_11179",
+        "repo": "django",
+        "question": "Where should this regression be fixed?",
+        "base_commit": "19fc6376ce67d01ca37a91ef2f55ef769f50513a",
+        "expected_files": ["django/forms/models.py"],
+        "expected_spans": [
+            {"file_path": "django/forms/models.py", "start_line": 100, "end_line": 110}
+        ],
+    }
+
+    result = _question_result_from_entry(entry)
+    workspace_id = _resolve_question_workspace(
+        entry,
+        result,
+        None,
+        use_base_commit_workspace=True,
+        commit_workspace_tenant="contextbench",
+    )
+
+    assert result.base_commit == entry["base_commit"]
+    assert workspace_id == "contextbench/django@19fc6376ce67+axis_python_v1"
+
+
+def test_explicit_question_workspace_wins_over_base_commit() -> None:
+    entry = {
+        "id": "task",
+        "repo": "django",
+        "question": "Where?",
+        "base_commit": "a" * 40,
+        "workspace_id": "custom/django@exact",
+        "expected_files": ["django/forms/models.py"],
+    }
+    result = _question_result_from_entry(entry)
+
+    workspace_id = _resolve_question_workspace(
+        entry,
+        result,
+        None,
+        use_base_commit_workspace=True,
+        commit_workspace_tenant="contextbench",
+    )
+
+    assert workspace_id == "custom/django@exact+axis_python_v1"
 
 
 def test_axis_benchmark_records_candidate_audit_and_expected_layers() -> None:
@@ -435,11 +484,50 @@ def test_gold_rank_audit_tracks_complete_budget_and_prompt_funnel() -> None:
     )
     trace = SimpleNamespace(
         transactions=[
-            SimpleNamespace(phase="upgrade_capped", uid="gold", delta_tokens=80),
+            SimpleNamespace(
+                phase="upgrade_capped",
+                uid="gold",
+                delta_tokens=80,
+                attribution=[
+                    SimpleNamespace(
+                        scope="seed",
+                        evidence="retrieval_backed",
+                        edge_type="SEED",
+                        depth=0,
+                        delta_tokens=80,
+                    )
+                ],
+            ),
             SimpleNamespace(phase="coverage", uid="gold", delta_tokens=10),
             SimpleNamespace(phase="coverage", uid="other", delta_tokens=20),
-            SimpleNamespace(phase="upgrade_leader_relaxed", uid="other", delta_tokens=5),
-            SimpleNamespace(phase="upgrade_tail_relaxed", uid="rescued", delta_tokens=7),
+            SimpleNamespace(
+                phase="upgrade_leader_relaxed",
+                uid="other",
+                delta_tokens=5,
+                attribution=[
+                    SimpleNamespace(
+                        scope="related",
+                        evidence="graph_only",
+                        edge_type="CALLS_*",
+                        depth=1,
+                        delta_tokens=5,
+                    )
+                ],
+            ),
+            SimpleNamespace(
+                phase="upgrade_tail_relaxed",
+                uid="rescued",
+                delta_tokens=7,
+                attribution=[
+                    SimpleNamespace(
+                        scope="related",
+                        evidence="retrieval_backed",
+                        edge_type="REFERENCES",
+                        depth=2,
+                        delta_tokens=7,
+                    )
+                ],
+            ),
         ]
     )
 
@@ -468,6 +556,12 @@ def test_gold_rank_audit_tracks_complete_budget_and_prompt_funnel() -> None:
     assert spend["by_rank"]["unranked"]["upgrade_tokens"] == 7
     assert spend["upgrade_tokens_at"]["1"] == 5
     assert spend["upgrade_tokens_at"]["3"] == 85
+    assert spend["upgrade_attribution"]["scope"] == {"seed": 80, "related": 12}
+    assert spend["upgrade_attribution"]["evidence"] == {
+        "retrieval_backed": 87,
+        "graph_only": 5,
+    }
+    assert spend["upgrade_attribution"]["depth"] == {"0": 80, "2": 7, "1": 5}
 
     result = QuestionResult(
         question_id="rank-spend",
@@ -483,3 +577,8 @@ def test_gold_rank_audit_tracks_complete_budget_and_prompt_funnel() -> None:
     assert aggregate["by_rank"]["2-3"]["upgrade_tokens"] == 80
     assert aggregate["upgrade_share_at"]["3"] == 85 / 92
     assert aggregate["allocation_mode_counts"] == {"legacy": 1}
+    assert aggregate["upgrade_attribution"]["scope_evidence"] == {
+        "seed|retrieval_backed": 80,
+        "related|retrieval_backed": 7,
+        "related|graph_only": 5,
+    }

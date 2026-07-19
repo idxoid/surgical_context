@@ -662,6 +662,7 @@ def test_regular_retrieval_defaults_to_validated_all_positive_envelope():
     assert config.pregraph_lexical_span_probe is True
     assert config.lexical_span_utility_weight == 0.15
     assert config.evidence_graph_fanout is True
+    assert config.decoupled_symbol_body_allocation is True
     assert config.channel_consensus_score_boost == 0.0
     assert config.exact_symbol_score_boost == 0.0
     assert config.span_line_rerank is False
@@ -746,6 +747,40 @@ def test_span_line_rerank_threads_batch_scorer_and_budget_knobs(stub_stages, mon
         "query": "where is alpha handled",
         "scores": [1.0, 1.0],
     }
+
+
+@pytest.mark.parametrize(
+    ("auto_enabled", "expected"),
+    [(True, True), (False, False)],
+)
+def test_explicit_line_hint_conditionally_enables_span_rerank(
+    stub_stages,
+    monkeypatch,
+    auto_enabled,
+    expected,
+):
+    import context_engine.axis.context_builder as _ctx_mod
+
+    class SpanLance:
+        def _embed(self, texts):
+            return [[1.0, 0.0] for _text in texts]
+
+    captured: dict[str, bool] = {}
+
+    def _capture(_candidates, **kwargs):
+        captured["enabled"] = kwargs["render_budget"].span_line_rerank
+        return []
+
+    monkeypatch.setattr(_ctx_mod, "build_context_for_candidates", _capture)
+
+    _run(
+        lance=SpanLance(),
+        question="The fix belongs in deletion.py:120-121.",
+        span_line_rerank=False,
+        span_line_rerank_on_explicit_line_hints=auto_enabled,
+    )
+
+    assert captured["enabled"] is expected
 
 
 def test_intent_budget_walks_full_scope_no_passive_split(stub_stages, monkeypatch):

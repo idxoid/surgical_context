@@ -85,6 +85,7 @@ class _StageTimer:
 # Repos not present in the DB are skipped with reason.
 _BENCH_TENANT = os.getenv("AXIS_BENCH_TENANT", "qa_repo")
 _BENCH_REF = os.getenv("AXIS_BENCH_REF", "main")
+_BENCH_COMMIT_TENANT = os.getenv("AXIS_BENCH_COMMIT_TENANT", "contextbench")
 _BENCH_PROFILE = resolve_index_profile(AXIS_PYTHON_V1_PROFILE)
 _BENCH_REPOS = (
     "fastapi",
@@ -127,6 +128,7 @@ class QuestionResult:
     question: str
     mechanism: str
     expected_files: list[str]
+    base_commit: str = ""
     expected_symbols: list[str] = field(default_factory=list)
     expected_spans: list[dict[str, Any]] = field(default_factory=list)
     retrieved_files: list[str] = field(default_factory=list)
@@ -204,6 +206,7 @@ class QuestionResult:
             "question": self.question,
             "mechanism": self.mechanism,
             "expected_files": self.expected_files,
+            "base_commit": self.base_commit,
             "expected_symbols": self.expected_symbols,
             "expected_spans": self.expected_spans,
             "retrieved_files": self.retrieved_files,
@@ -609,6 +612,13 @@ def _candidate_rank_spend_audit(
     }
     totals = {"coverage_tokens": 0, "upgrade_tokens": 0, "other_tokens": 0}
     upgrade_tokens_at = {str(cutoff): 0 for cutoff in _GOLD_RANK_CUTOFFS}
+    upgrade_attribution: dict[str, Counter[str]] = {
+        "scope": Counter(),
+        "evidence": Counter(),
+        "edge_type": Counter(),
+        "depth": Counter(),
+        "scope_evidence": Counter(),
+    }
 
     def bucket_for(rank: int | None) -> str:
         if rank is None:
@@ -636,6 +646,18 @@ def _candidate_rank_spend_audit(
         row[field] += tokens
         row["transactions"] += 1
         totals[field] += tokens
+        if field == "upgrade_tokens":
+            for attribution in list(getattr(transaction, "attribution", ()) or ()):
+                attributed_tokens = max(0, int(getattr(attribution, "delta_tokens", 0) or 0))
+                scope = str(getattr(attribution, "scope", "unknown") or "unknown")
+                evidence = str(getattr(attribution, "evidence", "unknown") or "unknown")
+                edge_type = str(getattr(attribution, "edge_type", "") or "(none)")
+                depth = str(max(0, int(getattr(attribution, "depth", 0) or 0)))
+                upgrade_attribution["scope"][scope] += attributed_tokens
+                upgrade_attribution["evidence"][evidence] += attributed_tokens
+                upgrade_attribution["edge_type"][edge_type] += attributed_tokens
+                upgrade_attribution["depth"][depth] += attributed_tokens
+                upgrade_attribution["scope_evidence"][f"{scope}|{evidence}"] += attributed_tokens
         if field == "upgrade_tokens" and rank is not None:
             for cutoff in _GOLD_RANK_CUTOFFS:
                 if rank <= cutoff:
@@ -660,6 +682,10 @@ def _candidate_rank_spend_audit(
             },
         },
         **totals,
+        "upgrade_attribution": {
+            dimension: dict(counter.most_common())
+            for dimension, counter in upgrade_attribution.items()
+        },
         "upgrade_tokens_at": upgrade_tokens_at,
         "upgrade_share_at": {
             cutoff: tokens / upgrade_total if upgrade_total else 0.0
@@ -1238,18 +1264,32 @@ def _question_result_from_entry(question_entry: dict[str, Any]) -> QuestionResul
         question=str(question_entry.get("question") or ""),
         mechanism=str(question_entry.get("mechanism") or ""),
         expected_files=[str(p) for p in (question_entry.get("expected_files") or [])],
+        base_commit=str(question_entry.get("base_commit") or ""),
         expected_symbols=[str(p) for p in (question_entry.get("expected_symbols") or [])],
         expected_spans=_normalise_expected_spans(question_entry),
     )
 
 
 def _resolve_question_workspace(
-    repo: str,
+    question_entry: dict[str, Any],
     result: QuestionResult,
     workspace_overrides: dict[str, str] | None,
+    *,
+    use_base_commit_workspace: bool,
+    commit_workspace_tenant: str,
 ) -> str | None:
+    repo = result.repo
     overrides = workspace_overrides or {}
-    workspace_id = overrides.get(repo) or REPO_TO_WORKSPACE.get(repo)
+    explicit_workspace = str(question_entry.get("workspace_id") or "").strip()
+    workspace_id = explicit_workspace or overrides.get(result.question_id) or overrides.get(repo)
+    if workspace_id:
+        workspace_id = _BENCH_PROFILE.workspace_id(workspace_id)
+    elif use_base_commit_workspace and result.base_commit:
+        workspace_id = _BENCH_PROFILE.workspace_id(
+            f"{commit_workspace_tenant}/{repo}@{result.base_commit[:12]}"
+        )
+    else:
+        workspace_id = REPO_TO_WORKSPACE.get(repo)
     if workspace_id is None:
         result.skipped_reason = f"repo {repo!r} not indexed under axis_python_v1"
         return None
@@ -1425,7 +1465,10 @@ def _run_axis_retrieval_for_question(
     rank_decay_head_share: float,
     rank_decay_rate: float,
     rank_decay_max_coverage_share: float,
+    decoupled_symbol_body_allocation: bool,
+    decoupled_seed_span_reserve_share: float,
     span_line_rerank: bool,
+    span_line_rerank_on_explicit_line_hints: bool,
     span_rank_max_symbols: int,
     span_rank_max_candidates_per_symbol: int,
     span_rank_max_body_lines: int,
@@ -1497,7 +1540,12 @@ def _run_axis_retrieval_for_question(
             rank_decay_head_share=rank_decay_head_share,
             rank_decay_rate=rank_decay_rate,
             rank_decay_max_coverage_share=rank_decay_max_coverage_share,
+            decoupled_symbol_body_allocation=decoupled_symbol_body_allocation,
+            decoupled_seed_span_reserve_share=decoupled_seed_span_reserve_share,
             span_line_rerank=span_line_rerank,
+            span_line_rerank_on_explicit_line_hints=(
+                span_line_rerank_on_explicit_line_hints
+            ),
             span_rank_max_symbols=span_rank_max_symbols,
             span_rank_max_candidates_per_symbol=span_rank_max_candidates_per_symbol,
             span_rank_max_body_lines=span_rank_max_body_lines,
@@ -1567,7 +1615,10 @@ def run_question(
     rank_decay_head_share: float = 0.15,
     rank_decay_rate: float = 0.75,
     rank_decay_max_coverage_share: float = 0.65,
+    decoupled_symbol_body_allocation: bool = True,
+    decoupled_seed_span_reserve_share: float = 0.10,
     span_line_rerank: bool = False,
+    span_line_rerank_on_explicit_line_hints: bool = False,
     span_rank_max_symbols: int = 48,
     span_rank_max_candidates_per_symbol: int = 24,
     span_rank_max_body_lines: int = 6,
@@ -1586,11 +1637,26 @@ def run_question(
     lexical_span_probe_window_lines: int = 6,
     lexical_span_utility_weight: float = 0.15,
     workspace_overrides: dict[str, str] | None = None,
+    use_base_commit_workspace: bool = True,
+    commit_workspace_tenant: str = _BENCH_COMMIT_TENANT,
 ) -> QuestionResult:
     result = _question_result_from_entry(question_entry)
-    workspace_id = _resolve_question_workspace(result.repo, result, workspace_overrides)
+    workspace_id = _resolve_question_workspace(
+        question_entry,
+        result,
+        workspace_overrides,
+        use_base_commit_workspace=use_base_commit_workspace,
+        commit_workspace_tenant=commit_workspace_tenant,
+    )
     if workspace_id is None:
         return result
+    if use_base_commit_workspace and result.base_commit:
+        count_symbols = getattr(lance, "count_symbols_workspace", None)
+        if callable(count_symbols) and int(count_symbols(workspace_id)) <= 0:
+            result.skipped_reason = (
+                f"exact-commit workspace {workspace_id!r} has no symbol rows"
+            )
+            return result
 
     # The whole read-side pipeline is the canonical ``run_axis_retrieval``
     # — the same function the ``/ask/axis`` endpoint runs, so this
@@ -1651,7 +1717,12 @@ def run_question(
         rank_decay_head_share=rank_decay_head_share,
         rank_decay_rate=rank_decay_rate,
         rank_decay_max_coverage_share=rank_decay_max_coverage_share,
+        decoupled_symbol_body_allocation=decoupled_symbol_body_allocation,
+        decoupled_seed_span_reserve_share=decoupled_seed_span_reserve_share,
         span_line_rerank=span_line_rerank,
+        span_line_rerank_on_explicit_line_hints=(
+            span_line_rerank_on_explicit_line_hints
+        ),
         span_rank_max_symbols=span_rank_max_symbols,
         span_rank_max_candidates_per_symbol=span_rank_max_candidates_per_symbol,
         span_rank_max_body_lines=span_rank_max_body_lines,
@@ -1719,6 +1790,8 @@ def run_axis_pack(
     ignore_anchor: bool = False,
     hook_transparency: bool = True,
     workspace_overrides: dict[str, str] | None = None,
+    use_base_commit_workspace: bool = True,
+    commit_workspace_tenant: str = _BENCH_COMMIT_TENANT,
 ) -> list[QuestionResult]:
     """Run the axis benchmark over an in-memory question list."""
     owned_db = db is None
@@ -1746,6 +1819,8 @@ def run_axis_pack(
                     ignore_anchor=ignore_anchor,
                     hook_transparency=hook_transparency,
                     workspace_overrides=workspace_overrides,
+                    use_base_commit_workspace=use_base_commit_workspace,
+                    commit_workspace_tenant=commit_workspace_tenant,
                 )
             )
     finally:
@@ -1900,7 +1975,16 @@ def _aggregate_candidate_rank_spend(results: list[QuestionResult]) -> dict[str, 
     fanout_tiers: Counter[str] = Counter()
     fanout_limits: Counter[str] = Counter()
     fanout_questions = 0
+    upgrade_attribution: dict[str, Counter[str]] = {
+        "scope": Counter(),
+        "evidence": Counter(),
+        "edge_type": Counter(),
+        "depth": Counter(),
+        "scope_evidence": Counter(),
+    }
     for audit in audits:
+        for dimension, counter in upgrade_attribution.items():
+            counter.update((audit.get("upgrade_attribution", {}) or {}).get(dimension, {}) or {})
         fanout = audit.get("graph_fanout", {}) or {}
         if not fanout.get("base_limit"):
             continue
@@ -1927,6 +2011,10 @@ def _aggregate_candidate_rank_spend(results: list[QuestionResult]) -> dict[str, 
             "questions": fanout_questions,
             "tier_counts": dict(fanout_tiers),
             "limit_counts": dict(fanout_limits),
+        },
+        "upgrade_attribution": {
+            dimension: dict(counter.most_common())
+            for dimension, counter in upgrade_attribution.items()
         },
         **totals,
         "upgrade_tokens_at": upgrade_tokens_at,
@@ -2447,6 +2535,30 @@ def _render_markdown(results: list[QuestionResult], summary: dict[str, Any]) -> 
                 f"@10 **{float(share_at.get('10', 0.0)):.3f}**.",
             ]
         )
+        attribution = rank_spend.get("upgrade_attribution", {}) or {}
+        upgrade_total = max(1, int(rank_spend.get("upgrade_tokens", 0) or 0))
+        lines.extend(
+            [
+                "",
+                "### Upgrade token attribution",
+                "",
+                "Exact paid upgrade tokens split by the symbol that actually "
+                "gained rendered text. Retrieval-backed means the symbol owns "
+                "direct exact/channel/span evidence; graph-only means it is "
+                "present only through context expansion.",
+                "",
+                "| dimension | value | tokens | share |",
+                "|---|---|---:|---:|",
+            ]
+        )
+        for dimension in ("scope", "evidence", "depth", "edge_type"):
+            rows = list((attribution.get(dimension, {}) or {}).items())
+            if dimension == "edge_type":
+                rows = rows[:12]
+            for value, tokens in rows:
+                lines.append(
+                    f"| {dimension} | {value} | {int(tokens)} | {int(tokens) / upgrade_total:.3f} |"
+                )
 
     candidate_cohorts = summary.get("candidate_cohorts", {}) or {}
     if candidate_cohorts.get("questions"):
@@ -2871,6 +2983,18 @@ def main() -> None:
         type=Path,
     )
     parser.add_argument("--out", default="/tmp/axis_benchmark", type=Path)
+    parser.add_argument(
+        "--base-commit-workspaces",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Resolve questions carrying base_commit against an isolated exact-commit "
+        "workspace (default ON). The off arm is approximate and invalidates line/span gold.",
+    )
+    parser.add_argument(
+        "--commit-workspace-tenant",
+        default=_BENCH_COMMIT_TENANT,
+        help="Workspace tenant for base_commit questions (default: contextbench).",
+    )
     parser.add_argument("--top-roles", type=int, default=3)
     parser.add_argument(
         "--per-role-limit", type=int, default=7, help="Seed/pool cap per intent role (default 7)."
@@ -3090,10 +3214,31 @@ def main() -> None:
         help=("Coverage-pressure threshold at an 8k envelope; it relaxes linearly to 1.0 by 12k."),
     )
     parser.add_argument(
+        "--decoupled-symbol-body-allocation",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help=(
+            "Buy seed retrieval spans/body separately and require own evidence "
+            "for neighbour bodies."
+        ),
+    )
+    parser.add_argument(
+        "--decoupled-seed-span-reserve-share",
+        type=float,
+        default=0.10,
+        help="Bounded global budget share reserved for direct seed retrieval windows.",
+    )
+    parser.add_argument(
         "--span-line-rerank",
         action=argparse.BooleanOptionalAction,
         default=False,
         help="Rank and render query-relevant windows inside each selected symbol.",
+    )
+    parser.add_argument(
+        "--span-line-rerank-on-explicit-line-hints",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Experimental: enable within-symbol reranking when the question names source lines.",
     )
     parser.add_argument("--span-rank-max-symbols", type=int, default=48)
     parser.add_argument("--span-rank-max-candidates-per-symbol", type=int, default=24)
@@ -3266,7 +3411,14 @@ def main() -> None:
             rank_decay_head_share=args.rank_decay_head_share,
             rank_decay_rate=args.rank_decay_rate,
             rank_decay_max_coverage_share=args.rank_decay_max_coverage_share,
+            decoupled_symbol_body_allocation=(args.decoupled_symbol_body_allocation),
+            decoupled_seed_span_reserve_share=(
+                args.decoupled_seed_span_reserve_share
+            ),
             span_line_rerank=args.span_line_rerank,
+            span_line_rerank_on_explicit_line_hints=(
+                args.span_line_rerank_on_explicit_line_hints
+            ),
             span_rank_max_symbols=args.span_rank_max_symbols,
             span_rank_max_candidates_per_symbol=(args.span_rank_max_candidates_per_symbol),
             span_rank_max_body_lines=args.span_rank_max_body_lines,
@@ -3288,6 +3440,8 @@ def main() -> None:
             ),
             lexical_span_probe_window_lines=args.lexical_span_probe_window_lines,
             lexical_span_utility_weight=args.lexical_span_utility_weight,
+            use_base_commit_workspace=args.base_commit_workspaces,
+            commit_workspace_tenant=args.commit_workspace_tenant,
         )
         results.append(res)
         question_seconds = time.monotonic() - question_started
@@ -3325,6 +3479,8 @@ def main() -> None:
         "context_seeds_per_role": args.context_seeds_per_role,
         "intent_budget": args.intent_budget,
         "base_token_budget": args.token_budget,
+        "base_commit_workspaces": args.base_commit_workspaces,
+        "commit_workspace_tenant": args.commit_workspace_tenant,
         "query_node_rerank": args.query_node_rerank,
         "query_node_semantic_weight": args.query_node_weight,
         "lexical_retrieval": args.lexical_retrieval,
@@ -3364,7 +3520,12 @@ def main() -> None:
         "rank_decay_head_share": args.rank_decay_head_share,
         "rank_decay_rate": args.rank_decay_rate,
         "rank_decay_max_coverage_share": args.rank_decay_max_coverage_share,
+        "decoupled_symbol_body_allocation": args.decoupled_symbol_body_allocation,
+        "decoupled_seed_span_reserve_share": args.decoupled_seed_span_reserve_share,
         "span_line_rerank": args.span_line_rerank,
+        "span_line_rerank_on_explicit_line_hints": (
+            args.span_line_rerank_on_explicit_line_hints
+        ),
         "span_rank_max_symbols": args.span_rank_max_symbols,
         "span_rank_max_candidates_per_symbol": (args.span_rank_max_candidates_per_symbol),
         "span_rank_max_body_lines": args.span_rank_max_body_lines,

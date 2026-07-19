@@ -25,7 +25,7 @@ import heapq
 import math
 import os
 import re
-from collections import Counter, namedtuple
+from collections import Counter, defaultdict, namedtuple
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field, replace
 from functools import lru_cache
@@ -200,6 +200,13 @@ class ContextSymbol:
     # Retrieval hint only: source intervals returned by semantic chunks.  It
     # is not claimed as rendered until the line ranker actually selects it.
     retrieval_spans: tuple[tuple[int, int], ...] = ()
+    # Direct retrieval provenance survives RoleCandidate -> ContextSymbol so
+    # the body allocator can distinguish a neighbour with its own evidence
+    # from a symbol present only because a graph edge reached it.
+    retrieval_channels: tuple[str, ...] = ()
+    exact_symbol_match: bool = False
+    supporting_roles: tuple[str, ...] = ()
+    lexical_span_score: float | None = None
     # Aggregate renders (currently class folds) represent several real source
     # symbols while retaining one primary uid for budget accounting. Keep the
     # complete owner set so exact-symbol/file evaluation does not confuse the
@@ -239,6 +246,10 @@ class ContextSymbol:
             payload["end_line"] = self.end_line
         payload["rendered_spans"] = self.effective_rendered_spans()
         payload["retrieval_spans"] = self.retrieval_spans
+        payload["retrieval_channels"] = self.retrieval_channels
+        payload["exact_symbol_match"] = self.exact_symbol_match
+        payload["supporting_roles"] = self.supporting_roles
+        payload["lexical_span_score"] = self.lexical_span_score
         if self.represented_owners:
             payload["represented_owners"] = [owner.to_dict() for owner in self.represented_owners]
         return payload
@@ -278,10 +289,32 @@ class ContextRenderBudget:
     rank_decay_head_share: float = 0.15
     rank_decay_rate: float = 0.75
     rank_decay_max_coverage_share: float = 0.65
+    decoupled_symbol_body_allocation: bool = True
+    decoupled_seed_span_reserve_share: float = 0.10
     span_line_rerank: bool = False
     span_rank_max_symbols: int = 48
     span_rank_max_candidates_per_symbol: int = 24
     span_rank_max_body_lines: int = 6
+
+
+@dataclass(frozen=True)
+class TokenCreditAttribution:
+    """Exact-token share of an accepted upgrade along audit dimensions."""
+
+    scope: str
+    evidence: str
+    edge_type: str
+    depth: int
+    delta_tokens: int
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "scope": self.scope,
+            "evidence": self.evidence,
+            "edge_type": self.edge_type,
+            "depth": self.depth,
+            "delta_tokens": self.delta_tokens,
+        }
 
 
 @dataclass(frozen=True)
@@ -303,6 +336,7 @@ class TokenCreditTransaction:
     new_files: int = 0
     new_role: bool = False
     new_steps: int = 0
+    attribution: tuple[TokenCreditAttribution, ...] = ()
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -321,6 +355,7 @@ class TokenCreditTransaction:
             "new_files": self.new_files,
             "new_role": self.new_role,
             "new_steps": self.new_steps,
+            "attribution": [row.to_dict() for row in self.attribution],
         }
 
 
@@ -383,6 +418,7 @@ class TokenCreditTrace:
         new_role: bool = False,
         new_steps: int = 0,
         semantic_delta_utility: float = 0.0,
+        attribution: tuple[TokenCreditAttribution, ...] = (),
     ) -> None:
         effective = float(delta_utility if effective_utility is None else effective_utility)
         self.cumulative_utility += float(delta_utility)
@@ -404,6 +440,7 @@ class TokenCreditTrace:
                 new_files=new_files,
                 new_role=new_role,
                 new_steps=new_steps,
+                attribution=attribution,
             )
         )
 
@@ -1084,6 +1121,11 @@ def _span_query_line_numbers(text: str, *, max_range: int = 100) -> frozenset[in
     return frozenset(lines)
 
 
+def query_has_explicit_line_hint(text: str) -> bool:
+    """Return whether a query names a bounded source line or line range."""
+    return bool(_span_query_line_numbers(text))
+
+
 def _sample_evenly(values: list[int], limit: int) -> list[int]:
     if limit <= 0 or not values:
         return []
@@ -1324,6 +1366,10 @@ def probe_candidate_lexical_spans(
             start_line=start_line,
             end_line=end_line,
             retrieval_spans=candidate.retrieval_spans,
+            retrieval_channels=candidate.retrieval_channels,
+            exact_symbol_match=candidate.exact_symbol_match,
+            supporting_roles=candidate.supporting_roles,
+            lexical_span_score=candidate.lexical_span_score,
         )
         windows = _span_candidates(
             symbol,
@@ -2254,7 +2300,16 @@ def _next_upgrade_render(
         )
         if mode.startswith("fold") and rendered.render_mode != mode:
             continue
-        if rendered.render_mode == current_mode or cost < current_cost:
+        # Strict progress only. Equal-cost collapses (e.g. hybrid → fold_compact
+        # under a tight transaction_limit) used to oscillate forever with
+        # out-of-ladder currents like fold_compact ↔ impact_tiered at the same
+        # printed size — hung axis_benchmark on SWE-bench django__django-15400.
+        if rendered.render_mode == current_mode or cost <= current_cost:
+            continue
+        try:
+            if modes.index(rendered.render_mode) < start:
+                continue
+        except ValueError:
             continue
         return rendered, cost
     return None
@@ -2377,6 +2432,9 @@ def _leader_transaction_limit(
 
 
 _UPGRADE_MODE_BONUS: dict[str, float] = {
+    "span_evidence": 0.18,
+    "seed_body": 0.38,
+    "related_body": 0.30,
     "impact_tiered": 0.12,
     "impact_surface": 0.08,
     "fold_compact": 0.18,
@@ -2723,6 +2781,103 @@ def _upgrade_semantic_value(
     return weighted_value / max(1, added_tokens)
 
 
+def _symbol_has_direct_retrieval_evidence(symbol: ContextSymbol) -> bool:
+    return bool(
+        symbol.exact_symbol_match
+        or symbol.retrieval_channels
+        or symbol.retrieval_spans
+        or symbol.role in {"anchor_symbol", "overlay_anchor"}
+    )
+
+
+def _symbol_has_strong_body_evidence(symbol: ContextSymbol) -> bool:
+    """Evidence strong enough to buy a neighbour body, not just coverage."""
+    if symbol.exact_symbol_match or symbol.role in {"anchor_symbol", "overlay_anchor"}:
+        return True
+    families = retrieval_channel_families(symbol.retrieval_channels)
+    if "semantic_chunk" in symbol.retrieval_channels or len(families) >= 2:
+        return True
+    return bool(symbol.retrieval_spans and float(symbol.lexical_span_score or 0.0) >= 0.15)
+
+
+def _symbol_has_graph_body_evidence(
+    symbol: ContextSymbol,
+) -> bool:
+    """Own query evidence strong enough for an otherwise graph-only body."""
+    return symbol.semantic_excess >= 0.50
+
+
+def _upgrade_token_attribution(
+    selected: list[dict[str, object]],
+    entry_index: int,
+    upgraded: ContextBundle,
+    *,
+    entry_source: ContextBundle,
+    exact_delta: int,
+) -> tuple[TokenCreditAttribution, ...]:
+    """Attribute the exact paid delta to changed first-wins symbols.
+
+    A fold swap can add some symbol bodies while dropping text elsewhere, so
+    positive per-symbol deltas may exceed the transaction's net price. Scale
+    grouped positive deltas back to ``exact_delta`` with deterministic largest
+    remainders; audit totals then stay exactly reconcilable with Token Credit.
+    """
+    if exact_delta <= 0:
+        return ()
+    before = _first_wins_printed_symbols(selected)
+    entry = selected[entry_index]
+    previous = entry.get("rendered")
+    entry["rendered"] = upgraded
+    try:
+        after = _first_wins_printed_symbols(selected)
+    finally:
+        entry["rendered"] = previous
+
+    raw_by_key: Counter[tuple[str, str, str, int]] = Counter()
+    for uid, symbol in after.items():
+        before_symbol = before.get(uid)
+        before_tokens = estimate_text_tokens(before_symbol.code or "") if before_symbol else 0
+        added = estimate_text_tokens(symbol.code or "") - before_tokens
+        if added <= 0:
+            continue
+        scope = "seed" if uid == entry_source.seed.uid else "related"
+        evidence = (
+            "retrieval_backed" if _symbol_has_direct_retrieval_evidence(symbol) else "graph_only"
+        )
+        edge_type = symbol.edge_type or symbol.expansion_step or ("SEED" if scope == "seed" else "")
+        raw_by_key[(scope, evidence, edge_type, max(0, int(symbol.distance_from_seed)))] += added
+
+    raw_total = sum(raw_by_key.values())
+    if raw_total <= 0:
+        evidence = (
+            "retrieval_backed"
+            if _symbol_has_direct_retrieval_evidence(entry_source.seed)
+            else "graph_only"
+        )
+        return (TokenCreditAttribution("seed", evidence, "SEED", 0, exact_delta),)
+
+    allocations: list[list[Any]] = []
+    allocated = 0
+    for key in sorted(raw_by_key):
+        numerator = exact_delta * raw_by_key[key]
+        whole, remainder = divmod(numerator, raw_total)
+        allocations.append([key, whole, remainder])
+        allocated += whole
+    for row in sorted(allocations, key=lambda item: (-item[2], item[0]))[: exact_delta - allocated]:
+        row[1] += 1
+    return tuple(
+        TokenCreditAttribution(
+            scope=key[0],
+            evidence=key[1],
+            edge_type=key[2],
+            depth=key[3],
+            delta_tokens=int(tokens),
+        )
+        for key, tokens, _remainder in allocations
+        if tokens > 0
+    )
+
+
 def _upgrade_exact_delta(
     selected: list[dict[str, object]],
     entry_index: int,
@@ -2908,7 +3063,14 @@ def _apply_credit_upgrades(
             node_semantic_utility_weight=node_semantic_utility_weight,
         )
 
+    # Bound the heap walk: equal-cost / collapsed-mode thrash used to spin
+    # forever when coverage left only a few tokens (django__django-15400).
+    max_steps = max(64, len(selected) * len(_RENDER_LADDER) * 4)
+    steps = 0
     while upgrade_heap and (used < token_budget or allow_free_at_ceiling):
+        steps += 1
+        if steps > max_steps:
+            break
         _neg_priority, entry_index, expected_cost, upgraded, upgraded_cost = heapq.heappop(
             upgrade_heap
         )
@@ -2956,6 +3118,15 @@ def _apply_credit_upgrades(
             if credit_trace is not None:
                 credit_trace.cutoff_rejections += 1
             continue
+        attribution: tuple[TokenCreditAttribution, ...] = ()
+        if credit_trace is not None and isinstance(entry_source, ContextBundle):
+            attribution = _upgrade_token_attribution(
+                selected,
+                entry_index,
+                upgraded,
+                entry_source=entry_source,
+                exact_delta=exact_delta,
+            )
         entry["rendered"] = upgraded
         entry["cost"] = upgraded_cost
         used += exact_delta
@@ -2971,6 +3142,7 @@ def _apply_credit_upgrades(
                     effective_utility=effective_utility,
                     delta_tokens=exact_delta,
                     semantic_delta_utility=semantic_delta_utility,
+                    attribution=attribution,
                 )
             primary = _primary_file(entry_source)
             if primary:
@@ -2988,6 +3160,765 @@ def _apply_credit_upgrades(
             printed_tokens=used,
             node_semantic_utility_weight=node_semantic_utility_weight,
         )
+    return used
+
+
+def _retrieval_span_symbol_render(
+    symbol: ContextSymbol,
+    *,
+    max_body_lines: int = 24,
+    window_lines: int = 6,
+) -> ContextSymbol:
+    """Render signature + bounded source windows anchored by retrieval spans."""
+    # A windowed class no longer honestly represents every contained member;
+    # full-body enrichment is restored only on the later body rung.
+    symbol = cast(ContextSymbol, replace(symbol, represented_owners=()))
+    if not symbol.retrieval_spans:
+        return _trim_symbol_for_mode(
+            symbol,
+            "signature_only",
+            full_render_max_depth=0,
+        )
+    candidates = _span_candidates(
+        symbol,
+        query_terms=frozenset(),
+        query_lines=frozenset(),
+        max_candidates=max(3, len(symbol.retrieval_spans) * 3),
+        window_lines=window_lines,
+    )
+    code, indices = _span_ranked_selection(
+        symbol,
+        candidates,
+        [0.0] * len(candidates),
+        max_body_lines=max_body_lines,
+        max_selected_spans=max(1, len(symbol.retrieval_spans)),
+    )
+    return _replace_symbol_render(symbol, code, indices)
+
+
+def _full_body_with_contained_owners(
+    symbol: ContextSymbol,
+    source_symbols: Iterable[ContextSymbol],
+) -> ContextSymbol:
+    """Mark indexed members honestly contained by a full class/source body."""
+    if symbol.start_line <= 0 or symbol.end_line < symbol.start_line:
+        return symbol
+    owners: dict[str, RenderedOwner] = {owner.uid: owner for owner in symbol.represented_owners}
+    for candidate in source_symbols:
+        if candidate.uid == symbol.uid or candidate.file_path != symbol.file_path:
+            continue
+        if candidate.start_line < symbol.start_line or candidate.end_line > symbol.end_line:
+            continue
+        if candidate.start_line <= 0 or candidate.end_line < candidate.start_line:
+            continue
+        owners.setdefault(
+            candidate.uid,
+            RenderedOwner(
+                uid=candidate.uid,
+                name=candidate.name,
+                qualified_name=candidate.qualified_name,
+                file_path=candidate.file_path,
+            ),
+        )
+    return cast(
+        ContextSymbol,
+        replace(symbol, represented_owners=tuple(owners.values())),
+    )
+
+
+def _with_richest_source_body(
+    symbol: ContextSymbol,
+    richest_by_uid: dict[str, ContextSymbol],
+) -> ContextSymbol:
+    richest = richest_by_uid.get(symbol.uid)
+    if richest is None or estimate_text_tokens(richest.code or "") <= estimate_text_tokens(
+        symbol.code or ""
+    ):
+        return symbol
+    return cast(
+        ContextSymbol,
+        replace(
+            symbol,
+            code=richest.code,
+            qualified_name=symbol.qualified_name or richest.qualified_name,
+            start_line=richest.start_line,
+            end_line=richest.end_line,
+            rendered_spans=richest.rendered_spans,
+        ),
+    )
+
+
+def _merge_direct_symbol_evidence(
+    symbol: ContextSymbol,
+    evidence: ContextSymbol,
+) -> ContextSymbol:
+    """Attach a UID's seed evidence to its graph-neighbour occurrence."""
+    return cast(
+        ContextSymbol,
+        replace(
+            symbol,
+            retrieval_channels=tuple(
+                dict.fromkeys([*symbol.retrieval_channels, *evidence.retrieval_channels])
+            ),
+            retrieval_spans=tuple(
+                sorted(set(symbol.retrieval_spans) | set(evidence.retrieval_spans))
+            ),
+            exact_symbol_match=symbol.exact_symbol_match or evidence.exact_symbol_match,
+            supporting_roles=tuple(
+                dict.fromkeys([*symbol.supporting_roles, *evidence.supporting_roles])
+            ),
+            lexical_span_score=max(
+                float(symbol.lexical_span_score or 0.0),
+                float(evidence.lexical_span_score or 0.0),
+            )
+            or None,
+            relevance_score=max(symbol.relevance_score, evidence.relevance_score),
+            utility_score=max(symbol.utility_score, evidence.utility_score),
+            query_similarity=(
+                evidence.query_similarity
+                if evidence.query_similarity is not None
+                else symbol.query_similarity
+            ),
+            semantic_excess=max(symbol.semantic_excess, evidence.semantic_excess),
+        ),
+    )
+
+
+def _merge_contained_retrieval_evidence(
+    container: ContextSymbol,
+    evidence_symbols: Iterable[ContextSymbol],
+) -> ContextSymbol:
+    """Promote retrieval evidence from indexed members to their owner body.
+
+    A method hit is evidence for the enclosing class body, but not an exact
+    name match for that class.  Keep the owner's identity while carrying only
+    the member's channels and source windows upward.
+    """
+    result = container
+    for evidence in evidence_symbols:
+        if evidence.uid == container.uid or evidence.file_path != container.file_path:
+            continue
+        if not _symbol_has_direct_retrieval_evidence(evidence):
+            continue
+        if (
+            container.start_line <= 0
+            or container.end_line < container.start_line
+            or evidence.start_line < container.start_line
+            or evidence.end_line > container.end_line
+        ):
+            continue
+        result = cast(
+            ContextSymbol,
+            replace(
+                result,
+                retrieval_channels=tuple(
+                    dict.fromkeys([*result.retrieval_channels, *evidence.retrieval_channels])
+                ),
+                retrieval_spans=tuple(
+                    sorted(set(result.retrieval_spans) | set(evidence.retrieval_spans))
+                ),
+                supporting_roles=tuple(
+                    dict.fromkeys([*result.supporting_roles, *evidence.supporting_roles])
+                ),
+                lexical_span_score=max(
+                    float(result.lexical_span_score or 0.0),
+                    float(evidence.lexical_span_score or 0.0),
+                )
+                or None,
+                relevance_score=max(result.relevance_score, evidence.relevance_score),
+                utility_score=max(result.utility_score, evidence.utility_score),
+                semantic_excess=max(result.semantic_excess, evidence.semantic_excess),
+            ),
+        )
+    return result
+
+
+def _retrieval_span_contained_members(
+    container: ContextSymbol,
+    source_symbols: Iterable[ContextSymbol],
+) -> list[ContextSymbol]:
+    """Resolve container spans to indexed members they actually intersect."""
+    if not container.retrieval_spans:
+        return []
+    members: list[ContextSymbol] = []
+    seen: set[str] = set()
+    for candidate in source_symbols:
+        if candidate.uid == container.uid or candidate.uid in seen:
+            continue
+        if candidate.file_path != container.file_path:
+            continue
+        if candidate.start_line <= 0 or candidate.end_line < candidate.start_line:
+            continue
+        if container.start_line > 0 and (
+            candidate.start_line < container.start_line or candidate.end_line > container.end_line
+        ):
+            continue
+        intersections = tuple(
+            (max(start, candidate.start_line), min(end, candidate.end_line))
+            for start, end in container.retrieval_spans
+            if max(start, candidate.start_line) <= min(end, candidate.end_line)
+        )
+        if not intersections:
+            continue
+        member = _merge_direct_symbol_evidence(candidate, container)
+        members.append(cast(ContextSymbol, replace(member, retrieval_spans=intersections)))
+        seen.add(candidate.uid)
+    return members
+
+
+def _replace_rendered_bundle_symbol(
+    current: ContextBundle,
+    target: ContextSymbol,
+    *,
+    render_mode: str,
+) -> ContextBundle | None:
+    if current.seed.uid == target.uid:
+        if current.seed.represented_owners:
+            if render_mode.endswith("_span"):
+                # A bounded evidence window no longer represents every member
+                # previously grouped into the fold.  Replace the aggregate and
+                # deliberately drop those stale first-wins ownership claims.
+                return cast(
+                    ContextBundle,
+                    replace(current, seed=target, render_mode=render_mode),
+                )
+            if not render_mode.endswith("_body") or target.rendered_spans is not None:
+                return None
+            target = cast(
+                ContextSymbol,
+                replace(target, represented_owners=current.seed.represented_owners),
+            )
+        return cast(ContextBundle, replace(current, seed=target, render_mode=render_mode))
+    related = list(current.related)
+    for index, symbol in enumerate(related):
+        if symbol.uid != target.uid:
+            continue
+        if symbol.represented_owners:
+            if render_mode.endswith("_span"):
+                related[index] = target
+                return cast(
+                    ContextBundle,
+                    replace(current, related=tuple(related), render_mode=render_mode),
+                )
+            if not render_mode.endswith("_body") or target.rendered_spans is not None:
+                return None
+            target = cast(
+                ContextSymbol,
+                replace(target, represented_owners=symbol.represented_owners),
+            )
+        related[index] = target
+        return cast(
+            ContextBundle,
+            replace(current, related=tuple(related), render_mode=render_mode),
+        )
+    return cast(
+        ContextBundle,
+        replace(current, related=(*current.related, target), render_mode=render_mode),
+    )
+
+
+def _rendered_symbol_source_line_set(symbol: ContextSymbol) -> set[int]:
+    return {
+        line
+        for start, end in symbol.effective_rendered_spans()
+        for line in range(start, end + 1)
+        if start > 0 and end >= start
+    }
+
+
+def _upgrade_span_redundancy(
+    selected: list[dict[str, object]],
+    entry_index: int,
+    upgraded: ContextBundle,
+) -> float:
+    """Share of newly represented source lines already covered by other UIDs."""
+    before = _first_wins_printed_symbols(selected)
+    entry = selected[entry_index]
+    previous = entry.get("rendered")
+    entry["rendered"] = upgraded
+    try:
+        after = _first_wins_printed_symbols(selected)
+    finally:
+        entry["rendered"] = previous
+
+    lines_by_file: defaultdict[str, set[int]] = defaultdict(set)
+    for symbol in before.values():
+        lines_by_file[symbol.file_path].update(_rendered_symbol_source_line_set(symbol))
+
+    added_total = 0
+    overlap_total = 0
+    for uid, symbol in after.items():
+        previous_symbol = before.get(uid)
+        previous_lines = (
+            _rendered_symbol_source_line_set(previous_symbol) if previous_symbol else set()
+        )
+        added_lines = _rendered_symbol_source_line_set(symbol) - previous_lines
+        if not added_lines:
+            continue
+        other_lines = set(lines_by_file.get(symbol.file_path, set())) - previous_lines
+        added_total += len(added_lines)
+        overlap_total += len(added_lines & other_lines)
+    return overlap_total / added_total if added_total else 0.0
+
+
+def _decoupled_upgrade_gain_raw(
+    st: _BundleStatic,
+    bundle: ContextBundle,
+    target: ContextSymbol,
+    *,
+    mode: str,
+    span_redundancy: float,
+) -> float:
+    """Symbol-local utility: evidence and overlap replace file saturation."""
+    is_seed = target.uid == bundle.seed.uid
+    target_weight = (
+        1.0
+        if is_seed
+        else min(
+            1.0,
+            max(0.25, target.relevance_score, target.utility_score),
+        )
+    )
+    evidence_bonus = 0.0
+    if target.exact_symbol_match:
+        evidence_bonus += 0.18
+    families = retrieval_channel_families(target.retrieval_channels)
+    if families:
+        evidence_bonus += 0.08 + 0.04 * min(2, len(families) - 1)
+    if target.retrieval_spans:
+        evidence_bonus += 0.12
+    gain = 0.35 * st.base_utility * st.tier_weight * target_weight
+    gain += _UPGRADE_MODE_BONUS.get(mode, 0.10)
+    gain += evidence_bonus
+    gain += 0.05 if not bundle.passive else 0.03
+    gain -= 0.50 * min(1.0, max(0.0, span_redundancy))
+    return gain
+
+
+def _direct_seed_evidence_by_uid(
+    selected: list[dict[str, object]],
+) -> dict[str, ContextSymbol]:
+    evidence: dict[str, ContextSymbol] = {}
+    for entry in selected:
+        source = entry.get("source")
+        if not isinstance(source, ContextBundle):
+            continue
+        seed = source.seed
+        if not _symbol_has_direct_retrieval_evidence(seed):
+            continue
+        existing = evidence.get(seed.uid)
+        if existing is None:
+            evidence[seed.uid] = seed
+            continue
+        existing_strength = (
+            int(existing.exact_symbol_match),
+            len(retrieval_channel_families(existing.retrieval_channels)),
+            len(existing.retrieval_spans),
+            existing.relevance_score,
+        )
+        seed_strength = (
+            int(seed.exact_symbol_match),
+            len(retrieval_channel_families(seed.retrieval_channels)),
+            len(seed.retrieval_spans),
+            seed.relevance_score,
+        )
+        if seed_strength > existing_strength:
+            evidence[seed.uid] = seed
+    return evidence
+
+
+def _apply_one_decoupled_upgrade(
+    selected: list[dict[str, object]],
+    entry_index: int,
+    static: list[_BundleStatic],
+    state: _TokenCreditCoverageState,
+    *,
+    target: ContextSymbol,
+    upgraded: ContextBundle,
+    mode: str,
+    phase: str,
+    token_ceiling: int,
+    used: int,
+    credit_trace: TokenCreditTrace | None,
+    min_utility_per_token: float | None,
+    cutoff_bypass: bool,
+) -> tuple[int, str, bool]:
+    """Try one symbol-local rung; return used, outcome and bypass consumption."""
+    entry = selected[entry_index]
+    entry_source = entry.get("source")
+    bundle_index = entry.get("index")
+    if not isinstance(entry_source, ContextBundle) or not isinstance(bundle_index, int):
+        return used, "missing", False
+    exact_delta = _upgrade_exact_delta(
+        selected,
+        entry_index,
+        upgraded,
+        printed_before=used,
+    )
+    if used + exact_delta > token_ceiling:
+        return used, "budget", False
+    semantic_delta = _upgrade_semantic_value(selected, entry_index, upgraded)
+    redundancy = _upgrade_span_redundancy(selected, entry_index, upgraded)
+    raw_utility = _decoupled_upgrade_gain_raw(
+        static[bundle_index],
+        entry_source,
+        target,
+        mode=mode,
+        span_redundancy=redundancy,
+    )
+    raw_density = raw_utility / max(1, exact_delta)
+    cutoff_rejected = (
+        min_utility_per_token is not None
+        and exact_delta > 0
+        and raw_density <= min_utility_per_token
+    )
+    if cutoff_rejected and not cutoff_bypass:
+        if credit_trace is not None:
+            credit_trace.cutoff_rejections += 1
+        return used, "cutoff", False
+
+    attribution: tuple[TokenCreditAttribution, ...] = ()
+    if credit_trace is not None:
+        attribution = _upgrade_token_attribution(
+            selected,
+            entry_index,
+            upgraded,
+            entry_source=entry_source,
+            exact_delta=exact_delta,
+        )
+    entry["rendered"] = upgraded
+    entry["cost"] = _bundle_token_count(upgraded)
+    used += exact_delta
+    if credit_trace is not None:
+        credit_trace.record(
+            phase=phase,
+            bundle=entry_source,
+            render_mode=mode,
+            delta_utility=raw_utility,
+            effective_utility=max(0.001, raw_utility),
+            delta_tokens=exact_delta,
+            semantic_delta_utility=semantic_delta,
+            attribution=attribution,
+        )
+    if target.file_path:
+        state.file_tokens[target.file_path] = (
+            state.file_tokens.get(target.file_path, 0) + exact_delta
+        )
+    return used, "accepted", cutoff_rejected and cutoff_bypass
+
+
+def _symbol_upgrade_variants(
+    current: ContextBundle,
+    target: ContextSymbol,
+    *,
+    scope: str,
+) -> list[tuple[str, str, ContextBundle]]:
+    variants: list[tuple[str, str, ContextBundle]] = []
+    if target.retrieval_spans:
+        span_target = _retrieval_span_symbol_render(target)
+        span_bundle = _replace_rendered_bundle_symbol(
+            current,
+            span_target,
+            render_mode=f"{scope}_span",
+        )
+        if span_bundle is not None:
+            variants.append(("span_evidence", f"upgrade_{scope}_span", span_bundle))
+            current = span_bundle
+    body_bundle = _replace_rendered_bundle_symbol(
+        current,
+        target,
+        render_mode=f"{scope}_body",
+    )
+    if body_bundle is not None:
+        variants.append(
+            (
+                "seed_body" if scope == "seed" else "related_body",
+                f"upgrade_{scope}_body",
+                body_bundle,
+            )
+        )
+    return variants
+
+
+def _first_rendered_entry_for_uid(
+    selected: list[dict[str, object]],
+    uid: str,
+) -> int | None:
+    for entry_index, entry in enumerate(selected):
+        rendered = entry.get("rendered")
+        if not isinstance(rendered, ContextBundle):
+            continue
+        if any(symbol.uid == uid for symbol in rendered.all_symbols()):
+            return entry_index
+    return None
+
+
+def _apply_decoupled_seed_span_reserve(
+    selected: list[dict[str, object]],
+    static: list[_BundleStatic],
+    state: _TokenCreditCoverageState,
+    *,
+    source_symbols: list[ContextSymbol],
+    richest_by_uid: dict[str, ContextSymbol],
+    token_budget: int,
+    used: int,
+    reserve_share: float,
+    credit_trace: TokenCreditTrace | None,
+    min_utility_per_token: float | None,
+) -> tuple[int, set[str]]:
+    """Buy direct seed windows before body credits consume their local lane.
+
+    Rank decay is intentionally strict for full bodies, but retrieval windows
+    are evidence coverage rather than body enrichment.  Give direct seed spans
+    one bounded global reserve so a rank-11 exact window is not forced to buy a
+    700-token body merely because its geometric body credit is small.
+    """
+    reserve_tokens = int(token_budget * min(1.0, max(0.0, reserve_share)))
+    if reserve_tokens <= 0:
+        return used, set()
+    reserve_ceiling = min(token_budget, used + reserve_tokens)
+    upgraded_uids: set[str] = set()
+    ordered_entries = sorted(
+        range(len(selected)),
+        key=lambda entry_index: int(selected[entry_index].get("index", 1 << 30)),
+    )
+    seen: set[str] = set()
+    for entry_index in ordered_entries:
+        source = selected[entry_index].get("source")
+        if not isinstance(source, ContextBundle):
+            continue
+        target = source.seed
+        if target.uid in seen or not target.retrieval_spans:
+            continue
+        seen.add(target.uid)
+        if not _symbol_has_direct_retrieval_evidence(target):
+            continue
+        target = _with_richest_source_body(target, richest_by_uid)
+        target = _full_body_with_contained_owners(target, source_symbols)
+        target_entry_index = _first_rendered_entry_for_uid(selected, target.uid)
+        if target_entry_index is None:
+            continue
+        target_entry = selected[target_entry_index]
+        target_source = target_entry.get("source")
+        current = target_entry.get("rendered")
+        if not isinstance(target_source, ContextBundle) or not isinstance(
+            current, ContextBundle
+        ):
+            continue
+        scope = "seed" if target_source.seed.uid == target.uid else "related"
+        span_variant = next(
+            (
+                (mode, phase, upgraded)
+                for mode, phase, upgraded in _symbol_upgrade_variants(
+                    current,
+                    target,
+                    scope=scope,
+                )
+                if mode == "span_evidence"
+            ),
+            None,
+        )
+        if span_variant is None:
+            continue
+        mode, phase, upgraded = span_variant
+        used, outcome, _consumed_bypass = _apply_one_decoupled_upgrade(
+            selected,
+            target_entry_index,
+            static,
+            state,
+            target=target,
+            upgraded=upgraded,
+            mode=mode,
+            phase=phase,
+            token_ceiling=reserve_ceiling,
+            used=used,
+            credit_trace=credit_trace,
+            min_utility_per_token=min_utility_per_token,
+            cutoff_bypass=False,
+        )
+        if outcome == "accepted":
+            upgraded_uids.add(target.uid)
+        if used >= reserve_ceiling:
+            break
+    return used, upgraded_uids
+
+
+def _apply_decoupled_rank_decay_credit_upgrades(
+    selected: list[dict[str, object]],
+    static: list[_BundleStatic],
+    state: _TokenCreditCoverageState,
+    *,
+    token_budget: int,
+    used: int,
+    head_share: float,
+    decay_rate: float,
+    seed_span_reserve_share: float,
+    credit_trace: TokenCreditTrace | None,
+    min_utility_per_token: float | None,
+) -> int:
+    """Buy seed span/body lanes; body-upgrade neighbours only with own evidence."""
+    evidence_by_uid = _direct_seed_evidence_by_uid(selected)
+    source_symbols = [
+        symbol
+        for entry in selected
+        if isinstance((source := entry.get("source")), ContextBundle)
+        for symbol in source.all_symbols()
+    ]
+    richest_by_uid: dict[str, ContextSymbol] = {}
+    for symbol in source_symbols:
+        existing = richest_by_uid.get(symbol.uid)
+        if existing is None or estimate_text_tokens(symbol.code or "") > estimate_text_tokens(
+            existing.code or ""
+        ):
+            richest_by_uid[symbol.uid] = symbol
+    ordered_entries = sorted(
+        range(len(selected)),
+        key=lambda entry_index: int(selected[entry_index].get("index", 1 << 30)),
+    )
+    used, reserved_seed_span_uids = _apply_decoupled_seed_span_reserve(
+        selected,
+        static,
+        state,
+        source_symbols=source_symbols,
+        richest_by_uid=richest_by_uid,
+        token_budget=token_budget,
+        used=used,
+        reserve_share=seed_span_reserve_share,
+        credit_trace=credit_trace,
+        min_utility_per_token=min_utility_per_token,
+    )
+    processed_target_uids: set[str] = set()
+    for entry_index in ordered_entries:
+        entry = selected[entry_index]
+        bundle_index = entry.get("index")
+        source = entry.get("source")
+        current = entry.get("rendered")
+        if not isinstance(bundle_index, int) or not isinstance(source, ContextBundle):
+            continue
+        if not isinstance(current, ContextBundle):
+            continue
+        candidate_rank = bundle_index + 1
+        body_credit = _rank_decay_body_credit(
+            token_budget,
+            candidate_rank=candidate_rank,
+            head_share=head_share,
+            decay_rate=decay_rate,
+        )
+        if body_credit <= 0:
+            break
+        local_ceiling = min(token_budget, used + body_credit)
+        bypass_available = bool(
+            min_utility_per_token is not None
+            and min_utility_per_token > 0.0
+            and candidate_rank <= _RANK_DECAY_SPAN_PROTECTED_HEAD
+            and source.seed.retrieval_spans
+        )
+
+        lanes: list[tuple[str, ContextSymbol, str]] = []
+        if _symbol_has_direct_retrieval_evidence(source.seed):
+            lanes.append(("seed", source.seed, source.seed.uid))
+        related_targets: list[ContextSymbol] = []
+        for related in source.related:
+            related = _merge_contained_retrieval_evidence(
+                related,
+                evidence_by_uid.values(),
+            )
+            evidence = (
+                related
+                if _symbol_has_direct_retrieval_evidence(related)
+                else evidence_by_uid.get(related.uid)
+            )
+            target = (
+                _merge_direct_symbol_evidence(related, evidence)
+                if evidence is not None
+                else related
+            )
+            if _symbol_has_strong_body_evidence(target) or _symbol_has_graph_body_evidence(target):
+                related_targets.append(target)
+        related_targets.sort(
+            key=lambda symbol: (
+                int(symbol.exact_symbol_match),
+                len(retrieval_channel_families(symbol.retrieval_channels)),
+                len(symbol.retrieval_spans),
+                symbol.relevance_score,
+            ),
+            reverse=True,
+        )
+        lanes.extend(("related", target, target.uid) for target in related_targets)
+
+        # A retrieval window can be attached to an owner/container even though
+        # the indexed member inside that window is what should receive tokens.
+        # Keep the member as a separate first-wins symbol, but let it consume
+        # the container entry's local credit when it has no rendered entry yet.
+        span_containers = [
+            target
+            for target in (source.seed, *related_targets)
+            if _symbol_has_direct_retrieval_evidence(target) and target.retrieval_spans
+        ]
+        for container in span_containers:
+            lanes.extend(
+                ("related", member, container.uid)
+                for member in _retrieval_span_contained_members(
+                    container,
+                    source_symbols,
+                )
+            )
+
+        for scope, target, fallback_uid in lanes:
+            if target.uid in processed_target_uids:
+                continue
+            target = _with_richest_source_body(target, richest_by_uid)
+            target = _full_body_with_contained_owners(target, source_symbols)
+            target_entry_index = _first_rendered_entry_for_uid(selected, target.uid)
+            if target_entry_index is None:
+                target_entry_index = _first_rendered_entry_for_uid(
+                    selected,
+                    fallback_uid,
+                )
+            if target_entry_index is None:
+                continue
+            target_entry = selected[target_entry_index]
+            target_source = target_entry.get("source")
+            actual_scope = (
+                "seed"
+                if isinstance(target_source, ContextBundle) and target_source.seed.uid == target.uid
+                else "related"
+            )
+            current = target_entry.get("rendered")
+            if not isinstance(current, ContextBundle):
+                continue
+            for mode, phase, upgraded in _symbol_upgrade_variants(
+                current,
+                target,
+                scope=actual_scope,
+            ):
+                if mode == "span_evidence" and target.uid in reserved_seed_span_uids:
+                    continue
+                used, outcome, consumed_bypass = _apply_one_decoupled_upgrade(
+                    selected,
+                    target_entry_index,
+                    static,
+                    state,
+                    target=target,
+                    upgraded=upgraded,
+                    mode=mode,
+                    phase=phase,
+                    token_ceiling=local_ceiling,
+                    used=used,
+                    credit_trace=credit_trace,
+                    min_utility_per_token=min_utility_per_token,
+                    cutoff_bypass=bypass_available and scope == "seed",
+                )
+                if consumed_bypass:
+                    bypass_available = False
+                if outcome in {"budget", "cutoff", "missing"}:
+                    break
+                current = target_entry.get("rendered")
+                if not isinstance(current, ContextBundle):
+                    break
+            processed_target_uids.add(target.uid)
+            if used >= token_budget:
+                return used
     return used
 
 
@@ -3151,6 +4082,8 @@ def _apply_token_credit_budget(
     rank_decay_head_share: float = 0.15,
     rank_decay_rate: float = 0.75,
     rank_decay_max_coverage_share: float = 0.65,
+    decoupled_symbol_body_allocation: bool = False,
+    decoupled_seed_span_reserve_share: float = 0.10,
 ) -> list[ContextBundle]:
     """Token Credit System v2 prototype: coverage-first marginal transactions.
 
@@ -3262,6 +4195,20 @@ def _apply_token_credit_budget(
     if credit_trace is not None:
         credit_trace.spend_ceiling = upgrade_budget
     if rank_decay_active:
+        if decoupled_symbol_body_allocation:
+            _apply_decoupled_rank_decay_credit_upgrades(
+                selected,
+                static,
+                state,
+                token_budget=upgrade_budget,
+                used=used,
+                head_share=rank_decay_head_share,
+                decay_rate=rank_decay_rate,
+                seed_span_reserve_share=decoupled_seed_span_reserve_share,
+                credit_trace=credit_trace,
+                min_utility_per_token=upgrade_cutoff,
+            )
+            return _selected_credit_rendered_bundles(selected)
         _apply_rank_decay_credit_upgrades(
             selected,
             static,
@@ -3376,6 +4323,8 @@ def _apply_render_and_budget(
     rank_decay_head_share: float = 0.15,
     rank_decay_rate: float = 0.75,
     rank_decay_max_coverage_share: float = 0.65,
+    decoupled_symbol_body_allocation: bool = False,
+    decoupled_seed_span_reserve_share: float = 0.10,
 ) -> list[ContextBundle]:
     """Echelon 2: render-trim then token-pack the assembled bundles.
 
@@ -3416,6 +4365,8 @@ def _apply_render_and_budget(
             rank_decay_head_share=rank_decay_head_share,
             rank_decay_rate=rank_decay_rate,
             rank_decay_max_coverage_share=rank_decay_max_coverage_share,
+            decoupled_symbol_body_allocation=decoupled_symbol_body_allocation,
+            decoupled_seed_span_reserve_share=decoupled_seed_span_reserve_share,
         )
 
     if render_mode in (
@@ -3842,6 +4793,10 @@ def _context_bundle_for_candidate(
         start_line=_int_payload_value(seed_payload.get("start_line")),
         end_line=_int_payload_value(seed_payload.get("end_line")),
         retrieval_spans=cand.retrieval_spans,
+        retrieval_channels=cand.retrieval_channels,
+        exact_symbol_match=cand.exact_symbol_match,
+        supporting_roles=cand.supporting_roles,
+        lexical_span_score=cand.lexical_span_score,
     )
     related = tuple(_context_symbol_from_hit(h, payload_by_uid) for h in hits)
     return ContextBundle(
@@ -3909,6 +4864,8 @@ def _pack_with_render_budget(
         rank_decay_head_share=budget.rank_decay_head_share,
         rank_decay_rate=budget.rank_decay_rate,
         rank_decay_max_coverage_share=budget.rank_decay_max_coverage_share,
+        decoupled_symbol_body_allocation=budget.decoupled_symbol_body_allocation,
+        decoupled_seed_span_reserve_share=budget.decoupled_seed_span_reserve_share,
     )
 
 
@@ -4075,4 +5032,5 @@ __all__ = [
     "TokenCreditTransaction",
     "build_context_for_candidates",
     "probe_candidate_lexical_spans",
+    "query_has_explicit_line_hint",
 ]

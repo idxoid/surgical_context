@@ -494,6 +494,8 @@ class _SymbolTargetedRetrievalOptions:
     rank_decay_head_share: float
     rank_decay_rate: float
     rank_decay_max_coverage_share: float
+    decoupled_symbol_body_allocation: bool
+    decoupled_seed_span_reserve_share: float
     evidence_graph_fanout: bool
     evidence_graph_fanout_min: int
     evidence_graph_fanout_protected_head: int
@@ -530,6 +532,8 @@ class _ContextBuildOptions:
     rank_decay_head_share: float
     rank_decay_rate: float
     rank_decay_max_coverage_share: float
+    decoupled_symbol_body_allocation: bool
+    decoupled_seed_span_reserve_share: float
     query_scoring: role_retrieval.QueryScoringContext | None
     semantic_expansion_alpha: float
     semantic_expansion_structural_reserve: int
@@ -565,6 +569,8 @@ def _build_context_bundles_with_budget(
         rank_decay_head_share=options.rank_decay_head_share,
         rank_decay_rate=options.rank_decay_rate,
         rank_decay_max_coverage_share=options.rank_decay_max_coverage_share,
+        decoupled_symbol_body_allocation=options.decoupled_symbol_body_allocation,
+        decoupled_seed_span_reserve_share=options.decoupled_seed_span_reserve_share,
         span_line_rerank=options.span_line_rerank,
         span_rank_max_symbols=options.span_rank_max_symbols,
         span_rank_max_candidates_per_symbol=options.span_rank_max_candidates_per_symbol,
@@ -728,6 +734,10 @@ def _try_symbol_targeted_retrieval(
                     rank_decay_head_share=options.rank_decay_head_share,
                     rank_decay_rate=options.rank_decay_rate,
                     rank_decay_max_coverage_share=(options.rank_decay_max_coverage_share),
+                    decoupled_symbol_body_allocation=(options.decoupled_symbol_body_allocation),
+                    decoupled_seed_span_reserve_share=(
+                        options.decoupled_seed_span_reserve_share
+                    ),
                     query_scoring=None,
                     semantic_expansion_alpha=0.70,
                     semantic_expansion_structural_reserve=1,
@@ -1518,10 +1528,17 @@ class AxisRetrievalConfig:
     rank_decay_head_share: float = 0.15
     rank_decay_rate: float = 0.75
     rank_decay_max_coverage_share: float = 0.65
+    # Validated symbol-local ladder: seed span/body upgrades are priced
+    # separately and graph neighbours need their own evidence.
+    decoupled_symbol_body_allocation: bool = True
+    # Direct retrieval windows are evidence coverage, not full-body upgrades.
+    # Buy them from a small global reserve before geometric body credits.
+    decoupled_seed_span_reserve_share: float = 0.10
     # Opt-in within-symbol reranker: body windows compete by query similarity
     # before Token Credit, so later render upgrades cannot restore discarded
     # non-answer lines from an otherwise relevant symbol.
     span_line_rerank: bool = False
+    span_line_rerank_on_explicit_line_hints: bool = False
     span_rank_max_symbols: int = 48
     span_rank_max_candidates_per_symbol: int = 24
     span_rank_max_body_lines: int = 6
@@ -1691,8 +1708,12 @@ def _run_axis_retrieval_impl(
     tr = cfg.trace if cfg.trace is not None else _NullTrace()
     budget_trace = context_builder.TokenCreditTrace() if cfg.capture_budget_trace else None
     embed_fn = _request_embedder(lance)
+    effective_span_line_rerank = cfg.span_line_rerank or (
+        cfg.span_line_rerank_on_explicit_line_hints
+        and context_builder.query_has_explicit_line_hint(question)
+    )
     span_score_fn = None
-    if cfg.span_line_rerank:
+    if effective_span_line_rerank:
         try:
             span_score_fn = _request_span_scorer(lance, embed_fn(question))
         except Exception:
@@ -1733,10 +1754,14 @@ def _run_axis_retrieval_impl(
                 rank_decay_head_share=cfg.rank_decay_head_share,
                 rank_decay_rate=cfg.rank_decay_rate,
                 rank_decay_max_coverage_share=cfg.rank_decay_max_coverage_share,
+                decoupled_symbol_body_allocation=(cfg.decoupled_symbol_body_allocation),
+                decoupled_seed_span_reserve_share=(
+                    cfg.decoupled_seed_span_reserve_share
+                ),
                 evidence_graph_fanout=cfg.evidence_graph_fanout,
                 evidence_graph_fanout_min=cfg.evidence_graph_fanout_min,
                 evidence_graph_fanout_protected_head=(cfg.evidence_graph_fanout_protected_head),
-                span_line_rerank=cfg.span_line_rerank,
+                span_line_rerank=effective_span_line_rerank,
                 span_rank_max_symbols=cfg.span_rank_max_symbols,
                 span_rank_max_candidates_per_symbol=(cfg.span_rank_max_candidates_per_symbol),
                 span_rank_max_body_lines=cfg.span_rank_max_body_lines,
@@ -2085,6 +2110,10 @@ def _run_axis_retrieval_impl(
                     rank_decay_head_share=cfg.rank_decay_head_share,
                     rank_decay_rate=cfg.rank_decay_rate,
                     rank_decay_max_coverage_share=(cfg.rank_decay_max_coverage_share),
+                    decoupled_symbol_body_allocation=(cfg.decoupled_symbol_body_allocation),
+                    decoupled_seed_span_reserve_share=(
+                        cfg.decoupled_seed_span_reserve_share
+                    ),
                     query_scoring=query_scoring,
                     semantic_expansion_alpha=cfg.context_semantic_expansion_alpha,
                     semantic_expansion_structural_reserve=(
@@ -2094,7 +2123,7 @@ def _run_axis_retrieval_impl(
                     evidence_graph_fanout=cfg.evidence_graph_fanout,
                     evidence_graph_fanout_min=cfg.evidence_graph_fanout_min,
                     evidence_graph_fanout_protected_head=(cfg.evidence_graph_fanout_protected_head),
-                    span_line_rerank=cfg.span_line_rerank,
+                    span_line_rerank=effective_span_line_rerank,
                     span_rank_max_symbols=cfg.span_rank_max_symbols,
                     span_rank_max_candidates_per_symbol=(cfg.span_rank_max_candidates_per_symbol),
                     span_rank_max_body_lines=cfg.span_rank_max_body_lines,

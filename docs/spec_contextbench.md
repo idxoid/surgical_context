@@ -173,7 +173,9 @@ source lines.
 The experimental span/line ranker is opt-in. It batches query-similarity scores
 for windows inside the symbols selected by the first Token Credit pass, then
 reruns packing with at most six ranked body lines per symbol. Explicit source
-line references in the question are treated as dominant anchors. Enable it for
+line references are dominant anchors. An experimental conditional flag can
+enable it only for such questions, but remains off by default after the broader
+smoke arm exposed unacceptable tail latency. Enable it unconditionally for
 the MCP treatment arm or the HTTP bridge with:
 
 ```bash
@@ -182,8 +184,8 @@ export SURGICAL_CONTEXT_SPAN_LINE_RERANK=true
 
 For the internal benchmark, use `--span-line-rerank`; the candidate, symbol,
 and body-line caps are independently configurable with the corresponding
-`--span-rank-*` flags. The feature remains off by default while the ablation is
-expanded beyond the smoke set.
+`--span-rank-*` flags. Unconditional reranking remains off by default while the
+ablation is expanded beyond the smoke set.
 
 ## Limitations (current)
 

@@ -74,6 +74,40 @@ precision effectively flat in isolation. In the later all-positive envelope
 density cutoff), the probe and `0.15` prior were recall-safe and improved
 aggregate line/span recall, so both are now regular defaults.
 
+## Evidence-gated body allocation
+
+Token Credit now prices a seed's retrieval span and full body as separate
+upgrades. Related-symbol bodies require their own retrieval/query evidence;
+an indexed member hit can supply span evidence to its enclosing owner, and an
+owner span can resolve back to the intersecting indexed member. Merely sharing
+a file with a seed is not evidence. Upgrade saturation is based on overlap
+with source lines already rendered by other symbols, so multiple distinct
+symbols in one file are not treated as redundant.
+
+Direct seed windows are bought before full-body rank decay from a bounded 10%
+global reserve. This is an eligibility lane, not a target spend: unused reserve
+stays unused. It prevents a strong rank-tail retrieval span from being forced
+to afford its owner's much larger full body. A span window may replace a
+`fold`/`fold_compact` aggregate; doing so clears the aggregate's stale
+`represented_owners` claims so first-wins line attribution remains honest.
+
+The within-symbol reranker remains opt-in. A separate experimental conditional
+flag can activate it only when the query contains a bounded `line N` or `:N-M`
+source hint, but that arm is not a regular default: the first exact task was a
+strong win while the broader smoke diagnostic exposed unacceptable tail
+latency, so it needs a cheaper scorer before promotion.
+
+The benchmark's candidate-rank spend audit attributes every paid upgrade token
+by `seed`/`related`, `retrieval_backed`/`graph_only`, edge type, and graph depth;
+the dimensions reconcile exactly to `upgrade_tokens`. On the 98-question 12k
+arm this moved retrieval-backed upgrade share from `42.4%` to `90.6%`, while
+file and exact-symbol recall were unchanged. Bundle line recall moved from
+`0.243` to `0.404`, exact-owner recall from `0.831` to `0.835`, and token
+precision from `0.342` to `0.387`. Mean rendered tokens rose from `12.05k` to
+`13.80k`; the added tokens were `+1.23k` expected versus `+0.52k` other per
+question. `decoupled_symbol_body_allocation` is therefore a regular default;
+use `--no-decoupled-symbol-body-allocation` for the control arm.
+
 ## Index lifecycle
 
 Semantic chunks live in `<symbols_table>_semantic_chunks_v1`. Their
