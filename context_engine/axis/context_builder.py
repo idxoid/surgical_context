@@ -500,7 +500,14 @@ def _symbol_payload_columns(table) -> list[str]:
     columns = ["uid", "code", "workspace_id"]
     try:
         schema_names = set(table.schema.names)
-        for optional in ("qualified_name", "name", "file_path", "start_line", "end_line"):
+        for optional in (
+            "qualified_name",
+            "name",
+            "file_path",
+            "start_line",
+            "end_line",
+            "symbol_kind",
+        ):
             if optional in schema_names:
                 columns.append(optional)
     except Exception:
@@ -573,6 +580,7 @@ def _payloads_from_pylist_fallback(
                 "file_path": row.get("file_path") or "",
                 "start_line": row.get("start_line") or 0,
                 "end_line": row.get("end_line") or 0,
+                "symbol_kind": row.get("symbol_kind") or "",
             }
     return out
 
@@ -602,6 +610,7 @@ def _payloads_from_arrow_table(
     file_paths = _arrow_column_pylist(arrow, "file_path", row_count)
     start_lines = _arrow_column_pylist(arrow, "start_line", row_count)
     end_lines = _arrow_column_pylist(arrow, "end_line", row_count)
+    symbol_kinds = _arrow_column_pylist(arrow, "symbol_kind", row_count)
 
     out: dict[str, _PayloadRow] = {}
     for (
@@ -613,6 +622,7 @@ def _payloads_from_arrow_table(
         file_path,
         start_line,
         end_line,
+        symbol_kind,
     ) in zip(
         row_uids,
         codes,
@@ -622,6 +632,7 @@ def _payloads_from_arrow_table(
         file_paths,
         start_lines,
         end_lines,
+        symbol_kinds,
         strict=False,
     ):
         if row_workspace_id != workspace_id:
@@ -635,6 +646,7 @@ def _payloads_from_arrow_table(
                 "file_path": str(file_path or ""),
                 "start_line": _int_payload_value(start_line),
                 "end_line": _int_payload_value(end_line),
+                "symbol_kind": str(symbol_kind or ""),
             }
     return out
 
@@ -4739,12 +4751,32 @@ def _resolve_context_payloads(
             workspace_id=workspace_id,
             user_id=user_id,
         )
-    return _hydrate_missing_symbol_code(
-        db,
-        workspace_id,
-        uids_to_fetch,
-        payload_by_uid,
+    return _cap_module_payload_bodies(
+        _hydrate_missing_symbol_code(
+            db,
+            workspace_id,
+            uids_to_fetch,
+            payload_by_uid,
+        )
     )
+
+
+def _cap_module_payload_bodies(payloads: dict[str, _PayloadRow]) -> dict[str, _PayloadRow]:
+    """Render module Symbols as a signature line, never their full body.
+
+    A module Symbol anchors module-scope facts and call edges; its span is the
+    whole file, so letting it render full-body dumps entire files into the
+    bundle (measured on the express bench: other-tokens +82%, token_precision
+    −14pp from example files arriving via their module rows). The file's real
+    symbols carry the content; the module row contributes its name only.
+    """
+    for payload in payloads.values():
+        if str(payload.get("symbol_kind") or "") != "module":
+            continue
+        code = str(payload.get("code") or "")
+        if code:
+            payload["code"] = _code_signature(code)
+    return payloads
 
 
 def _context_symbol_from_hit(
