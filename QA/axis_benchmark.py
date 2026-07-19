@@ -2209,6 +2209,15 @@ def summarise(results: list[QuestionResult]) -> dict[str, Any]:
             "mean_token_precision": sum(r.token_precision for r in items) / len(items),
             "mean_expected_tokens": sum(r.expected_tokens for r in items) / len(items),
             "mean_other_tokens": sum(r.other_tokens for r in items) / len(items),
+            "seed_symbol_recall": _items_mean_with_gold(
+                items, "seed_symbol_recall", "expected_symbols"
+            ),
+            "pool_symbol_recall": _items_mean_with_gold(
+                items, "pool_symbol_recall", "expected_symbols"
+            ),
+            "bundle_symbol_recall": _items_mean_with_gold(
+                items, "bundle_symbol_recall", "expected_symbols"
+            ),
             "seed_span_owner_recall": _items_mean_with_gold(
                 items, "seed_span_owner_recall", "expected_spans"
             ),
@@ -2788,7 +2797,14 @@ def _ordered_summary_for_console(summary: dict[str, Any]) -> dict[str, Any]:
 
 
 def _print_per_repo_table(summary: dict[str, Any]) -> None:
-    """Print a fixed-width console table: rows = repos, columns = metrics."""
+    """Print a fixed-width console table: rows = repos (+ ALL), columns = metrics.
+
+    File-recall funnel (seed ≤ pool; bundle may exceed pool via neighbour
+    render), then the discriminating telemetry: bundle symbol / span-owner /
+    span-line recalls and token_precision (the headline precision), with the
+    file-level ``file_prec`` kept as the report-only trend number it is.
+    ``full s/p/b`` = questions at full file recall per layer.
+    """
     per_repo = summary.get("per_repo") or {}
     if not per_repo:
         return
@@ -2799,29 +2815,87 @@ def _print_per_repo_table(summary: dict[str, Any]) -> None:
         "seed",
         "pool",
         "bundle",
-        "prec",
+        "sym",
+        "span_own",
+        "span",
+        "tok_prec",
+        "file_prec",
         "tok exp/other",
-        "seed_full",
-        "pool_full",
-        "bundle_full",
+        "full s/p/b",
     )
+
+    def _row(
+        label: str,
+        questions: int,
+        seed: float,
+        pool: float,
+        bundle: float,
+        sym: float,
+        span_own: float,
+        span: float,
+        tok_prec: float,
+        file_prec: float,
+        exp_tok: float,
+        other_tok: float,
+        seed_full: int,
+        pool_full: int,
+        bundle_full: int,
+    ) -> tuple[str, ...]:
+        return (
+            label,
+            str(questions),
+            f"{seed:.3f}",
+            f"{pool:.3f}",
+            f"{bundle:.3f}",
+            f"{sym:.3f}",
+            f"{span_own:.3f}",
+            f"{span:.3f}",
+            f"{tok_prec:.3f}",
+            f"{file_prec:.3f}",
+            f"{exp_tok:.0f}/{other_tok:.0f}",
+            f"{seed_full}/{pool_full}/{bundle_full}",
+        )
+
     rows: list[tuple[str, ...]] = []
     for repo, info in per_repo.items():
         rows.append(
-            (
+            _row(
                 str(repo),
-                str(info["questions"]),
-                f"{info.get('seed_mean_recall', 0.0):.3f}",
-                f"{info.get('pool_mean_recall', 0.0):.3f}",
-                f"{info['mean_recall']:.3f}",
-                f"{info.get('mean_precision', 0.0):.3f}",
-                f"{info.get('mean_expected_tokens', 0.0):.0f}/"
-                f"{info.get('mean_other_tokens', 0.0):.0f}",
-                str(info.get("seed_full_recall", 0)),
-                str(info.get("pool_full_recall", 0)),
-                str(info["full_recall"]),
+                info["questions"],
+                info.get("seed_mean_recall", 0.0),
+                info.get("pool_mean_recall", 0.0),
+                info["mean_recall"],
+                info.get("bundle_symbol_recall", 0.0),
+                info.get("bundle_span_owner_recall", 0.0),
+                info.get("bundle_span_recall", 0.0),
+                info.get("mean_token_precision", 0.0),
+                info.get("mean_precision", 0.0),
+                info.get("mean_expected_tokens", 0.0),
+                info.get("mean_other_tokens", 0.0),
+                info.get("seed_full_recall", 0),
+                info.get("pool_full_recall", 0),
+                info["full_recall"],
             )
         )
+    rows.append(
+        _row(
+            "ALL",
+            int(summary.get("scored", 0)),
+            float(summary.get("overall_seed_mean_recall", 0.0)),
+            float(summary.get("overall_pool_mean_recall", 0.0)),
+            float(summary.get("overall_mean_recall", 0.0)),
+            float(summary.get("overall_bundle_symbol_recall", 0.0)),
+            float(summary.get("overall_bundle_span_owner_recall", 0.0)),
+            float(summary.get("overall_bundle_span_recall", 0.0)),
+            float(summary.get("overall_mean_token_precision", 0.0)),
+            float(summary.get("overall_mean_precision", 0.0)),
+            float(summary.get("overall_mean_expected_tokens", 0.0)),
+            float(summary.get("overall_mean_other_tokens", 0.0)),
+            int(summary.get("seed_full_recall_questions", 0)),
+            int(summary.get("pool_full_recall_questions", 0)),
+            int(summary.get("full_recall_questions", 0)),
+        )
+    )
 
     widths = [max(len(headers[i]), *(len(row[i]) for row in rows)) for i in range(len(headers))]
 
@@ -2831,8 +2905,10 @@ def _print_per_repo_table(summary: dict[str, Any]) -> None:
     print("\nPer-repo summary")
     print(_fmt(headers))
     print(_fmt(tuple("-" * w for w in widths)))
-    for row in rows:
+    for row in rows[:-1]:
         print(_fmt(row))
+    print(_fmt(tuple("-" * w for w in widths)))
+    print(_fmt(rows[-1]))
 
 
 def _print_comparison(prev_summary: dict[str, Any], summary: dict[str, Any]) -> None:
