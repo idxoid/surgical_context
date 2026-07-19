@@ -3402,10 +3402,14 @@ class PythonAdapter(TreeSitterAdapter):
             # this ("module-execution-time assignments"). Dropping these left
             # import-time wiring structurally invisible: pydantic's migration
             # shim modules produced zero in-project edges into
-            # ``getattr_migration``.
+            # ``getattr_migration``. Identifier calls only — the attribute
+            # path's receiver/alias resolution is scoped to an enclosing
+            # def/class and has no module-scope form.
             import os
 
             if os.getenv("AXIS_MODULE_SCOPE_CALLS", "1") == "0":
+                return None
+            if func_node.type != "identifier":
                 return None
             caller_uid = self._module_symbol_identity(file_path)[2]
         else:
