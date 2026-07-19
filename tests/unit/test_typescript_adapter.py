@@ -6,6 +6,12 @@ from context_engine.axis.schema import AxisExtraction
 from context_engine.parser.adapters.typescript_adapter import TypeScriptAdapter
 
 
+def _non_module(symbols):
+    # ``extract_symbols`` now also synthesizes one module Symbol per file
+    # (Python parity) so module-scope facts have a coherent caller.
+    return [s for s in symbols if s.kind != "module"]
+
+
 class TestTypeScriptAdapter:
     @pytest.fixture
     def adapter(self):
@@ -13,14 +19,14 @@ class TestTypeScriptAdapter:
 
     def test_extract_function(self, adapter):
         source = "function foo() {}"
-        symbols = adapter.extract_symbols(source, "test.ts")
+        symbols = _non_module(adapter.extract_symbols(source, "test.ts"))
         assert len(symbols) == 1
         assert symbols[0].name == "foo"
         assert symbols[0].kind == "function"
 
     def test_extract_class(self, adapter):
         source = "class Bar {}"
-        symbols = adapter.extract_symbols(source, "test.ts")
+        symbols = _non_module(adapter.extract_symbols(source, "test.ts"))
         assert len(symbols) == 1
         assert symbols[0].name == "Bar"
         assert symbols[0].kind == "class"
@@ -31,14 +37,14 @@ function func1() {}
 class MyClass {}
 function func2() {}
 """
-        symbols = adapter.extract_symbols(source, "test.ts")
+        symbols = _non_module(adapter.extract_symbols(source, "test.ts"))
         assert len(symbols) == 3
         names = {s.name for s in symbols}
         assert names == {"func1", "MyClass", "func2"}
 
     def test_extracts_exported_lower_camel_const_as_public_api_symbol(self, adapter):
         source = "export const createSlice = buildCreateSlice()"
-        symbols = adapter.extract_symbols(source, "createSlice.ts")
+        symbols = _non_module(adapter.extract_symbols(source, "createSlice.ts"))
 
         assert len(symbols) == 1
         assert symbols[0].name == "createSlice"
@@ -46,7 +52,7 @@ function func2() {}
 
     def test_does_not_extract_non_exported_lower_camel_const(self, adapter):
         source = "const localHelper = buildCreateSlice()"
-        symbols = adapter.extract_symbols(source, "helpers.ts")
+        symbols = _non_module(adapter.extract_symbols(source, "helpers.ts"))
 
         assert symbols == []
 
@@ -57,7 +63,7 @@ function func2() {}
             "context_engine.parser.adapters.treesitter_base.TreeSitterAdapter.extract_symbols",
             return_value=[],
         ):
-            symbols = adapter.extract_symbols(source, "createSlice.ts")
+            symbols = _non_module(adapter.extract_symbols(source, "createSlice.ts"))
 
         assert len(symbols) == 1
         assert symbols[0].name == "createSlice"
@@ -172,6 +178,7 @@ function coreModule() {}
         assert any(call.get("callee_name") == "coreModule" for call in calls)
         create_api_uid = adapter._uid("api.ts", "createApi")
         assert all(call["caller_uid"] == create_api_uid for call in calls)
+        assert all(call["caller_uid"] != adapter._module_symbol_uid("api.ts") for call in calls)
 
     def test_extract_calls_falls_back_for_pure_exported_const_initializer(self, adapter):
         source = """
@@ -289,7 +296,11 @@ export function configureStore<S>(
 }
 """
         symbols = adapter.extract_symbols(source, "configureStore.ts")
-        configure_store = next(symbol for symbol in symbols if symbol.name == "configureStore")
+        configure_store = next(
+            symbol
+            for symbol in symbols
+            if symbol.name == "configureStore" and symbol.kind != "module"
+        )
 
         refs = adapter.extract_type_references(source, "configureStore.ts")
         signature_refs = [ref for ref in refs if ref["referrer_uid"] == configure_store.uid]
@@ -465,7 +476,9 @@ export const SidecarClient = {
   },
 };
 """
-        symbols = adapter.extract_symbols(source, "extension/src/context_engineClient.ts")
+        symbols = _non_module(
+            adapter.extract_symbols(source, "extension/src/context_engineClient.ts")
+        )
         assert {symbol.name for symbol in symbols} == {"SidecarClient", "ask", "health"}
         client = next(symbol for symbol in symbols if symbol.name == "SidecarClient")
         assert client.kind == "object_api"
@@ -1106,3 +1119,77 @@ export class AppController extends BaseController {
         assert {"annotation", "decorator_attachment", "parameter_decl"} <= (
             method_profile.struct_bits
         )
+
+
+class TestTypeScriptPythonParityExtraction:
+    """Class fields, external re-export aliases, module-scope calls (Python parity)."""
+
+    @pytest.fixture
+    def adapter(self):
+        return TypeScriptAdapter()
+
+    def test_class_field_symbols(self, adapter):
+        source = """
+class Config {
+  plain = 1;
+  typed: number = 2;
+  static shared = 3;
+  method() {}
+}
+"""
+        symbols = adapter.extract_symbols(source, "config.ts")
+        attrs = {s.qualified_name: s for s in symbols if s.kind == "variable"}
+        assert set(attrs) == {
+            "config.Config.plain",
+            "config.Config.typed",
+            "config.Config.shared",
+        }
+        assert attrs["config.Config.plain"].name == "plain"
+
+    def test_class_field_symbols_env_disabled(self, adapter, monkeypatch):
+        monkeypatch.setenv("AXIS_INDEX_CLASS_ATTRS", "0")
+        source = "class Config { plain = 1; }"
+        symbols = adapter.extract_symbols(source, "config.ts")
+        assert not [s for s in symbols if s.kind == "variable"]
+
+    def test_export_from_alias_symbols(self, adapter):
+        source = """
+export { Foo, Bar as Baz } from "extpkg";
+export { Local } from "./local";
+"""
+        symbols = adapter.extract_symbols(source, "pkg/index.ts")
+        aliases = {s.name for s in symbols if s.kind == "variable"}
+        # Package re-exports become alias rows; the in-project barrel does not.
+        assert aliases == {"Foo", "Baz"}
+        foo = next(s for s in symbols if s.name == "Foo")
+        assert foo.qualified_name == "pkg.index.Foo"
+
+    def test_export_from_alias_env_disabled(self, adapter, monkeypatch):
+        monkeypatch.setenv("AXIS_INDEX_REEXPORT_ALIASES", "0")
+        source = 'export { Foo } from "extpkg";\n'
+        symbols = adapter.extract_symbols(source, "pkg/index.ts")
+        assert not [s for s in symbols if s.kind == "variable"]
+
+    def test_module_symbol_synthesized(self, adapter):
+        symbols = adapter.extract_symbols("function foo() {}", "src/mod.ts")
+        modules = [s for s in symbols if s.kind == "module"]
+        assert len(modules) == 1
+        assert modules[0].qualified_name == "src.mod"
+        assert modules[0].uid == adapter._module_symbol_uid("src/mod.ts")
+
+    def test_module_scope_call_attaches_to_module_symbol(self, adapter):
+        source = """
+function register(app) {}
+register(1)
+"""
+        calls = adapter.extract_calls_from_source(source, "src/mod.ts")
+        hits = [c for c in calls if c.get("callee_name") == "register"]
+        assert hits, calls
+        assert hits[0]["caller_uid"] == adapter._module_symbol_uid("src/mod.ts")
+
+    def test_module_scope_call_env_disabled(self, adapter, monkeypatch):
+        monkeypatch.setenv("AXIS_MODULE_SCOPE_CALLS", "0")
+        source = "function register(app) {}\nregister(1)\n"
+        calls = adapter.extract_calls_from_source(source, "src/mod.ts")
+        module_uid = adapter._module_symbol_uid("src/mod.ts")
+        assert not [c for c in calls if c.get("caller_uid") == module_uid]

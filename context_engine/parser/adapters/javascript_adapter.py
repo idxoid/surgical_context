@@ -170,6 +170,7 @@ class JavaScriptAdapter(TreeSitterAdapter):
             (class_declaration (type_identifier) @class.name) @class.def
             (program (lexical_declaration (variable_declarator name: (identifier) @var.name) @var.top_level))
             (program (variable_declaration (variable_declarator name: (identifier) @var.name) @var.top_level))
+            (class_body (public_field_definition name: (property_identifier) @attr.name) @attr.def)
         """
 
     @property
@@ -328,7 +329,10 @@ class JavaScriptAdapter(TreeSitterAdapter):
     ) -> list[SymbolMetadata]:
         """Extract JS symbols with a fallback for exported lexical APIs and module.exports."""
         symbols = super().extract_symbols(source_code, file_path, tree=tree)
-        existing_names = {symbol.name for symbol in symbols}
+        symbols.insert(0, self._synthesized_module_symbol(source_code, file_path))
+        # The module Symbol shares its name with the file stem — it must not
+        # suppress the export fallbacks for a same-named exported API.
+        existing_names = {symbol.name for symbol in symbols if symbol.kind != "module"}
         existing_uids = {symbol.uid for symbol in symbols}
 
         self._append_javascript_export_fallback_symbols(
@@ -340,6 +344,7 @@ class JavaScriptAdapter(TreeSitterAdapter):
 
         if tree is None:
             tree = self._parse(source_code)
+        symbols.extend(self._export_from_alias_symbols(tree, file_path, base_symbols=symbols))
         self._finalize_javascript_symbols(symbols, source_code, file_path, tree=tree)
         return symbols
 
@@ -775,15 +780,26 @@ class JavaScriptAdapter(TreeSitterAdapter):
             return None
 
         parent = self._enclosing_symbol_owner(node)
+        caller_uid: str | None
         if parent is None:
-            return None
+            # Module-scope call: attach to the file's module Symbol (Python
+            # parity — import-time wiring must not be structurally invisible).
+            import os
 
-        caller_uid = self._caller_uid_for_indexed_owner(
-            parent,
-            symbol_uids,
-            source_code,
-            file_path,
-        )
+            if os.getenv("AXIS_MODULE_SCOPE_CALLS", "1") == "0":
+                return None
+            if self._inside_variable_declarator(node):
+                return None
+            caller_uid = self._module_symbol_uid(file_path)
+            if caller_uid not in symbol_uids:
+                return None
+        else:
+            caller_uid = self._caller_uid_for_indexed_owner(
+                parent,
+                symbol_uids,
+                source_code,
+                file_path,
+            )
         if not caller_uid:
             return None
 

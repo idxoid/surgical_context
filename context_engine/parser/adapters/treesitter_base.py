@@ -8,7 +8,9 @@ from tree_sitter import Language, Parser, Query, QueryCursor
 
 from context_engine.parser.protocol import LanguageAdapter, SymbolMetadata
 from context_engine.parser.uid import (
+    UNRESOLVED_SIGNATURE,
     compute_uid,
+    module_name_from_path,
     normalize_signature,
     qualified_name_for,
     signature_from_node,
@@ -96,7 +98,7 @@ class TreeSitterAdapter(LanguageAdapter):
     def _var_names_by_parent_id(captures: list[tuple]) -> dict[int, str]:
         var_names: dict[int, str] = {}
         for node, tag in captures:
-            if tag == "var.name" and node.parent is not None:
+            if tag in ("var.name", "attr.name") and node.parent is not None:
                 var_names[node.parent.id] = _node_text(node)
         return var_names
 
@@ -197,11 +199,180 @@ class TreeSitterAdapter(LanguageAdapter):
         captures = self._flatten_ts_query_captures(self.symbol_query, tree.root_node)
         var_names = self._var_names_by_parent_id(captures)
         symbols: list[SymbolMetadata] = []
+        attr_nodes: list = []
         for node, tag in captures:
+            if tag == "attr.def":
+                attr_nodes.append(node)
+                continue
             symbol = self._symbol_from_capture(node, tag, var_names, file_path)
             if symbol is not None:
                 symbols.append(symbol)
+        symbols.extend(
+            self._attribute_symbols(attr_nodes, var_names, file_path, base_symbols=symbols)
+        )
         return symbols
+
+    def _attribute_symbols(
+        self,
+        attr_nodes: list,
+        var_names: dict[int, str],
+        file_path: str,
+        *,
+        base_symbols: list[SymbolMetadata],
+    ) -> list[SymbolMetadata]:
+        """Variable Symbols for ``@attr.def`` captures (class-body fields).
+
+        Adapter opt-in: only queries that tag class-field declarations produce
+        these (Python parity — class attributes are named API surface that
+        symbol retrieval otherwise cannot see). First capture of a name wins;
+        names already claimed by a def/class of the same owner are skipped.
+        Gated by ``AXIS_INDEX_CLASS_ATTRS`` like the Python extraction.
+        """
+        if not attr_nodes:
+            return []
+        import os
+
+        if os.getenv("AXIS_INDEX_CLASS_ATTRS", "1") == "0":
+            return []
+        existing_qualified = {s.qualified_name for s in base_symbols}
+        out: list[SymbolMetadata] = []
+        for node in attr_nodes:
+            name = var_names.get(node.id)
+            if not name:
+                continue
+            qualified_name = f"{qualified_name_for(node, file_path)}.{name}"
+            if qualified_name in existing_qualified:
+                continue
+            existing_qualified.add(qualified_name)
+            signature = f"{name}()->_"
+            out.append(
+                SymbolMetadata(
+                    uid=compute_uid(qualified_name, signature, self.language_name),
+                    name=name,
+                    kind="variable",
+                    start_line=node.start_point[0] + 1,
+                    end_line=node.end_point[0] + 1,
+                    content_hash="",
+                    file_path=file_path,
+                    qualified_name=qualified_name,
+                    signature=signature,
+                    signature_hash="",
+                    signature_status="resolved",
+                    language=self.language_name,
+                )
+            )
+        return out
+
+    def _synthesized_module_symbol(self, source_code: str, file_path: str) -> SymbolMetadata:
+        """One module-scope Symbol per file (Python `_module_symbol` parity).
+
+        The uid formula matches the TS axis extractor's ``_module_scope`` so
+        module-execution axis facts and module-scope call edges share one
+        identity with this row instead of dangling.
+        """
+        module_name = module_name_from_path(file_path)
+        return SymbolMetadata(
+            uid=self._module_symbol_uid(file_path),
+            name=module_name,
+            kind="module",
+            start_line=1,
+            end_line=source_code.count("\n") + 1,
+            content_hash="",  # structural, not content-keyed
+            file_path=file_path,
+            qualified_name=module_name,
+            signature=UNRESOLVED_SIGNATURE,
+            signature_hash="",
+            signature_status="resolved",
+            language=self.language_name,
+        )
+
+    def _module_symbol_uid(self, file_path: str) -> str:
+        return compute_uid(
+            module_name_from_path(file_path), UNRESOLVED_SIGNATURE, self.language_name
+        )
+
+    @staticmethod
+    def _inside_variable_declarator(node) -> bool:
+        """True for calls in a declarator initializer (``const x = call(...)``).
+
+        Those keep their dedicated owner attribution (the declared variable),
+        which is more precise than the module-scope fallback.
+        """
+        current = node.parent
+        while current is not None and current.type != "program":
+            if current.type == "variable_declarator":
+                return True
+            current = current.parent
+        return False
+
+    def _export_from_alias_symbols(
+        self,
+        tree,
+        file_path: str,
+        *,
+        base_symbols: list[SymbolMetadata],
+    ) -> list[SymbolMetadata]:
+        """Variable Symbols for ``export { X } from "<package>"`` re-exports.
+
+        Python-parity of the re-export alias extraction: the workspace's
+        public name for a dependency type lives at the export site, and
+        without a row that name is invisible to symbol retrieval. JS/TS
+        ``export … from`` is itself the explicit re-export marker; only
+        non-relative sources qualify (in-project barrels already resolve to
+        the real Symbol). Gated by ``AXIS_INDEX_REEXPORT_ALIASES``.
+        """
+        import os
+
+        if os.getenv("AXIS_INDEX_REEXPORT_ALIASES", "1") == "0":
+            return []
+        module_name = module_name_from_path(file_path)
+        existing_qualified = {s.qualified_name for s in base_symbols}
+        out: list[SymbolMetadata] = []
+        for stmt in tree.root_node.named_children:
+            if stmt.type != "export_statement":
+                continue
+            source = stmt.child_by_field_name("source")
+            if source is None:
+                continue
+            spec = _node_text(source).strip().strip("\"'")
+            if not spec or spec.startswith(".") or spec.startswith("/"):
+                continue
+            for clause in stmt.named_children:
+                if clause.type != "export_clause":
+                    continue
+                for entry in clause.named_children:
+                    if entry.type != "export_specifier":
+                        continue
+                    name_node = entry.child_by_field_name("alias") or entry.child_by_field_name(
+                        "name"
+                    )
+                    if name_node is None:
+                        continue
+                    local_name = _node_text(name_node)
+                    if not local_name:
+                        continue
+                    qualified_name = f"{module_name}.{local_name}"
+                    if qualified_name in existing_qualified:
+                        continue
+                    existing_qualified.add(qualified_name)
+                    signature = f"{local_name}()->_"
+                    out.append(
+                        SymbolMetadata(
+                            uid=compute_uid(qualified_name, signature, self.language_name),
+                            name=local_name,
+                            kind="variable",
+                            start_line=stmt.start_point[0] + 1,
+                            end_line=stmt.end_point[0] + 1,
+                            content_hash="",
+                            file_path=file_path,
+                            qualified_name=qualified_name,
+                            signature=signature,
+                            signature_hash="",
+                            signature_status="resolved",
+                            language=self.language_name,
+                        )
+                    )
+        return out
 
     def should_include_variable_symbol(
         self,

@@ -287,3 +287,51 @@ function bootstrap() {
         call = next(c for c in calls if c.get("callee_name") == "track")
         assert call["rel_type"] == "CALLS_GUESS"
         assert call["resolver"] == "js-ambiguity-gate-v1"
+
+
+class TestJavaScriptPythonParityExtraction:
+    """Class fields, external re-export aliases, module-scope calls (Python parity)."""
+
+    @pytest.fixture
+    def adapter(self):
+        return JavaScriptAdapter()
+
+    def test_class_field_symbols(self, adapter):
+        source = """
+class Config {
+  plain = 1;
+  static shared = 2;
+  method() {}
+}
+"""
+        symbols = adapter.extract_symbols(source, "config.js")
+        attrs = {s.qualified_name for s in symbols if s.kind == "variable"}
+        assert attrs == {"config.Config.plain", "config.Config.shared"}
+
+    def test_export_from_alias_symbols(self, adapter):
+        source = """
+export { Router } from "extpkg";
+export { Local } from "./local";
+"""
+        symbols = adapter.extract_symbols(source, "pkg/index.js")
+        aliases = {s.name for s in symbols if s.kind == "variable"}
+        assert aliases == {"Router"}
+
+    def test_module_symbol_and_module_scope_call(self, adapter):
+        source = """
+function register(app) {}
+register(1)
+"""
+        symbols = adapter.extract_symbols(source, "src/mod.js")
+        assert [s.qualified_name for s in symbols if s.kind == "module"] == ["src.mod"]
+        calls = adapter.extract_calls_from_source(source, "src/mod.js")
+        hits = [c for c in calls if c.get("callee_name") == "register"]
+        assert hits, calls
+        assert hits[0]["caller_uid"] == adapter._module_symbol_uid("src/mod.js")
+
+    def test_module_scope_call_env_disabled(self, adapter, monkeypatch):
+        monkeypatch.setenv("AXIS_MODULE_SCOPE_CALLS", "0")
+        source = "function register(app) {}\nregister(1)\n"
+        calls = adapter.extract_calls_from_source(source, "src/mod.js")
+        module_uid = adapter._module_symbol_uid("src/mod.js")
+        assert not [c for c in calls if c.get("caller_uid") == module_uid]
