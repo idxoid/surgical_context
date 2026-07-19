@@ -428,10 +428,11 @@ questions:
   mechanism: pydantic_v1_compat_surface
   expected_symbols:
   - v1
-  - BaseModel
+  - getattr_migration
+  - MOVED_IN_V2
   expected_files:
   - pydantic/_migration.py
-  - pydantic/v1
+  - pydantic/__init__.py
   expected_spans:
   - file_path: pydantic/_migration.py
     symbol: getattr_migration
@@ -441,6 +442,10 @@ questions:
     symbol: MOVED_IN_V2
     start_line: 9
     end_line: 50
+  - file_path: pydantic/__init__.py
+    symbol: __getattr__
+    start_line: 422
+    end_line: 451
 - id: pydantic_q06
   repo: pydantic
   core12: false
