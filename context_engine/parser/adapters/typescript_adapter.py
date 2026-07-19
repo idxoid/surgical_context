@@ -268,6 +268,7 @@ class TypeScriptAdapter(TreeSitterAdapter):
             (abstract_class_declaration name: (type_identifier) @class.name) @class.def
             (program (lexical_declaration (variable_declarator name: (identifier) @var.name) @var.def))
             (program (export_statement (lexical_declaration (variable_declarator name: (identifier) @var.name) @var.exported_def)))
+            (class_body (public_field_definition name: (property_identifier) @attr.name) @attr.def)
         """
 
     @property
@@ -375,7 +376,9 @@ class TypeScriptAdapter(TreeSitterAdapter):
                 file_path,
                 object_api_ranges,
             )
-        existing_names = {symbol.name for symbol in symbols}
+        # The module Symbol shares its name with the file stem — it must not
+        # suppress the export fallback for a same-named exported API.
+        existing_names = {symbol.name for symbol in symbols if symbol.kind != "module"}
         self._append_typescript_export_fallback_symbols(
             symbols, existing_names, file_path, source_code
         )
@@ -404,12 +407,15 @@ class TypeScriptAdapter(TreeSitterAdapter):
         if tree is None:
             tree = self._parse(source_code)
         symbols = super().extract_symbols(source_code, file_path, tree=tree)
-        return self._apply_typescript_export_enrichments(
+        symbols.insert(0, self._synthesized_module_symbol(source_code, file_path))
+        symbols = self._apply_typescript_export_enrichments(
             symbols,
             source_code,
             file_path,
             tree=tree,
         )
+        symbols.extend(self._export_from_alias_symbols(tree, file_path, base_symbols=symbols))
+        return symbols
 
     # Return-shape constructor names (``return new Map()`` → mapping). Plain
     # ``return new Foo()`` is a constructed type; collection builtins are the
@@ -3002,10 +3008,19 @@ class TypeScriptAdapter(TreeSitterAdapter):
             return None
 
         parent = self._enclosing_symbol_owner(node)
+        caller_uid: str | None
         if parent is None:
-            return None
+            # Module-scope call: attach to the file's module Symbol (Python
+            # parity — import-time wiring must not be structurally invisible).
+            import os
 
-        caller_uid = self._caller_uid_for_owner(parent, source_code, file_path)
+            if os.getenv("AXIS_MODULE_SCOPE_CALLS", "1") == "0":
+                return None
+            if self._inside_variable_declarator(node):
+                return None
+            caller_uid = self._module_symbol_uid(file_path)
+        else:
+            caller_uid = self._caller_uid_for_owner(parent, source_code, file_path)
         if not caller_uid:
             return None
 
@@ -3198,7 +3213,9 @@ class TypeScriptAdapter(TreeSitterAdapter):
         *,
         existing_callers: set[str],
     ) -> bool:
-        if symbol.kind == "class":
+        # The module Symbol's "body" is the whole file — scanning it would
+        # re-attribute every call in the file to the module.
+        if symbol.kind in ("class", "module"):
             return False
         if symbol.end_line <= symbol.start_line:
             return False
