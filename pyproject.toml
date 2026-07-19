@@ -23,6 +23,9 @@ ignore = ["E501"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 norecursedirs = ["QA/repos", "data", "graphify-out"]
+# ``surgical_context_mcp`` lives under ``mcp_server/`` (its package root) —
+# same reason ``mypy_path`` below adds it.
+pythonpath = ["mcp_server"]
 markers = [
     "integration: tests that require live Neo4j/LanceDB (pass --run-integration)",
 ]
