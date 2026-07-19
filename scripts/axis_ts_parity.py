@@ -206,9 +206,7 @@ def _tier_b_diff(path: str, old: list[AxisFact], new: list[AxisFact], stats: Sta
         stats.text_only_diffs += 1
         if len(stats.tier_b_samples) < 60:
             diff_keys = sorted(
-                k
-                for k in set(f.payload) | set(g.payload)
-                if f.payload.get(k) != g.payload.get(k)
+                k for k in set(f.payload) | set(g.payload) if f.payload.get(k) != g.payload.get(k)
             )[:4]
             detail = "; ".join(
                 f"{k}: ast={f.payload.get(k)!r} ts={g.payload.get(k)!r}" for k in diff_keys
@@ -295,7 +293,9 @@ def main() -> int:
     stats = run(roots, limit=args.limit, classify=not args.no_classify)
 
     total_paired = stats.exact_facts + stats.text_only_diffs + stats.evidence_only_diffs
-    print(f"\nfiles={stats.files} skipped_syntax={stats.skipped_syntax} crashed={stats.failed_files}")
+    print(
+        f"\nfiles={stats.files} skipped_syntax={stats.skipped_syntax} crashed={stats.failed_files}"
+    )
     print(f"facts: ast={stats.facts_old} ts={stats.facts_new}")
     print(f"time:  ast={stats.old_time:.2f}s ts={stats.new_time:.2f}s")
     print(f"tier A: files_with_mismatch={stats.tier_a_files_bad} messages={len(stats.tier_a_msgs)}")

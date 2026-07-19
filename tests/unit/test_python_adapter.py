@@ -43,6 +43,96 @@ def func2(): pass
         non_module_names = {s.name for s in symbols if s.kind != "module"}
         assert non_module_names == {"func1", "MyClass", "func2"}
 
+    def test_class_attribute_symbols(self, adapter):
+        source = """
+class Config:
+    plain = 1
+    typed: int = 2
+    bare: str
+    plain = 3
+
+    def method(self): pass
+
+    class Nested:
+        inner = 4
+
+def factory():
+    class Local:
+        hidden = 5
+"""
+        symbols = adapter.extract_symbols(source, "test.py")
+        attrs = {s.qualified_name: s for s in symbols if s.kind == "variable"}
+        assert set(attrs) == {
+            "test.Config.plain",
+            "test.Config.typed",
+            "test.Config.bare",
+            "test.Config.Nested.inner",
+        }
+        plain = attrs["test.Config.plain"]
+        assert plain.name == "plain"
+        # First assignment wins on re-assignment of the same name.
+        assert plain.start_line == 3
+
+    def test_class_attribute_skips_names_claimed_by_defs(self, adapter):
+        source = """
+class Config:
+    handler = None
+
+    def handler(self): pass
+"""
+        symbols = adapter.extract_symbols(source, "test.py")
+        claimed = [s for s in symbols if s.qualified_name == "test.Config.handler"]
+        assert len(claimed) == 1
+        assert claimed[0].kind == "function"
+
+    def test_class_attribute_symbols_env_disabled(self, adapter, monkeypatch):
+        monkeypatch.setenv("AXIS_INDEX_CLASS_ATTRS", "0")
+        source = """
+class Config:
+    plain = 1
+"""
+        symbols = adapter.extract_symbols(source, "test.py")
+        assert not [s for s in symbols if s.kind == "variable"]
+
+    def test_reexport_alias_symbols(self, adapter):
+        source = """
+__all__ = ("Listed", "local_def")
+
+from extlib.errors import Listed, Unlisted
+from extlib.types import Explicit as Explicit
+from extlib.misc import renamed as other_name
+from extlib.plain import Ordinary
+
+def local_def(): pass
+"""
+        symbols = adapter.extract_symbols(source, "pkg/mod.py")
+        aliases = {s.name: s for s in symbols if s.kind == "variable"}
+        # __all__ membership and the ``X as X`` idiom qualify; a plain import
+        # and a renaming alias in a regular module do not.
+        assert set(aliases) == {"Listed", "Explicit"}
+        assert aliases["Listed"].qualified_name == "pkg.mod.Listed"
+        assert aliases["Listed"].start_line == 4
+
+    def test_reexport_alias_in_init_and_multiline(self, adapter):
+        source = """
+from extlib.websockets import (
+    WebSocket,
+    WebSocketDisconnect,
+)
+from .sibling import Internal
+"""
+        symbols = adapter.extract_symbols(source, "pkg/__init__.py")
+        aliases = {s.name for s in symbols if s.kind == "variable"}
+        # Package __init__ is public surface: external from-imports qualify
+        # even bare; the in-project sibling import stays alias-free.
+        assert aliases == {"WebSocket", "WebSocketDisconnect"}
+
+    def test_reexport_alias_env_disabled(self, adapter, monkeypatch):
+        monkeypatch.setenv("AXIS_INDEX_REEXPORT_ALIASES", "0")
+        source = "from extlib.types import Explicit as Explicit\n"
+        symbols = adapter.extract_symbols(source, "pkg/mod.py")
+        assert not [s for s in symbols if s.kind == "variable"]
+
     def test_extract_calls(self, adapter):
         source = """
 def foo():

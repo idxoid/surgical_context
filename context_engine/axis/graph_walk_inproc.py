@@ -479,6 +479,9 @@ def _bfs_distances_from_starts(
     neigh,
     starts: list[str],
     max_hops: int,
+    *,
+    stop_after_results: int | None = None,
+    result_meta: Mapping[str, object] | None = None,
 ) -> dict[str, int]:
     dist: dict[str, int] = dict.fromkeys(starts, 0)
     frontier = list(starts)
@@ -492,6 +495,10 @@ def _bfs_distances_from_starts(
                 nxt.append(v)
         if not nxt:
             break
+        if stop_after_results is not None and result_meta is not None:
+            result_count = sum(1 for uid, depth in dist.items() if depth > 0 and uid in result_meta)
+            if result_count >= stop_after_results:
+                break
         frontier = nxt
     return dist
 
@@ -646,11 +653,19 @@ def _grouped_neighbours_by_seed(
     meta: dict[str, tuple[str, str, str]],
     max_hops: int,
     limit_per_seed: int | None,
+    limit_per_seed_by_uid: Mapping[str, int] | None = None,
 ) -> dict[str, list[Neighbour]]:
     grouped: dict[str, list[Neighbour]] = {}
     for seed_uid in seeds:
-        dist = _bfs_distances_from_starts(neigh, [seed_uid], max_hops)
-        rows = _grouped_neighbours_for_seed(dist, meta, limit_per_seed)
+        seed_limit = (limit_per_seed_by_uid or {}).get(seed_uid, limit_per_seed)
+        dist = _bfs_distances_from_starts(
+            neigh,
+            [seed_uid],
+            max_hops,
+            stop_after_results=seed_limit,
+            result_meta=meta,
+        )
+        rows = _grouped_neighbours_for_seed(dist, meta, seed_limit)
         if rows:
             grouped[seed_uid] = rows
     return grouped
@@ -665,6 +680,7 @@ def walk_neighbours_grouped(
     direction: Direction = "undirected",
     max_hops: int = 2,
     limit_per_seed: int | None = None,
+    limit_per_seed_by_uid: Mapping[str, int] | None = None,
 ) -> dict[str, list[Neighbour]]:
     adj = load_adjacency(db, workspace_id)
     neigh = _neighbours_fn(adj, frozenset(edges), direction)
@@ -674,6 +690,7 @@ def walk_neighbours_grouped(
         meta=adj.meta,
         max_hops=max_hops,
         limit_per_seed=limit_per_seed,
+        limit_per_seed_by_uid=limit_per_seed_by_uid,
     )
 
 

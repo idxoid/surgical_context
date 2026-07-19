@@ -177,20 +177,15 @@ def apply_query_node_similarity(
 
         if ordering_mode == "calibrated_blend":
             ordered_scores = [
-                (1.0 - (mode_blend_alpha if candidate.role in _MODE_ROLES else blend_alpha))
-                * base
+                (1.0 - (mode_blend_alpha if candidate.role in _MODE_ROLES else blend_alpha)) * base
                 + (mode_blend_alpha if candidate.role in _MODE_ROLES else blend_alpha) * semantic
-                for candidate, base, semantic in zip(
-                    flat, base_norm, semantic_excess, strict=True
-                )
+                for candidate, base, semantic in zip(flat, base_norm, semantic_excess, strict=True)
             ]
         else:
             base_ranks = _descending_ranks(bases)
             semantic_ranks = _descending_ranks(
                 [
-                    candidate.query_similarity
-                    if candidate.query_similarity is not None
-                    else -1.0
+                    candidate.query_similarity if candidate.query_similarity is not None else -1.0
                     for candidate in flat
                 ]
             )

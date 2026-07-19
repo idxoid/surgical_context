@@ -352,6 +352,213 @@ class PythonAdapter(TreeSitterAdapter):
             )
         return out
 
+    def _class_attribute_symbols(
+        self,
+        file_path: str,
+        tree,
+        *,
+        base_symbols: list[SymbolMetadata],
+    ) -> list[SymbolMetadata]:
+        """Variable Symbols for direct class-body assignments.
+
+        Class attributes are named API surface — registry aliases
+        (``AMQP.Producer``), pluggable hooks (``App.url_map_class``),
+        dataclass/TypedDict fields (``ConfigDict.strict``) — that questions
+        and callers reference by name, yet the base extraction only sees
+        ``def``/``class`` declarations, so these names have no Symbol row and
+        stay invisible to symbol retrieval. All three assignment forms count
+        (``x = v``, ``x: T = v``, bare ``x: T``); only *direct* class-body
+        statements qualify, and classes defined inside functions stay
+        invisible (same design line as function-scope locals). First
+        assignment of a name wins; names already claimed by a ``def``/nested
+        ``class`` of the same class are skipped.
+        """
+        module_name = module_name_from_path(file_path)
+        existing_qualified = {s.qualified_name for s in base_symbols}
+        out: list[SymbolMetadata] = []
+
+        def collect_attrs(body, class_path: list[str]) -> None:
+            seen: set[str] = set()
+            for stmt in body.named_children:
+                if stmt.type != "expression_statement":
+                    continue
+                assignment = next(
+                    (c for c in stmt.named_children if c.type == "assignment"),
+                    None,
+                )
+                if assignment is None:
+                    continue
+                lhs = assignment.child_by_field_name("left")
+                if lhs is None or lhs.type != "identifier":
+                    continue
+                attr_name = _node_text(lhs)
+                if not attr_name or attr_name in seen:
+                    continue
+                seen.add(attr_name)
+                qualified_name = ".".join([module_name, *class_path, attr_name])
+                if qualified_name in existing_qualified:
+                    continue
+                signature = f"{attr_name}()->_"
+                out.append(
+                    SymbolMetadata(
+                        uid=compute_uid(qualified_name, signature, self.language_name),
+                        name=attr_name,
+                        kind="variable",
+                        start_line=assignment.start_point[0] + 1,
+                        end_line=assignment.end_point[0] + 1,
+                        content_hash="",
+                        file_path=file_path,
+                        qualified_name=qualified_name,
+                        signature=signature,
+                        signature_hash="",
+                        signature_status="resolved",
+                        language=self.language_name,
+                    )
+                )
+
+        def walk(node, class_path: list[str]) -> None:
+            for child in node.named_children:
+                if child.type == "function_definition":
+                    continue
+                if child.type == "class_definition":
+                    name_node = child.child_by_field_name("name")
+                    body = child.child_by_field_name("body")
+                    if name_node is None or body is None:
+                        continue
+                    inner_path = [*class_path, _node_text(name_node)]
+                    collect_attrs(body, inner_path)
+                    walk(body, inner_path)
+                else:
+                    walk(child, class_path)
+
+        walk(tree.root_node, [])
+        return out
+
+    @staticmethod
+    def _module_all_names(source_code: str) -> frozenset[str]:
+        """String literals a module's top-level ``__all__`` declares (best effort)."""
+        try:
+            tree = ast.parse(source_code)
+        except SyntaxError:
+            return frozenset()
+        names: set[str] = set()
+        for node in tree.body:
+            value = None
+            if isinstance(node, ast.Assign):
+                if any(isinstance(t, ast.Name) and t.id == "__all__" for t in node.targets):
+                    value = node.value
+            elif isinstance(node, ast.AugAssign):
+                if isinstance(node.target, ast.Name) and node.target.id == "__all__":
+                    value = node.value
+            if isinstance(value, (ast.List, ast.Tuple, ast.Set)):
+                for elt in value.elts:
+                    if isinstance(elt, ast.Constant) and isinstance(elt.value, str):
+                        names.add(elt.value)
+        return frozenset(names)
+
+    @staticmethod
+    def _logical_import_lines(source_code: str):
+        """Yield ``(line_no, text)`` with parenthesized from-imports collapsed.
+
+        The line-based import scanners miss ``from x import (\\n    A,\\n    B)``;
+        re-export surfaces are exactly where that style dominates, so the alias
+        extraction joins continuation lines (comments stripped) first.
+        """
+        lines = [line.split("#", 1)[0].strip() for line in source_code.splitlines()]
+        i = 0
+        while i < len(lines):
+            text = lines[i]
+            if text.startswith("from ") and "(" in text and ")" not in text:
+                start = i
+                buf = [text]
+                while ")" not in buf[-1] and i + 1 < len(lines):
+                    i += 1
+                    buf.append(lines[i])
+                joined = " ".join(buf).replace("(", " ").replace(")", " ")
+                yield start + 1, " ".join(joined.split())
+            else:
+                yield i + 1, text
+            i += 1
+
+    def _reexport_alias_symbols(
+        self,
+        source_code: str,
+        file_path: str,
+        *,
+        base_symbols: list[SymbolMetadata],
+    ) -> list[SymbolMetadata]:
+        """Variable Symbols for re-exported dependency names.
+
+        ``celery.exceptions.SoftTimeLimitExceeded`` (←billiard) or
+        ``fastapi.WebSocket`` (←starlette) are the workspace's public names for
+        types it does not define; without a row the name is invisible to symbol
+        retrieval even though the import site is the in-repo structural carrier.
+        Only imports bearing a structural re-export marker qualify — the
+        explicit ``from x import Y as Y`` idiom (PEP 484 re-export), membership
+        in the module's ``__all__``, or living in a package ``__init__`` — and
+        only when the target module is not project-local (in-project re-exports
+        already resolve to the real Symbol via RE_EXPORTS edges; an alias row
+        would just duplicate the name).
+        """
+        module_name = module_name_from_path(file_path)
+        is_init = Path(file_path).name in (_INIT_PY, "__init__.pyi")
+        if is_init:
+            package = module_name
+        else:
+            package = module_name.rsplit(".", 1)[0] if "." in module_name else ""
+        dunder_all = self._module_all_names(source_code)
+        existing_qualified = {s.qualified_name for s in base_symbols}
+        out: list[SymbolMetadata] = []
+        seen: set[str] = set()
+        for line_no, text in self._logical_import_lines(source_code):
+            from_parts = split_python_from_import(text)
+            if not from_parts:
+                continue
+            import_module, names = from_parts
+            target_module = self._resolve_import_module(import_module, package)
+            top = target_module.split(".")[0]
+            # ``__future__`` imports are compiler directives, not dependency surface.
+            if not top or top == "__future__":
+                continue
+            if self._is_local_module_root(top, file_path=file_path):
+                continue
+            for item in names.split(","):
+                item = item.strip()
+                if not item or item == "*":
+                    continue
+                original, _, alias = item.partition(" as ")
+                original = original.strip()
+                local_name = alias.strip() or original
+                if not local_name.isidentifier():
+                    continue
+                explicit_reexport = bool(alias.strip()) and alias.strip() == original
+                if not (explicit_reexport or local_name in dunder_all or is_init):
+                    continue
+                if local_name in seen:
+                    continue
+                qualified_name = f"{module_name}.{local_name}"
+                if qualified_name in existing_qualified:
+                    continue
+                seen.add(local_name)
+                signature = f"{local_name}()->_"
+                out.append(
+                    SymbolMetadata(
+                        uid=compute_uid(qualified_name, signature, self.language_name),
+                        name=local_name,
+                        kind="variable",
+                        start_line=line_no,
+                        end_line=line_no,
+                        content_hash="",
+                        file_path=file_path,
+                        qualified_name=qualified_name,
+                        signature=signature,
+                        signature_hash="",
+                        signature_status="resolved",
+                        language=self.language_name,
+                    )
+                )
+        return out
+
     @classmethod
     def _module_symbol(cls, source_code: str, file_path: str) -> SymbolMetadata:
         module_name, qualified_name, uid = cls._module_symbol_identity(file_path)
@@ -419,6 +626,14 @@ class PythonAdapter(TreeSitterAdapter):
             source_code, file_path, tree, base_symbols=symbols
         )
         symbols.extend(module_var_symbols)
+        import os
+
+        if os.getenv("AXIS_INDEX_CLASS_ATTRS", "1") != "0":
+            symbols.extend(self._class_attribute_symbols(file_path, tree, base_symbols=symbols))
+        if os.getenv("AXIS_INDEX_REEXPORT_ALIASES", "1") != "0":
+            symbols.extend(
+                self._reexport_alias_symbols(source_code, file_path, base_symbols=symbols)
+            )
         shapes = self._function_return_shapes(tree)
         iteration = self._function_iteration_shapes(tree)
         self._apply_python_symbol_shape_markers(symbols, shapes, iteration)

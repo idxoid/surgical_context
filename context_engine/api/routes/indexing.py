@@ -231,9 +231,7 @@ def index_files_endpoint(
         should_index_file,
     )
 
-    snapshot = (
-        load_git_indexable_snapshot(os.path.commonpath(valid_paths)) if valid_paths else None
-    )
+    snapshot = load_git_indexable_snapshot(os.path.commonpath(valid_paths)) if valid_paths else None
     uncommitted = [
         EnqueueResult(
             accepted=False,

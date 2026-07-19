@@ -73,6 +73,22 @@ def _add_span(
     spans[file_path].append({"type": "line", "start": start, "end": end})
 
 
+def _add_context_item_spans(
+    spans: dict[str, list[Span]],
+    file_path: str | None,
+    item: dict[str, Any],
+) -> None:
+    """Prefer exact rendered intervals, with legacy symbol-range fallback."""
+    if "rendered_spans" in item:
+        rendered = item.get("rendered_spans")
+        if isinstance(rendered, (list, tuple)):
+            for interval in rendered:
+                if isinstance(interval, (list, tuple)) and len(interval) == 2:
+                    _add_span(spans, file_path, interval[0], interval[1])
+        return
+    _add_span(spans, file_path, item.get("start_line"), item.get("end_line"))
+
+
 def _extract_one(tool: str, raw_result: Any, repo_root: Path | None) -> dict[str, Any]:
     result = _structured_result(raw_result)
     files: set[str] = set()
@@ -95,7 +111,7 @@ def _extract_one(tool: str, raw_result: Any, repo_root: Path | None) -> dict[str
             if path and isinstance(name, str) and name:
                 symbols[path].append(name)
             if include_spans and item.get("has_code", True):
-                _add_span(spans, path, item.get("start_line"), item.get("end_line"))
+                _add_context_item_spans(spans, path, item)
     elif tool == "read_symbol":
         path = _add_file(files, result.get("file_path"), repo_root)
         name = result.get("name")
@@ -132,7 +148,9 @@ def _extract_one(tool: str, raw_result: Any, repo_root: Path | None) -> dict[str
     }
 
 
-def extract_event_steps(event: dict[str, Any], repo_root: Path | None = None) -> list[dict[str, Any]]:
+def extract_event_steps(
+    event: dict[str, Any], repo_root: Path | None = None
+) -> list[dict[str, Any]]:
     """Return zero or more ContextBench steps from one recorded MCP event."""
     tool = event.get("tool") or event.get("name")
     result = event.get("result", event.get("output", event.get("response", {})))
@@ -169,9 +187,7 @@ def _merge_spans(steps: Iterable[dict[str, Any]]) -> dict[str, list[Span]]:
                 output[-1][1] = max(output[-1][1], end)
             else:
                 output.append([start, end])
-        merged[path] = [
-            {"type": "line", "start": start, "end": end} for start, end in output
-        ]
+        merged[path] = [{"type": "line", "start": start, "end": end} for start, end in output]
     return merged
 
 
@@ -182,7 +198,12 @@ def convert_instance(record: dict[str, Any], repo_root: Path | None = None) -> d
     events = record.get("events", record.get("trajectory", []))
     if not isinstance(events, list):
         raise ValueError(f"{instance_id}: events must be a list")
-    steps = [step for event in events if isinstance(event, dict) for step in extract_event_steps(event, repo_root)]
+    steps = [
+        step
+        for event in events
+        if isinstance(event, dict)
+        for step in extract_event_steps(event, repo_root)
+    ]
     final_files = sorted({path for step in steps for path in step["files"]})
     final_symbols: dict[str, list[str]] = defaultdict(list)
     for step in steps:
@@ -246,7 +267,9 @@ def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--input", type=Path, required=True, help="Surgical Context JSON/JSONL log")
     parser.add_argument("--output", type=Path, required=True, help="ContextBench prediction JSONL")
-    parser.add_argument("--repo-root", type=Path, help="Strip this checkout root from absolute paths")
+    parser.add_argument(
+        "--repo-root", type=Path, help="Strip this checkout root from absolute paths"
+    )
     return parser
 
 

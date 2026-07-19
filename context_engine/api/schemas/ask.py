@@ -46,10 +46,22 @@ class AskAxisRequest(BaseModel):
     intent_threshold: float = Field(default=0.20, ge=0.0, le=1.0)
     per_role_limit: int = Field(default=7, ge=1, le=50)
     with_context: bool = True
-    context_seeds_per_role: int | None = Field(default=None, ge=1, le=10)
+    context_seeds_per_role: int | None = Field(default=7, ge=1, le=10)
     context_per_seed: int = Field(default=4, ge=1, le=20)
+    evidence_graph_fanout: bool = True
+    evidence_graph_fanout_min: int = Field(default=2, ge=1, le=20)
+    evidence_graph_fanout_protected_head: int = Field(default=5, ge=0, le=100)
     intent_budget: bool = True
     token_budget: int = Field(default=6000, ge=TOKEN_BUDGET_MIN, le=TOKEN_BUDGET_MAX)
+    span_line_rerank: bool = False
+    lexical_retrieval: bool = True
+    semantic_chunk_retrieval: bool = True
+    hybrid_seed_limit: int = Field(default=12, ge=1, le=100)
+    pregraph_lexical_span_probe: bool = True
+    lexical_span_probe_max_symbols: int = Field(default=96, ge=1, le=256)
+    lexical_span_probe_max_windows_per_symbol: int = Field(default=3, ge=1, le=12)
+    lexical_span_probe_window_lines: int = Field(default=6, ge=2, le=40)
+    lexical_span_utility_weight: float = Field(default=0.15, ge=0.0, le=1.0)
 
 
 class AxisIntentMatchResponse(BaseModel):
@@ -71,6 +83,10 @@ class AxisCandidateResponse(BaseModel):
     score: float
     query_similarity: float | None = None
     graph_score: float | None = None
+    retrieval_channels: list[str] = Field(default_factory=list)
+    retrieval_spans: list[tuple[int, int]] = Field(default_factory=list)
+    exact_symbol_match: bool = False
+    lexical_span_score: float | None = None
 
 
 class AxisContextSymbolResponse(BaseModel):
@@ -83,6 +99,9 @@ class AxisContextSymbolResponse(BaseModel):
     code: str | None
     start_line: int | None = None
     end_line: int | None = None
+    rendered_spans: list[tuple[int, int]] = Field(default_factory=list)
+    retrieval_spans: list[tuple[int, int]] = Field(default_factory=list)
+    represented_owners: list[dict[str, str]] = Field(default_factory=list)
 
 
 class AxisContextBundleResponse(BaseModel):
@@ -113,6 +132,8 @@ class AskAxisResponse(BaseModel):
     candidates_by_role: dict[str, list[AxisCandidateResponse]]
     context_bundles: list[AxisContextBundleResponse]
     stage_warnings: list[AxisStageWarningResponse] = Field(default_factory=list)
+    seed_selection: dict[str, Any] = Field(default_factory=dict)
+    lexical_span_probe: dict[str, Any] = Field(default_factory=dict)
 
 
 class IntentRequest(BaseModel):

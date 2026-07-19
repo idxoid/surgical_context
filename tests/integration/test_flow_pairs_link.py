@@ -74,7 +74,11 @@ def test_link_flow_pairs_resolves_uid_qn_and_unique_name(db, workspace_id):
     _seed_symbols(
         db,
         workspace_id,
-        [("u_prod", "pkg.lib.produce"), ("u_cons", "pkg.lib.consume"), ("u_boost", "pkg.lib.boost")],
+        [
+            ("u_prod", "pkg.lib.produce"),
+            ("u_cons", "pkg.lib.consume"),
+            ("u_boost", "pkg.lib.boost"),
+        ],
     )
     linked = db.link_flow_pairs(
         [

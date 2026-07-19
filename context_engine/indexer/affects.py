@@ -180,8 +180,7 @@ class AFFECTSIndexer:
             dependency_uid: [
                 uid
                 for _key, uid in sorted(
-                    ((qn, content_hash), uid)
-                    for uid, (qn, content_hash) in dependent_keys.items()
+                    ((qn, content_hash), uid) for uid, (qn, content_hash) in dependent_keys.items()
                 )
             ]
             for dependency_uid, dependent_keys in adjacency.items()

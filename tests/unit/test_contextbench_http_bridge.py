@@ -21,6 +21,7 @@ def _response():
                     "code": "def resolve(path): pass",
                     "start_line": 10,
                     "end_line": 20,
+                    "rendered_spans": [[10, 10], [18, 20]],
                 },
                 "related": [],
             }
@@ -34,6 +35,7 @@ def test_response_maps_to_adapter_compatible_event():
     assert event["result"]["files"] == ["django/urls/resolvers.py"]
     assert event["result"]["symbols"][0]["has_code"] is True
     assert event["result"]["symbols"][0]["start_line"] == 10
+    assert event["result"]["symbols"][0]["rendered_spans"] == [[10, 10], [18, 20]]
 
 
 def test_render_context_prints_file_ranges_and_deduplicates():

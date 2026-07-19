@@ -152,9 +152,7 @@ def _print_sweep_table(rows: list[dict]) -> None:
     if not table_rows:
         return
 
-    widths = [
-        max(len(headers[i]), *(len(r[i]) for r in table_rows)) for i in range(len(headers))
-    ]
+    widths = [max(len(headers[i]), *(len(r[i]) for r in table_rows)) for i in range(len(headers))]
 
     def _fmt(cells: tuple[str, ...]) -> str:
         return "  ".join(cell.ljust(widths[i]) for i, cell in enumerate(cells))

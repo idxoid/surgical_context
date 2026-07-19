@@ -125,8 +125,10 @@ def should_index_file(
 ) -> bool:
     """Index gate: only tracked files whose on-disk content equals ``HEAD``."""
     path = Path(file_path).resolve()
-    root = Path(project_root).resolve() if project_root else (
-        snapshot.root if snapshot is not None else git_root_for(path)
+    root = (
+        Path(project_root).resolve()
+        if project_root
+        else (snapshot.root if snapshot is not None else git_root_for(path))
     )
     if root is None:
         return True

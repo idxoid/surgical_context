@@ -22,6 +22,16 @@ from surgical_context_mcp.config import DEFAULT_TOKEN_BUDGET
 
 load_repo_dotenv()
 
+
+def _span_line_rerank_enabled() -> bool:
+    return os.getenv("SURGICAL_CONTEXT_SPAN_LINE_RERANK", "false").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+
+
 # Single-user MCP session: every overlay buffer is stored and read under one
 # stable user id, so ``set_overlay`` writes and ``ask``/``impact`` reads hit the
 # same key. The overlay collapses the workspace id to its base internally, so
@@ -356,6 +366,7 @@ def _context_symbol_row(sym) -> dict:
         "has_code": bool(sym.code),
         "start_line": sym.start_line or None,
         "end_line": sym.end_line or None,
+        "rendered_spans": [list(span) for span in sym.effective_rendered_spans()],
     }
 
 
@@ -538,6 +549,7 @@ class AxisEngine:
                     # code (dirty buffers patched in, brand-new symbols anchored).
                     overlay=self._overlay,
                     user_id=OVERLAY_USER_ID,
+                    span_line_rerank=_span_line_rerank_enabled(),
                 ),
             )
 
@@ -586,6 +598,7 @@ class AxisEngine:
                     intent_budget=not lean,
                     base_token_budget=token_budget,
                     hook_transparency=True,
+                    span_line_rerank=_span_line_rerank_enabled(),
                 ),
             )
             rows, files, context_text = _render_bundles(result, names_only=lean)

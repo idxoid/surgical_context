@@ -101,6 +101,7 @@ def _axis_parse_workers_default() -> int:
         return 1
     return max(2, min(8, os.cpu_count() or 4))
 
+
 __all__ = [
     "run_fast_indexing",
     "run_axis_incremental_finalize",
@@ -556,9 +557,7 @@ def _run_fast_changed_files_pipeline(
     stats["timings_sec"]["type_refs"] = round(time.perf_counter() - t_stage, 3)
 
     t_stage = time.perf_counter()
-    stats["flow_pairs_linked"] = _flow_pair_phase(
-        diffs, db, workspace_id, reporter, project_path
-    )
+    stats["flow_pairs_linked"] = _flow_pair_phase(diffs, db, workspace_id, reporter, project_path)
     stats["timings_sec"]["flow_pairs"] = round(time.perf_counter() - t_stage, 3)
 
     t_stage = time.perf_counter()

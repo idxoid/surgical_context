@@ -110,7 +110,9 @@ def test_affected_set_is_invariant_under_uid_renaming():
         indexer.MAX_FANOUT_PER_LEVEL = 2
         adjacency = indexer._load_reverse_adjacency(session, workspace_id="ws")
         pairs = indexer._compute_affected_pairs(adjacency, [uid_of("root")])
-        qn_of = {uid_of(qn): qn for qn in ("root", "pkg.a", "pkg.b", "pkg.c", "pkg.d", "pkg.e", "pkg.f")}
+        qn_of = {
+            uid_of(qn): qn for qn in ("root", "pkg.a", "pkg.b", "pkg.c", "pkg.d", "pkg.e", "pkg.f")
+        }
         return {qn_of[p["target_uid"]] for p in pairs}
 
     ws1 = affected_qns(lambda qn: f"ws1_{hash(qn) % 97:02d}_{qn}")

@@ -303,6 +303,37 @@ Important request fields include `top_roles` (1–10), `per_role_limit` (1–50)
 `with_context`, `context_seeds_per_role`, `context_per_seed`, `intent_budget`, and
 `token_budget` (400–32,000; default 6,000).
 
+`context_seeds_per_role` defaults to `7` and is a pre-graph soft cap. Ranked
+top candidates retain their existing order; explicit anchors and at most one
+otherwise-missing exact-symbol hit per source role are recall-safe reserves.
+Pass JSON `null` only for the uncapped diagnostic path. The response's
+`seed_selection` object reports input/unique/selected/dropped counts and
+low-cardinality selection reasons.
+
+Query-time line evidence is controlled by
+`pregraph_lexical_span_probe` (default `true`),
+`lexical_span_probe_max_symbols`,
+`lexical_span_probe_max_windows_per_symbol`, and
+`lexical_span_probe_window_lines`. It batches exact-UID symbol payload reads
+and emits query-matching source windows without requiring a semantic-chunk
+reindex. `lexical_span_utility_weight` defaults to `0.15`; non-zero values add
+the probe score only to pre-Token-Credit utility. The response's
+`lexical_span_probe` object reports bounded/payload/matched counts, covered
+lines, and degraded fetch status.
+
+Evidence-aware graph fanout is enabled by default through
+`evidence_graph_fanout`. Exact, anchored, ranked-head, retrieval-backed, and
+multi-role seeds retain `context_per_seed`; graph-only ranked-tail seeds use a
+smaller per-seed reservoir bounded by `evidence_graph_fanout_min` (default 2).
+`evidence_graph_fanout_protected_head` defaults to 5. Both the in-process walk
+and Neo4j fallback keep one batched traversal per expansion step.
+
+Folded class renders keep the primary source symbol identity and expose
+`represented_owners` on the context symbol. Each entry contains the real
+`uid`, `file_path`, `name`, and `qualified_name` included in that aggregate
+render; synthetic class headers do not invent owners. This keeps inspector and
+exact-owner evaluation aligned with first-wins prompt deduplication.
+
 ---
 
 ### POST /ask/stream

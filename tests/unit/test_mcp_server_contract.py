@@ -17,7 +17,14 @@ if str(MCP_ROOT) not in sys.path:
 
 from surgical_context_mcp import server  # noqa: E402
 from surgical_context_mcp.config import DEFAULT_TOKEN_BUDGET  # noqa: E402
-from surgical_context_mcp.engine import AxisEngine, FileEntry, FileOutline  # noqa: E402
+from surgical_context_mcp.engine import (  # noqa: E402
+    AxisEngine,
+    FileEntry,
+    FileOutline,
+    _context_symbol_row,
+)
+
+from context_engine.axis.context_builder import ContextSymbol  # noqa: E402
 
 
 class _Result:
@@ -91,6 +98,27 @@ class _FileOutlineDb:
         if "RETURN DISTINCT f.path AS file_path" in cypher:
             return _Result(data=[{"file_path": path} for path in self.paths])
         return _Result(data=[])
+
+
+def test_context_symbol_row_exposes_exact_rendered_spans() -> None:
+    symbol = ContextSymbol(
+        uid="u1",
+        name="target",
+        file_path="/repo/a.py",
+        role="entrypoint",
+        distance_from_seed=0,
+        expansion_step=None,
+        code="def target():\n    return 1",
+        start_line=10,
+        end_line=30,
+        rendered_spans=((10, 10), (19, 19)),
+    )
+
+    row = _context_symbol_row(symbol)
+
+    assert row["start_line"] == 10
+    assert row["end_line"] == 30
+    assert row["rendered_spans"] == [[10, 10], [19, 19]]
 
 
 def test_path_query_is_workspace_scoped_to_symbols_and_relationships() -> None:

@@ -70,7 +70,7 @@ def _kinds_from_prescanned(
 ) -> dict[str, tuple[str, str, tuple[str, ...]]]:
     out: dict[str, tuple[str, str, tuple[str, ...]]] = {}
     rows_by_uid = getattr(prescanned, "rows_by_uid", {}) or {}
-    for uid in neighbour_uids:
+    for uid in sorted(neighbour_uids):
         row = rows_by_uid.get(uid)
         if not row:
             continue
@@ -285,7 +285,7 @@ def _matched_target_roles_for_neighbour(
 ) -> dict[str, set[str]]:
     matched_targets: dict[str, set[str]] = {}
     for kind in kinds:
-        for target_role in kind_to_roles.get(kind, ()):
+        for target_role in sorted(kind_to_roles.get(kind, ())):
             if target_role == source_role:
                 continue
             if target_role in intent_set and uid in existing_uids_by_role.get(target_role, set()):
@@ -331,7 +331,12 @@ def _auto_promote_lookahead_roles(
     base_score: float,
     distance_for: Callable[[str], float | None] = lambda _uid: None,
 ) -> None:
-    for target_role, uid_evidence in promotion_evidence.items():
+    # Promotion evidence is collected through kind→role sets.  Never let the
+    # process hash seed decide raw_by_role insertion order: the seed selector
+    # deliberately preserves the first occurrence's ranking payload when a UID
+    # belongs to several roles, so unstable role order becomes unstable ranks.
+    for target_role in sorted(promotion_evidence):
+        uid_evidence = promotion_evidence[target_role]
         if len(uid_evidence) < auto_promote_min_hits:
             continue
         ranked_uids = sorted(
@@ -471,6 +476,7 @@ def expand_candidates_via_neighbourhood(
     query_text: str | None = None,
     embed_fn=None,
     query_scoring: QueryScoringContext | None = None,
+    additional_source_roles: Iterable[str] = (),
 ) -> dict[str, list[RoleCandidate]]:
     """Walk K hops from every role's candidates and use the
     container_kinds of the reached neighbours two ways:
@@ -500,17 +506,21 @@ def expand_candidates_via_neighbourhood(
     promote_pool: set[str] = set(
         auto_promote_role_pool if auto_promote_role_pool is not None else ROLE_EVIDENCE_MAP.keys()
     )
-    relevant_roles = set(intent_roles) | promote_pool
+    relevant_roles = tuple(dict.fromkeys([*intent_roles, *sorted(promote_pool)]))
     kind_to_roles = _build_kind_to_roles(relevant_roles)
     intent_set = set(intent_roles)
 
     # Query distances for injected candidates, looked up off the prescanned
     # matrix (one vectorised pass; no per-row loops). Neighbours outside the
     # scan (e.g. test-fenced rows) fall back to the flat ``base_score``.
-    distances = query_scoring.distances if query_scoring is not None else (
-        _scan_distances(prescanned, query_text, embed_fn)
-        if prescanned is not None and query_text and embed_fn is not None
-        else None
+    distances = (
+        query_scoring.distances
+        if query_scoring is not None
+        else (
+            _scan_distances(prescanned, query_text, embed_fn)
+            if prescanned is not None and query_text and embed_fn is not None
+            else None
+        )
     )
 
     def _distance_for(uid: str) -> float | None:
@@ -522,9 +532,14 @@ def expand_candidates_via_neighbourhood(
         idx = row.get("_idx")
         return float(distances[idx]) if idx is not None else None
 
+    # Preserve retrieval-only channels in the output.  They may serve as graph
+    # sources but never become target intent roles, so role semantics remain
+    # honest while exact/chunk seeds can expose structurally evidenced peers.
     out: dict[str, list[RoleCandidate]] = {
-        role: list(candidates_by_role.get(role) or []) for role in intent_roles
+        role: list(candidates) for role, candidates in candidates_by_role.items()
     }
+    for role in intent_roles:
+        out.setdefault(role, [])
     if not kind_to_roles:
         return out
 
@@ -553,7 +568,10 @@ def expand_candidates_via_neighbourhood(
         all_seed_uids=all_seed_uids,
     )
 
-    for source_role in intent_roles:
+    source_roles = list(
+        dict.fromkeys([*intent_roles, *(str(role) for role in additional_source_roles)])
+    )
+    for source_role in source_roles:
         _expand_lookahead_for_source_role(
             source_role,
             candidates_by_role=candidates_by_role,

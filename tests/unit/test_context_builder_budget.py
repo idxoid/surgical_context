@@ -7,6 +7,8 @@ the benchmark and the live gate.
 
 from __future__ import annotations
 
+from dataclasses import replace
+
 import pytest
 
 from context_engine.axis.context_builder import (
@@ -14,6 +16,7 @@ from context_engine.axis.context_builder import (
     ContextSymbol,
     TokenCreditTrace,
     _apply_render_and_budget,
+    _apply_span_line_rerank,
     _bundle_token_count,
     _code_compact,
     _code_impact_surface,
@@ -25,10 +28,18 @@ from context_engine.axis.context_builder import (
     _mad,
     _median,
     _noise_level_from_tail,
+    _rank_decay_body_credit,
     _render_bundle,
+    _replace_rendered_bundle_symbol,
+    _retrieval_span_symbol_render,
+    _span_candidate_oracle_recall,
     _TokenCreditCoverageState,
     _upgrade_exact_delta,
+    _upgrade_semantic_value,
+    _upgrade_span_redundancy,
+    probe_candidate_lexical_spans,
 )
+from context_engine.axis.role_retrieval import RoleCandidate
 from context_engine.observability.metrics import estimate_text_tokens
 
 # --- helpers ---------------------------------------------------------------
@@ -160,6 +171,63 @@ def test_marginal_purchase_and_exact_upgrade_delta_price_first_wins():
         related=(),
     )
     assert _upgrade_exact_delta(selected, 0, first_up) == tok(shared_full) - tok(shared_sig)
+
+
+def test_upgrade_semantic_credit_uses_only_new_first_wins_tokens():
+    shared_sig = "def shared(value):"
+    shared_full = "def shared(value):\n    return value + 1\n"
+    low = ContextSymbol(
+        uid="shared",
+        name="shared",
+        file_path="/s.py",
+        role="r",
+        distance_from_seed=1,
+        expansion_step="binding",
+        code=shared_sig,
+        semantic_excess=0.10,
+        tier_weight=1.0,
+    )
+    high = ContextSymbol(
+        uid="shared",
+        name="shared",
+        file_path="/s.py",
+        role="r",
+        distance_from_seed=1,
+        expansion_step="binding",
+        code=shared_sig,
+        semantic_excess=0.80,
+        tier_weight=0.50,
+    )
+    first = ContextBundle(
+        role="r",
+        seed=_sym("first", "def first():", file_path="/a.py"),
+        related=(low,),
+    )
+    second = ContextBundle(
+        role="r",
+        seed=_sym("second", "def second():", file_path="/b.py"),
+        related=(high,),
+    )
+    selected: list[dict[str, object]] = [
+        {"index": 0, "source": first, "rendered": first, "cost": 0},
+        {"index": 1, "source": second, "rendered": second, "cost": 0},
+    ]
+    second_up = ContextBundle(
+        role="r",
+        seed=second.seed,
+        related=(ContextSymbol(**{**high.to_dict(), "code": shared_full}),),
+    )
+    # Entry 0 owns ``shared`` in prompt order, so enriching entry 1 is free
+    # both in tokens and in semantic utility.
+    assert _upgrade_semantic_value(selected, 1, second_up) == pytest.approx(0.0)
+
+    first_up = ContextBundle(
+        role="r",
+        seed=first.seed,
+        related=(ContextSymbol(**{**high.to_dict(), "code": shared_full}),),
+    )
+    # The added body belongs to the high-relevance first owner: .80 × .50.
+    assert _upgrade_semantic_value(selected, 0, first_up) == pytest.approx(0.40)
 
 
 def test_token_credit_budget_pays_shared_related_symbol_once():
@@ -493,6 +561,261 @@ def test_code_compact_keeps_structure_calls_and_returns():
     assert "return None" in compact
 
 
+def test_signature_render_tracks_only_the_lines_it_keeps():
+    symbol = ContextSymbol(
+        uid="target",
+        name="target",
+        file_path="/f.py",
+        role="r",
+        distance_from_seed=0,
+        expansion_step=None,
+        code="@cached\ndef target():\n    work()\n    return 1\n",
+        start_line=40,
+        end_line=43,
+    )
+
+    rendered = _render_bundle(
+        ContextBundle(role="r", seed=symbol),
+        "signature_only",
+    ).seed
+
+    assert rendered.code == "@cached\ndef target():"
+    assert rendered.effective_rendered_spans() == ((40, 41),)
+
+
+def test_compact_render_tracks_noncontiguous_source_intervals():
+    symbol = ContextSymbol(
+        uid="target",
+        name="target",
+        file_path="/f.py",
+        role="r",
+        distance_from_seed=0,
+        expansion_step=None,
+        code=(
+            "def target(value):\n"
+            '    """Not rendered."""\n'
+            "    prepared = prepare(value)\n"
+            "    if prepared:\n"
+            "        pass\n"
+            "    return finish(prepared)\n"
+        ),
+        start_line=100,
+        end_line=105,
+    )
+
+    rendered = _render_bundle(
+        ContextBundle(role="r", seed=symbol),
+        "hybrid_compact",
+        full_render_max_depth=0,
+    ).seed
+
+    assert "Not rendered" not in (rendered.code or "")
+    assert "pass" not in (rendered.code or "")
+    assert rendered.effective_rendered_spans() == ((100, 100), (102, 103), (105, 105))
+
+
+def test_span_line_rerank_selects_answer_window_over_same_symbol_hard_negatives():
+    body = [
+        "def dispatch(request):",
+        "    noisy_0 = load_metrics()",
+        "    noisy_1 = load_headers()",
+        "    noisy_2 = load_cookies()",
+        "    noisy_3 = load_session()",
+        "    noisy_4 = load_locale()",
+        "    noisy_5 = load_theme()",
+        "    noisy_6 = load_flags()",
+        "    noisy_7 = load_tracing()",
+        "    noisy_8 = load_debug()",
+        "    match = resolve_url_pattern(request.path)",
+        "    handler = bind_resolved_view(match)",
+        "    return handler(request)",
+        "    noisy_tail = unreachable_cleanup()",
+    ]
+    symbol = ContextSymbol(
+        uid="dispatch",
+        name="dispatch",
+        file_path="/router.py",
+        role="routing_surface",
+        distance_from_seed=0,
+        expansion_step=None,
+        code="\n".join(body),
+        start_line=100,
+        end_line=113,
+    )
+    calls: list[list[str]] = []
+
+    def score(texts: list[str]) -> list[float]:
+        calls.append(list(texts))
+        return [0.95 if "resolve_url_pattern" in text else 0.05 for text in texts]
+
+    [rendered_bundle] = _apply_span_line_rerank(
+        [ContextBundle(role="routing_surface", seed=symbol)],
+        query_text="Where is the URL pattern resolved and bound to a view?",
+        score_fn=score,
+        max_candidates_per_symbol=12,
+        max_body_lines=4,
+    )
+    rendered = rendered_bundle.seed
+
+    assert len(calls) == 1
+    assert "resolve_url_pattern" in (rendered.code or "")
+    assert "bind_resolved_view" in (rendered.code or "")
+    assert "noisy_0" not in (rendered.code or "")
+    assert rendered.effective_rendered_spans() != ((100, 113),)
+    assert sum(end - start + 1 for start, end in rendered.effective_rendered_spans()) <= 5
+
+
+def test_span_line_rerank_scores_all_symbols_in_one_embedding_batch():
+    first = _sym(
+        "first",
+        "def first():\n    noise = prepare()\n    return target_alpha()\n",
+        file_path="/a.py",
+    )
+    second = _sym(
+        "second",
+        "def second():\n    noise = prepare()\n    return target_beta()\n",
+        file_path="/b.py",
+    )
+    batches: list[list[str]] = []
+
+    def score(texts: list[str]) -> list[float]:
+        batches.append(list(texts))
+        return [1.0 if "target_" in text else 0.0 for text in texts]
+
+    rendered = _apply_span_line_rerank(
+        [
+            ContextBundle(role="r", seed=first),
+            ContextBundle(role="r", seed=second),
+        ],
+        query_text="target result",
+        score_fn=score,
+        max_candidates_per_symbol=8,
+        max_body_lines=2,
+    )
+
+    assert len(batches) == 1
+    assert "target_alpha" in (rendered[0].seed.code or "")
+    assert "target_beta" in (rendered[1].seed.code or "")
+
+
+def test_span_line_rerank_treats_explicit_source_line_as_dominant_signal():
+    lines = ["def update(instance):"] + [
+        f"    noise_{index} = unrelated_{index}()" for index in range(1, 25)
+    ]
+    lines[20] = "    instance.pk = None"
+    lines[21] = "    return deleted_count"
+    symbol = ContextSymbol(
+        uid="update",
+        name="update",
+        file_path="/deletion.py",
+        role="r",
+        distance_from_seed=0,
+        expansion_step=None,
+        code="\n".join(lines),
+        start_line=100,
+        end_line=124,
+    )
+
+    def misleading_semantic_score(texts: list[str]) -> list[float]:
+        return [1.0 if "noise_2" in text else 0.0 for text in texts]
+
+    [rendered] = _apply_span_line_rerank(
+        [ContextBundle(role="r", seed=symbol)],
+        query_text="The fix belongs in deletion.py:120-121.",
+        score_fn=misleading_semantic_score,
+        max_candidates_per_symbol=12,
+        max_body_lines=4,
+    )
+
+    assert "instance.pk = None" in (rendered.seed.code or "")
+    assert any(start <= 120 <= end for start, end in rendered.seed.effective_rendered_spans())
+
+
+def test_span_candidate_oracle_recall_is_independent_of_window_ranking():
+    lines = ["def update(instance):"] + [
+        f"    noise_{index} = unrelated_{index}()" for index in range(1, 25)
+    ]
+    lines[20] = "    instance.pk = None"
+    lines[21] = "    return deleted_count"
+    symbol = ContextSymbol(
+        uid="update",
+        name="update",
+        file_path="/deletion.py",
+        role="r",
+        distance_from_seed=0,
+        expansion_step=None,
+        code="\n".join(lines),
+        start_line=100,
+        end_line=124,
+    )
+
+    recall = _span_candidate_oracle_recall(
+        symbol,
+        query_text="The fix belongs in deletion.py:120-121.",
+        gold_lines={120, 121},
+        max_candidates=4,
+    )
+
+    assert recall == 1.0
+
+
+def test_pregraph_lexical_span_probe_emits_only_query_matching_windows(monkeypatch):
+    lines = ["def update(instance):"] + [
+        f"    noise_{index} = unrelated_{index}()" for index in range(1, 25)
+    ]
+    lines[20] = "    instance.pk = None"
+    lines[21] = "    deleted_count = 1"
+    candidate = RoleCandidate(
+        uid="update",
+        name="update",
+        qualified_name="deletion.update",
+        file_path="/deletion.py",
+        role="hybrid_seed",
+        satisfying_contracts=(),
+        satisfying_kinds=(),
+        contract_count=0,
+        kind_count=0,
+        vector_distance=None,
+        score=0.9,
+    )
+    monkeypatch.setattr(
+        "context_engine.axis.context_builder._fetch_symbol_payloads",
+        lambda *_args, **_kwargs: {
+            "update": {
+                "code": "\n".join(lines),
+                "start_line": 100,
+                "end_line": 124,
+            }
+        },
+    )
+
+    evidence, trace = probe_candidate_lexical_spans(
+        [candidate],
+        workspace_id="ws",
+        lance=object(),
+        query_text="Where is deleted_count assigned?",
+        max_windows_per_symbol=1,
+        window_lines=6,
+    )
+
+    spans = evidence["update"].spans
+    assert any(start <= 121 <= end for start, end in spans)
+    assert sum(end - start + 1 for start, end in spans) <= 6
+    assert evidence["update"].score > 0.0
+    assert "deleted" in evidence["update"].matched_terms
+    assert trace.matched_symbols == 1
+    assert not trace.fetch_failed
+
+    empty, empty_trace = probe_candidate_lexical_spans(
+        [candidate],
+        workspace_id="ws",
+        lance=object(),
+        query_text="completely absent terminology",
+    )
+    assert empty == {}
+    assert empty_trace.matched_symbols == 0
+
+
 # --- _apply_render_and_budget ---------------------------------------------
 
 
@@ -570,6 +893,491 @@ def test_token_credit_trace_does_not_change_render_selection_and_records_upgrade
     assert any(transaction.phase.startswith("upgrade_") for transaction in trace.transactions)
 
 
+def test_token_credit_upgrade_audit_attributes_seed_related_and_evidence():
+    seed = replace(
+        _sym(
+            "seed",
+            "def seed():\n" + "    seed_value = 1\n" * 20,
+            file_path="/seed.py",
+        ),
+        retrieval_channels=("vector", "lexical"),
+    )
+    related = replace(
+        _sym(
+            "related",
+            "def related():\n" + "    graph_value = 2\n" * 20,
+            file_path="/seed.py",
+        ),
+        distance_from_seed=1,
+        expansion_step="deferred_runtime_dispatch",
+        edge_type="CALLS_*",
+    )
+    trace = TokenCreditTrace()
+
+    _apply_render_and_budget(
+        [ContextBundle(role="vector_seed", seed=seed, related=(related,), utility_score=1.0)],
+        token_budget=2_000,
+        render_mode="signature_only",
+        rank_decay_body_allocation=True,
+        rank_decay_head_share=0.90,
+        credit_trace=trace,
+    )
+
+    paid_upgrades = [
+        transaction
+        for transaction in trace.transactions
+        if transaction.phase.startswith("upgrade_") and transaction.delta_tokens > 0
+    ]
+    assert paid_upgrades
+    assert all(
+        sum(row.delta_tokens for row in transaction.attribution) == transaction.delta_tokens
+        for transaction in paid_upgrades
+    )
+    rows = [row for transaction in paid_upgrades for row in transaction.attribution]
+    assert any(row.scope == "seed" and row.evidence == "retrieval_backed" for row in rows)
+    assert any(
+        row.scope == "related"
+        and row.evidence == "graph_only"
+        and row.edge_type == "CALLS_*"
+        and row.depth == 1
+        for row in rows
+    )
+
+
+def test_rank_decay_body_credit_is_front_loaded_and_bounded():
+    credits = [
+        _rank_decay_body_credit(
+            12_000,
+            candidate_rank=rank,
+            head_share=0.15,
+            decay_rate=0.75,
+        )
+        for rank in range(1, 40)
+    ]
+
+    assert credits[:5] == [1800, 1350, 1012, 759, 569]
+    assert all(left >= right for left, right in zip(credits, credits[1:]))
+    assert sum(credits) <= int(12_000 * 0.15 / (1.0 - 0.75))
+
+
+def test_rank_decay_upgrades_head_body_without_relaxing_tail():
+    head_code = "def head():\n" + "    head_value = 1\n" * 40
+    tail_code = "def tail():\n" + "    tail_value = 2\n" * 40
+    bundles = [
+        ContextBundle(
+            role="r",
+            seed=_sym("head", head_code, file_path="/head.py"),
+            utility_score=1.0,
+        ),
+        ContextBundle(
+            role="r",
+            seed=_sym("tail", tail_code, file_path="/tail.py"),
+            utility_score=0.5,
+        ),
+    ]
+    trace = TokenCreditTrace()
+
+    out = _apply_render_and_budget(
+        bundles,
+        token_budget=1_000,
+        render_mode="full",
+        rank_decay_body_allocation=True,
+        rank_decay_head_share=0.50,
+        rank_decay_rate=0.0,
+        credit_trace=trace,
+    )
+
+    rendered = {bundle.seed.uid: bundle.seed.code or "" for bundle in out}
+    assert "head_value" in rendered["head"]
+    assert "tail_value" not in rendered["tail"]
+    assert trace.allocation_mode == "rank_decay"
+    assert 0.0 < trace.coverage_share <= 0.65
+    assert any(transaction.phase == "upgrade_rank_decay" for transaction in trace.transactions)
+    assert not any(
+        transaction.phase in {"upgrade_leader_relaxed", "upgrade_tail_relaxed"}
+        for transaction in trace.transactions
+    )
+
+
+def test_rank_decay_falls_back_to_legacy_when_coverage_pressure_is_high():
+    bundle = ContextBundle(
+        role="r",
+        seed=_sym(
+            "head",
+            "def head():\n" + "    value = 1\n" * 20,
+            file_path="/head.py",
+        ),
+        utility_score=1.0,
+    )
+    trace = TokenCreditTrace()
+
+    _apply_render_and_budget(
+        [bundle],
+        token_budget=500,
+        render_mode="full",
+        rank_decay_body_allocation=True,
+        rank_decay_max_coverage_share=0.0,
+        credit_trace=trace,
+    )
+
+    assert trace.coverage_share > 0.0
+    assert trace.allocation_mode == "legacy"
+    assert not any(transaction.phase == "upgrade_rank_decay" for transaction in trace.transactions)
+
+
+def test_rank_decay_pressure_threshold_relaxes_from_8k_to_12k():
+    bundle = ContextBundle(
+        role="r",
+        seed=_sym("head", "def head():\n    return 1\n", file_path="/head.py"),
+        utility_score=1.0,
+    )
+    thresholds: list[float] = []
+
+    for budget in (8_000, 10_000, 12_000):
+        trace = TokenCreditTrace()
+        _apply_render_and_budget(
+            [bundle],
+            token_budget=budget,
+            render_mode="full",
+            rank_decay_body_allocation=True,
+            rank_decay_max_coverage_share=0.65,
+            credit_trace=trace,
+        )
+        thresholds.append(trace.rank_decay_coverage_threshold)
+
+    assert thresholds == pytest.approx([0.65, 0.825, 1.0])
+
+
+def test_decoupled_body_ladder_buys_seed_span_then_body_not_graph_neighbour():
+    seed_lines = ["def seed():", *(f"    line_{index} = {index}" for index in range(40))]
+    seed = replace(
+        _sym("seed", "\n".join(seed_lines), file_path="/feature.py"),
+        start_line=100,
+        end_line=140,
+        retrieval_channels=("vector", "lexical"),
+        retrieval_spans=((120, 125),),
+    )
+    related = replace(
+        _sym(
+            "graph-related",
+            "def graph_related():\n" + "    graph_value = 1\n" * 30,
+            file_path="/noise.py",
+        ),
+        distance_from_seed=1,
+        expansion_step="binding_structure_expansion",
+        edge_type="REFERENCES",
+    )
+    trace = TokenCreditTrace()
+
+    [rendered] = _apply_render_and_budget(
+        [ContextBundle(role="vector_seed", seed=seed, related=(related,), utility_score=1.0)],
+        token_budget=4_000,
+        render_mode="signature_only",
+        rank_decay_body_allocation=True,
+        rank_decay_head_share=0.90,
+        upgrade_min_utility_per_token=0.00025,
+        decoupled_symbol_body_allocation=True,
+        credit_trace=trace,
+    )
+
+    phases = [transaction.phase for transaction in trace.transactions]
+    assert phases.index("upgrade_seed_span") < phases.index("upgrade_seed_body")
+    assert "upgrade_related_span" not in phases
+    assert "upgrade_related_body" not in phases
+    assert "line_24" in (rendered.seed.code or "")
+    assert "graph_value" not in (rendered.related[0].code or "")
+
+
+def test_span_evidence_replaces_folded_aggregate_without_stale_owner_claims():
+    seed_lines = ["    def delete(self):"] + [
+        f"        line_{index} = {index}" for index in range(1, 41)
+    ]
+    seed_lines[20] = "        instance.pk = None"
+    seed = replace(
+        _sym(
+            "delete",
+            "\n".join(seed_lines),
+            qualified_name="pkg.Collector.delete",
+            file_path="/deletion.py",
+        ),
+        start_line=260,
+        end_line=300,
+        retrieval_channels=("lexical_span",),
+        retrieval_spans=((277, 282),),
+    )
+    sibling = replace(
+        _sym(
+            "collect",
+            "    def collect(self):\n        return collected\n",
+            qualified_name="pkg.Collector.collect",
+            file_path="/deletion.py",
+        ),
+        start_line=100,
+        end_line=140,
+        distance_from_seed=1,
+    )
+    folded = _render_bundle(
+        ContextBundle(role="structural_neighbour", seed=seed, related=(sibling,)),
+        "fold_compact",
+    )
+
+    replaced = _replace_rendered_bundle_symbol(
+        folded,
+        _retrieval_span_symbol_render(seed),
+        render_mode="seed_span",
+    )
+
+    assert replaced is not None
+    assert replaced.seed.represented_owners == ()
+    assert any(start <= 280 <= end for start, end in replaced.seed.effective_rendered_spans())
+
+
+def test_decoupled_seed_span_reserve_reaches_evidence_backed_ranked_tail():
+    head = [
+        ContextBundle(
+            role="vector_seed",
+            seed=_sym(
+                f"head-{index}",
+                f"def head_{index}():\n    return {index}\n",
+                file_path=f"/head-{index}.py",
+            ),
+            utility_score=1.0 - index * 0.01,
+        )
+        for index in range(10)
+    ]
+    tail_lines = ["def delete(instance):"] + [
+        f"    noise_{index} = unrelated_{index}()" for index in range(1, 50)
+    ]
+    tail_lines[20] = "    instance.pk = None"
+    tail = replace(
+        _sym("delete", "\n".join(tail_lines), file_path="/deletion.py"),
+        start_line=260,
+        end_line=309,
+        retrieval_channels=("lexical_span",),
+        retrieval_spans=((277, 282),),
+    )
+    trace = TokenCreditTrace()
+
+    rendered = _apply_render_and_budget(
+        [*head, ContextBundle(role="structural_neighbour", seed=tail, utility_score=0.8)],
+        token_budget=8_000,
+        render_mode="fold_compact",
+        rank_decay_body_allocation=True,
+        rank_decay_head_share=0.15,
+        rank_decay_rate=0.75,
+        decoupled_symbol_body_allocation=True,
+        decoupled_seed_span_reserve_share=0.10,
+        credit_trace=trace,
+    )
+
+    rendered_tail = next(bundle.seed for bundle in rendered if bundle.seed.uid == "delete")
+    assert any(start <= 280 <= end for start, end in rendered_tail.effective_rendered_spans())
+    assert any(
+        transaction.uid == "delete" and transaction.phase == "upgrade_seed_span"
+        for transaction in trace.transactions
+    )
+    assert trace.used_tokens < trace.token_budget
+
+
+def test_decoupled_body_ladder_allows_neighbour_with_own_retrieval_evidence():
+    seed = replace(
+        _sym(
+            "seed",
+            "def seed():\n" + "    seed_value = 1\n" * 20,
+            file_path="/feature.py",
+        ),
+        retrieval_channels=("vector",),
+    )
+    related = replace(
+        _sym(
+            "retrieved-related",
+            "def retrieved_related():\n" + "    relevant_graph_value = 2\n" * 30,
+            file_path="/feature.py",
+        ),
+        distance_from_seed=1,
+        expansion_step="binding_structure_expansion",
+        edge_type="REFERENCES",
+        start_line=200,
+        end_line=230,
+        retrieval_channels=("lexical",),
+        retrieval_spans=((210, 214),),
+        lexical_span_score=0.30,
+    )
+    trace = TokenCreditTrace()
+
+    [rendered] = _apply_render_and_budget(
+        [ContextBundle(role="vector_seed", seed=seed, related=(related,), utility_score=1.0)],
+        token_budget=4_000,
+        render_mode="signature_only",
+        rank_decay_body_allocation=True,
+        rank_decay_head_share=0.90,
+        upgrade_min_utility_per_token=0.00025,
+        decoupled_symbol_body_allocation=True,
+        credit_trace=trace,
+    )
+
+    phases = [transaction.phase for transaction in trace.transactions]
+    assert "upgrade_related_span" in phases
+    assert "upgrade_related_body" in phases
+    assert "relevant_graph_value" in (rendered.related[0].code or "")
+    related_rows = [
+        row
+        for transaction in trace.transactions
+        for row in transaction.attribution
+        if row.scope == "related"
+    ]
+    assert related_rows
+    assert all(row.evidence == "retrieval_backed" for row in related_rows)
+
+
+def test_decoupled_body_ladder_promotes_member_evidence_to_owner_body():
+    member = replace(
+        _sym(
+            "member",
+            "    def member(self):\n        return member_value\n",
+            qualified_name="pkg.feature.member",
+            file_path="/feature.py",
+        ),
+        start_line=120,
+        end_line=122,
+        retrieval_channels=("vector", "lexical"),
+        retrieval_spans=((121, 122),),
+        lexical_span_score=0.30,
+    )
+    owner = replace(
+        _sym(
+            "owner",
+            "class Owner:\n" + "    owner_value = 1\n" * 40,
+            qualified_name="pkg.feature.Owner",
+            file_path="/feature.py",
+        ),
+        name="Owner",
+        start_line=100,
+        end_line=140,
+        distance_from_seed=1,
+        expansion_step="binding_structure_expansion",
+    )
+    trace = TokenCreditTrace()
+
+    [rendered] = _apply_render_and_budget(
+        [ContextBundle(role="vector_seed", seed=member, related=(owner,), utility_score=1.0)],
+        token_budget=4_000,
+        render_mode="signature_only",
+        rank_decay_body_allocation=True,
+        rank_decay_head_share=0.90,
+        upgrade_min_utility_per_token=0.00025,
+        decoupled_symbol_body_allocation=True,
+        credit_trace=trace,
+    )
+
+    rendered_owner = next(symbol for symbol in rendered.related if symbol.uid == "owner")
+    assert "owner_value" in (rendered_owner.code or "")
+    assert rendered_owner.retrieval_spans == ((121, 122),)
+    assert any(
+        transaction.phase == "upgrade_related_body"
+        and any(
+            row.scope == "related" and row.evidence == "retrieval_backed"
+            for row in transaction.attribution
+        )
+        for transaction in trace.transactions
+    )
+
+
+def test_decoupled_body_ladder_resolves_container_span_to_member_body():
+    owner = replace(
+        _sym(
+            "owner",
+            "class Owner:\n" + "    owner_value = 1\n" * 40,
+            qualified_name="pkg.feature.Owner",
+            file_path="/feature.py",
+        ),
+        name="Owner",
+        start_line=100,
+        end_line=140,
+        retrieval_channels=("vector", "lexical"),
+        retrieval_spans=((120, 123),),
+        lexical_span_score=0.30,
+    )
+    member = replace(
+        _sym(
+            "member",
+            "    def member(self):\n        return member_value\n",
+            qualified_name="pkg.feature.Owner.member",
+            file_path="/feature.py",
+        ),
+        start_line=120,
+        end_line=123,
+        distance_from_seed=1,
+        expansion_step="binding_structure_expansion",
+    )
+    trace = TokenCreditTrace()
+
+    [rendered] = _apply_render_and_budget(
+        [ContextBundle(role="vector_seed", seed=owner, related=(member,), utility_score=1.0)],
+        token_budget=4_000,
+        render_mode="signature_only",
+        rank_decay_body_allocation=True,
+        rank_decay_head_share=0.90,
+        upgrade_min_utility_per_token=0.00025,
+        decoupled_symbol_body_allocation=True,
+        credit_trace=trace,
+    )
+
+    rendered_member = next(symbol for symbol in rendered.related if symbol.uid == "member")
+    assert "member_value" in (rendered_member.code or "")
+    assert rendered_member.retrieval_spans == ((120, 123),)
+    assert "upgrade_related_span" in {transaction.phase for transaction in trace.transactions}
+
+
+def test_span_redundancy_penalises_overlapping_lines_not_same_file_alone():
+    seed = replace(
+        _sym(
+            "seed",
+            "def seed():\n" + "    seed_value = 1\n" * 10,
+            file_path="/feature.py",
+        ),
+        start_line=100,
+        end_line=110,
+    )
+    related = replace(
+        _sym(
+            "related",
+            "def related():\n" + "    related_value = 2\n" * 10,
+            file_path="/feature.py",
+        ),
+        distance_from_seed=1,
+        start_line=105,
+        end_line=115,
+    )
+    related_signature = replace(
+        related,
+        code="def related():",
+        rendered_spans=((105, 105),),
+    )
+    current = ContextBundle(role="r", seed=seed, related=(related_signature,))
+    upgraded = ContextBundle(role="r", seed=seed, related=(related,))
+
+    overlap = _upgrade_span_redundancy(
+        [{"rendered": current}],
+        0,
+        upgraded,
+    )
+
+    assert overlap == pytest.approx(0.5)
+
+    non_overlapping = replace(related, start_line=200, end_line=210)
+    upgraded_non_overlapping = ContextBundle(
+        role="r",
+        seed=seed,
+        related=(non_overlapping,),
+    )
+    assert _upgrade_span_redundancy(
+        [{"rendered": current}],
+        0,
+        upgraded_non_overlapping,
+    ) == pytest.approx(0.0)
+
+
 def test_token_credit_density_cutoff_rejects_paid_nonpositive_tail_only_when_enabled():
     bundles = [
         ContextBundle(
@@ -603,6 +1411,168 @@ def test_token_credit_density_cutoff_rejects_paid_nonpositive_tail_only_when_ena
         for transaction in trace.transactions
         if transaction.phase == "coverage" and transaction.delta_tokens > 0
     )
+
+
+def test_upgrade_only_density_cutoff_preserves_coverage_transactions():
+    bundles = [
+        ContextBundle(
+            role="r",
+            seed=_sym(
+                f"seed-{index}",
+                f"def seed_{index}():\n" + f"    value_{index} = {index}\n" * 20,
+                file_path=f"/seed-{index}.py",
+            ),
+            utility_score=1.0 - index * 0.1,
+        )
+        for index in range(3)
+    ]
+    control_trace = TokenCreditTrace()
+    cutoff_trace = TokenCreditTrace()
+
+    _apply_render_and_budget(
+        bundles,
+        token_budget=1_000,
+        render_mode="full",
+        rank_decay_body_allocation=True,
+        credit_trace=control_trace,
+    )
+    _apply_render_and_budget(
+        bundles,
+        token_budget=1_000,
+        render_mode="full",
+        rank_decay_body_allocation=True,
+        upgrade_min_utility_per_token=1_000.0,
+        credit_trace=cutoff_trace,
+    )
+
+    control_coverage = [
+        transaction.uid
+        for transaction in control_trace.transactions
+        if transaction.phase == "coverage"
+    ]
+    cutoff_coverage = [
+        transaction.uid
+        for transaction in cutoff_trace.transactions
+        if transaction.phase == "coverage"
+    ]
+    assert cutoff_coverage == control_coverage
+    assert cutoff_trace.cutoff_rejections > 0
+    assert not any(
+        transaction.phase.startswith("upgrade_") for transaction in cutoff_trace.transactions
+    )
+
+
+def test_rank_decay_span_head_buys_one_body_rung_before_upgrade_cutoff():
+    seed = replace(
+        _sym(
+            "span-head",
+            "def span_head():\n" + "    relevant_value = 1\n" * 80,
+            file_path="/span.py",
+        ),
+        retrieval_spans=((2, 8),),
+    )
+    bundle = ContextBundle(role="vector_seed", seed=seed, utility_score=1.0)
+    trace = TokenCreditTrace()
+
+    _apply_render_and_budget(
+        [bundle],
+        token_budget=2_000,
+        render_mode="signature_only",
+        signature_only_initial=True,
+        rank_decay_body_allocation=True,
+        rank_decay_head_share=0.90,
+        upgrade_min_utility_per_token=1_000.0,
+        credit_trace=trace,
+    )
+
+    paid_upgrades = [
+        transaction
+        for transaction in trace.transactions
+        if transaction.phase == "upgrade_rank_decay" and transaction.delta_tokens > 0
+    ]
+    assert len(paid_upgrades) == 1
+    assert paid_upgrades[0].utility_per_token < 1_000.0
+    assert trace.cutoff_rejections > 0
+
+
+def test_rank_decay_span_head_saves_first_rejected_rung_not_first_paid_rung():
+    seed = replace(
+        _sym(
+            "span-head",
+            "def span_head():\n" + "    relevant_value = 1\n" * 80,
+            file_path="/span.py",
+        ),
+        retrieval_spans=((2, 8),),
+    )
+    related = tuple(
+        replace(
+            _sym(
+                f"related-{index}",
+                f"def related_{index}():\n" + f"    value_{index} = 1\n" * 50,
+                file_path="/span.py",
+            ),
+            distance_from_seed=1,
+        )
+        for index in range(2)
+    )
+    trace = TokenCreditTrace()
+    cutoff = 0.003
+
+    _apply_render_and_budget(
+        [ContextBundle(role="vector_seed", seed=seed, related=related, utility_score=1.0)],
+        token_budget=12_000,
+        render_mode="signature_only",
+        signature_only_initial=True,
+        rank_decay_body_allocation=True,
+        rank_decay_head_share=0.90,
+        upgrade_min_utility_per_token=cutoff,
+        credit_trace=trace,
+    )
+
+    paid_upgrades = [
+        transaction
+        for transaction in trace.transactions
+        if transaction.phase == "upgrade_rank_decay" and transaction.delta_tokens > 0
+    ]
+    assert len(paid_upgrades) == 2
+    assert paid_upgrades[0].utility_per_token > cutoff
+    assert paid_upgrades[1].utility_per_token <= cutoff
+    assert trace.cutoff_rejections > 0
+
+
+def test_rank_decay_span_cutoff_bypass_does_not_extend_into_ranked_tail():
+    bundles = [
+        ContextBundle(
+            role="vector_seed",
+            seed=replace(
+                _sym(
+                    f"seed-{index}",
+                    f"def seed_{index}():\n" + f"    value_{index} = 1\n" * 40,
+                    file_path=f"/seed-{index}.py",
+                ),
+                retrieval_spans=((2, 4),) if index == 5 else (),
+            ),
+            utility_score=1.0 - index * 0.01,
+        )
+        for index in range(6)
+    ]
+    trace = TokenCreditTrace()
+
+    _apply_render_and_budget(
+        bundles,
+        token_budget=12_000,
+        render_mode="signature_only",
+        signature_only_initial=True,
+        rank_decay_body_allocation=True,
+        upgrade_min_utility_per_token=1_000.0,
+        credit_trace=trace,
+    )
+
+    assert not any(
+        transaction.phase == "upgrade_rank_decay" and transaction.delta_tokens > 0
+        for transaction in trace.transactions
+    )
+    assert trace.cutoff_rejections > 0
 
 
 def test_token_credit_plateau_freeze_leaves_rejected_budget_unspent():
@@ -780,8 +1750,19 @@ def test_fold_groups_class_members_and_signatures_siblings():
 
     [out] = _apply_render_and_budget([bundle], token_budget=None, render_mode="fold")
 
-    assert out.seed.name == "Service"
-    assert out.seed.qualified_name == "pkg.mod.Service"
+    # Fold changes the render, not the source identity.  Keeping the member
+    # owner aligned with its uid prevents first-wins dedupe from turning a
+    # method uid into a class row and hiding the exact owner.
+    assert out.seed.uid == "target"
+    assert out.seed.name == "target"
+    assert out.seed.qualified_name == "pkg.mod.Service.target"
+    assert out.seed.expansion_step == "fold"
+    assert {
+        (owner.uid, owner.name, owner.qualified_name) for owner in out.seed.represented_owners
+    } == {
+        ("target", "target", "pkg.mod.Service.target"),
+        ("helper", "helper", "pkg.mod.Service.helper"),
+    }
     assert out.related == ()
     assert out.seed.code == (
         "class Service:\n"
@@ -814,6 +1795,40 @@ def test_fold_compact_groups_class_members_as_signatures_only():
 
     assert out.render_mode == "fold_compact"
     assert out.seed.code == ("class Service:\n    def target(self):\n    def helper(self):")
+
+
+def test_fold_compact_unions_member_signature_spans_without_claiming_synthetic_header():
+    seed = ContextSymbol(
+        uid="target",
+        name="target",
+        file_path="/f.py",
+        role="r",
+        distance_from_seed=0,
+        expansion_step=None,
+        code="    def target(self):\n        return self.helper()\n",
+        qualified_name="pkg.mod.Service.target",
+        start_line=10,
+        end_line=11,
+    )
+    sibling = ContextSymbol(
+        uid="helper",
+        name="helper",
+        file_path="/f.py",
+        role="r",
+        distance_from_seed=1,
+        expansion_step="binding",
+        code="    def helper(self):\n        return 1\n",
+        qualified_name="pkg.mod.Service.helper",
+        start_line=20,
+        end_line=21,
+    )
+
+    rendered = _render_bundle(
+        ContextBundle(role="r", seed=seed, related=(sibling,)),
+        "fold_compact",
+    ).seed
+
+    assert rendered.effective_rendered_spans() == ((10, 10), (20, 20))
 
 
 def test_fold_leaves_ambiguous_single_method_alone():
@@ -1173,3 +2188,81 @@ def test_token_credit_starts_foldable_active_bundle_as_fold_coverage():
     assert cost == _bundle_token_count(rendered)
     assert rendered.render_mode == "fold_compact"
     assert rendered.seed.code == ("class Service:\n    def target(self):\n    def helper(self):")
+
+
+def test_next_upgrade_render_rejects_equal_cost_collapsed_mode():
+    """Regression: tight transaction_limit must not oscillate fold_compact ↔ impact_tiered.
+
+    Under impact_tiered profiling, a fold_compact current whose next ladder
+    request collapses back to the same printed size used to return that
+    collapse as an "upgrade", then bounce forever (SWE-bench django-15400).
+    """
+    from context_engine.axis.context_builder import _next_upgrade_render
+
+    body = "def target():\n    " + ("x = 1\n    " * 40) + "return x\n"
+    bundle = ContextBundle(
+        role="seeds",
+        seed=_sym("t", body, file_path="/a.py"),
+        related=(),
+        utility_score=1.0,
+        render_mode="fold_compact",
+    )
+    # Cost of the current fold_compact render.
+    current = _render_bundle(bundle, "fold_compact", full_render_max_depth=0)
+    current_cost = _bundle_token_count(current)
+    # Cap so richer rungs collapse to the same printed size.
+    nxt = _next_upgrade_render(
+        bundle,
+        current_mode="fold_compact",
+        current_cost=current_cost,
+        render_mode="impact_tiered",
+        transaction_limit=max(1, current_cost),
+        full_render_max_depth=0,
+        render_cache={},
+    )
+    assert nxt is None
+
+
+def test_apply_credit_upgrades_terminates_when_budget_nearly_full():
+    """Near-full coverage + impact_tiered must not hang in the upgrade heap."""
+    from context_engine.axis.context_builder import _apply_credit_upgrades, _bundle_static_rows
+
+    body = "def target():\n    " + ("x = 1\n    " * 30) + "return x\n"
+    bundles = [
+        ContextBundle(
+            role="seeds",
+            seed=_sym(f"t{i}", body, file_path=f"/a{i}.py"),
+            related=(),
+            utility_score=1.0 - (i * 0.01),
+            render_mode="fold_compact",
+        )
+        for i in range(8)
+    ]
+    selected = []
+    for idx, bundle in enumerate(bundles):
+        rendered = _render_bundle(bundle, "fold_compact", full_render_max_depth=0)
+        selected.append(
+            {
+                "index": idx,
+                "source": bundle,
+                "rendered": rendered,
+                "cost": _bundle_token_count(rendered),
+            }
+        )
+    used = sum(int(e["cost"]) for e in selected) - 5
+    token_budget = used + 5
+    static = _bundle_static_rows(bundles)
+    state = _TokenCreditCoverageState(file_soft_cap=token_budget)
+    out_used = _apply_credit_upgrades(
+        selected,
+        static,
+        state,
+        render_mode="impact_tiered",
+        transaction_limit=100,
+        full_render_max_depth=0,
+        render_cache={},
+        token_budget=token_budget,
+        used=used,
+        phase="upgrade_capped",
+    )
+    assert out_used <= token_budget

@@ -5,7 +5,11 @@ from __future__ import annotations
 import pytest
 
 from context_engine.axis.axis_profiles import Axis
-from context_engine.axis.axis_ranking import apply_intent_axis_boost, intent_axes
+from context_engine.axis.axis_ranking import (
+    apply_intent_axis_boost,
+    apply_weighted_intent_role_axis_boost,
+    intent_axes,
+)
 from context_engine.axis.role_retrieval import RoleCandidate
 
 
@@ -82,3 +86,70 @@ def test_empty_intent_axes_is_noop():
     pools = {"m": [_cand("u:a", kinds=["data_model"], score=0.5)]}
     out = apply_intent_axis_boost(pools, ["impact_analysis"], boost=0.2)
     assert out["m"][0].score == pytest.approx(0.5)
+
+
+def test_weighted_boost_prefers_exact_role_over_axis_only_overlap():
+    pools = {
+        "routing_surface": [
+            _cand("u:route", kinds=["keyed_register_callable"], score=0.5),
+        ],
+        "binding_surface": [
+            _cand(
+                "u:binding",
+                kinds=["keyed_register_callable"],
+                score=0.5,
+                role="binding_surface",
+            ),
+        ],
+    }
+
+    out = apply_weighted_intent_role_axis_boost(
+        pools,
+        {"routing_surface": 0.4},
+        boost=0.2,
+        axis_only_share=0.25,
+    )
+
+    assert out["routing_surface"][0].score == pytest.approx(0.7)
+    assert out["binding_surface"][0].score == pytest.approx(0.55)
+
+
+def test_weighted_boost_scales_lower_intent_similarity():
+    pools = {
+        "routing_surface": [
+            _cand("u:route", kinds=["keyed_register_callable"], score=0.5),
+        ],
+        "data_model_surface": [
+            _cand(
+                "u:model",
+                kinds=["data_model"],
+                score=0.5,
+                role="data_model_surface",
+            ),
+        ],
+    }
+
+    out = apply_weighted_intent_role_axis_boost(
+        pools,
+        {"routing_surface": 0.4, "data_model_surface": 0.2},
+        boost=0.2,
+    )
+
+    assert out["routing_surface"][0].score == pytest.approx(0.7)
+    assert out["data_model_surface"][0].score == pytest.approx(0.6)
+
+
+def test_weighted_boost_leaves_axisless_and_mode_roles_unchanged():
+    pools = {
+        "vector_seed": [_cand("u:v", score=0.5, role="vector_seed")],
+        "trace_dependency": [_cand("u:t", kinds=(), score=0.5, role="trace_dependency")],
+    }
+
+    out = apply_weighted_intent_role_axis_boost(
+        pools,
+        {"trace_dependency": 0.4, "routing_surface": 0.3},
+        boost=0.2,
+    )
+
+    assert out["vector_seed"][0].score == pytest.approx(0.5)
+    assert out["trace_dependency"][0].score == pytest.approx(0.5)

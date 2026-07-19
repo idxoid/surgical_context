@@ -333,3 +333,32 @@ def test_auto_promote_pool_filter_restricts_eligible_roles():
 
     assert "dispatch_surface" not in out
     assert "configuration_surface" not in out
+
+
+def test_auto_promoted_role_order_is_independent_of_pool_input_order():
+    seed = _candidate("u:proxy", role="proxy_mechanism")
+    neighbours = ["u:r1", "u:r2", "u:r3"]
+    rows = [lance_kind_row(uid, kinds=["keyed_register_callable"]) for uid in neighbours]
+
+    def expand(role_pool: list[str]) -> dict[str, list[RoleCandidate]]:
+        return expand_candidates_via_neighbourhood(
+            ["proxy_mechanism"],
+            {"proxy_mechanism": [seed]},
+            db=_queued_db([walk_rows(neighbours)]),
+            lance=FakeLanceDB(rows),
+            workspace_id=AXIS_TEST_WORKSPACE,
+            auto_promote_min_hits=3,
+            auto_promote_role_pool=role_pool,
+        )
+
+    forward = expand(["task_surface", "routing_surface", "binding_surface"])
+    reverse = expand(["binding_surface", "routing_surface", "task_surface"])
+
+    expected_order = [
+        "proxy_mechanism",
+        "binding_surface",
+        "routing_surface",
+        "task_surface",
+    ]
+    assert list(forward) == expected_order
+    assert list(reverse) == expected_order

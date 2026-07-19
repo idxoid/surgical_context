@@ -684,9 +684,23 @@ class AskService:
                 intent_threshold=req.intent_threshold,
                 with_context=req.with_context,
                 context_per_seed=req.context_per_seed,
+                evidence_graph_fanout=req.evidence_graph_fanout,
+                evidence_graph_fanout_min=req.evidence_graph_fanout_min,
+                evidence_graph_fanout_protected_head=(req.evidence_graph_fanout_protected_head),
                 context_seeds_per_role=req.context_seeds_per_role,
                 intent_budget=req.intent_budget,
                 base_token_budget=req.token_budget,
+                span_line_rerank=req.span_line_rerank,
+                lexical_retrieval=req.lexical_retrieval,
+                semantic_chunk_retrieval=req.semantic_chunk_retrieval,
+                hybrid_seed_limit=req.hybrid_seed_limit,
+                pregraph_lexical_span_probe=req.pregraph_lexical_span_probe,
+                lexical_span_probe_max_symbols=req.lexical_span_probe_max_symbols,
+                lexical_span_probe_max_windows_per_symbol=(
+                    req.lexical_span_probe_max_windows_per_symbol
+                ),
+                lexical_span_probe_window_lines=req.lexical_span_probe_window_lines,
+                lexical_span_utility_weight=req.lexical_span_utility_weight,
                 trace=trace,
                 overlay=self.overlay,
                 user_id=user_id,
@@ -723,6 +737,10 @@ class AskService:
                     score=c.score,
                     query_similarity=c.query_similarity,
                     graph_score=c.graph_score,
+                    retrieval_channels=list(c.retrieval_channels),
+                    retrieval_spans=list(c.retrieval_spans),
+                    exact_symbol_match=c.exact_symbol_match,
+                    lexical_span_score=c.lexical_span_score,
                 )
                 for c in candidates
             ]
@@ -758,4 +776,14 @@ class AskService:
             candidates_by_role=candidates_by_role,
             context_bundles=bundles_payload,
             stage_warnings=stage_warnings_payload,
+            seed_selection=(
+                result.seed_selection_trace.to_dict()
+                if result.seed_selection_trace is not None
+                else {}
+            ),
+            lexical_span_probe=(
+                result.lexical_span_probe_trace.to_dict()
+                if result.lexical_span_probe_trace is not None
+                else {}
+            ),
         )

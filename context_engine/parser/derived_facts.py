@@ -48,7 +48,9 @@ _DERIVED_TREE_METHODS: tuple[tuple[str, str], ...] = (
 )
 
 
-def extract_derived_file_facts(adapter, source_code: str, file_path: str, *, tree) -> DerivedFileFacts:
+def extract_derived_file_facts(
+    adapter, source_code: str, file_path: str, *, tree
+) -> DerivedFileFacts:
     """Run every optional derived extractor against one shared tree."""
     facts = DerivedFileFacts(computed=True)
     for attr, method_name in _DERIVED_TREE_METHODS:

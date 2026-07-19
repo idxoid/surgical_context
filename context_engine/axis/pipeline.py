@@ -26,15 +26,18 @@ Design notes that matter for the seam:
   instead of re-opening per pass.
 * **Optional ``trace``.** The endpoint passes its request trace so each
   stage keeps a span; the benchmark passes nothing and gets a null tracer.
-* **Optional ``context_seeds_per_role`` cap.** ``None`` feeds the whole pool
-  into context expansion. Callers may pass a positive value for latency A/B,
-  but the production endpoint leaves it unset so the Token Credit budget can
-  rank the full scope instead of post-processing a pre-truncated pool.
+* **Evidence-aware ``context_seeds_per_role`` soft cap.** Production keeps up
+  to seven ranked seeds per source role before the expensive context walk.
+  An explicit anchor and at most one otherwise-missing exact-symbol hit per
+  source role are reserved before ordinary ranked fill. Span/channel/role
+  evidence is retained for telemetry; ``None`` remains the explicit uncapped
+  diagnostic arm.
 """
 
 from __future__ import annotations
 
 import contextlib
+import os
 from dataclasses import dataclass, field, replace
 from typing import Any
 
@@ -53,6 +56,7 @@ from context_engine.axis import (
     reexport_bridge,
     role_lookahead,
     role_retrieval,
+    seed_selector,
     structural_neighbours,
     trace_traversal,
 )
@@ -103,10 +107,17 @@ class AxisRetrievalResult:
     raw_by_role: dict[str, list[RoleCandidate]]
     seed_files: list[str]
     candidates_for_context: list[RoleCandidate]
+    # The exact order passed into context expansion after request-local budget
+    # utility sorting (and anchor pinning).  Kept separately from the selector
+    # output so QA can measure gold rank without changing pool membership.
+    budget_ranked_candidates: list[RoleCandidate] = field(default_factory=list)
+    seed_candidates: list[RoleCandidate] = field(default_factory=list)
     bundles: list[ContextBundle] = field(default_factory=list)
     render_mode: str = "full"
     stage_warnings: list[dict[str, Any]] = field(default_factory=list)
     budget_trace: context_builder.TokenCreditTrace | None = None
+    seed_selection_trace: seed_selector.SeedSelectionTrace | None = None
+    lexical_span_probe_trace: context_builder.LexicalSpanProbeTrace | None = None
 
 
 # Synthetic anchor for a symbol that lives only in the editor overlay (typed
@@ -475,8 +486,25 @@ class _SymbolTargetedRetrievalOptions:
     include_tests_in_walks: bool
     budget_trace: context_builder.TokenCreditTrace | None
     min_utility_per_token: float | None
+    upgrade_min_utility_per_token: float | None
     freeze_at_utility_plateau: bool
     plateau_upgrade_reserve_share: float
+    node_semantic_utility_weight: float
+    rank_decay_body_allocation: bool
+    rank_decay_head_share: float
+    rank_decay_rate: float
+    rank_decay_max_coverage_share: float
+    decoupled_symbol_body_allocation: bool
+    decoupled_seed_span_reserve_share: float
+    evidence_graph_fanout: bool
+    evidence_graph_fanout_min: int
+    evidence_graph_fanout_protected_head: int
+    span_line_rerank: bool
+    span_rank_max_symbols: int
+    span_rank_max_candidates_per_symbol: int
+    span_rank_max_body_lines: int
+    span_query_text: str
+    span_score_fn: Any | None
 
 
 @dataclass(frozen=True)
@@ -496,11 +524,29 @@ class _ContextBuildOptions:
     user_id: str
     credit_trace: context_builder.TokenCreditTrace | None
     min_utility_per_token: float | None
+    upgrade_min_utility_per_token: float | None
     freeze_at_utility_plateau: bool
     plateau_upgrade_reserve_share: float
+    node_semantic_utility_weight: float
+    rank_decay_body_allocation: bool
+    rank_decay_head_share: float
+    rank_decay_rate: float
+    rank_decay_max_coverage_share: float
+    decoupled_symbol_body_allocation: bool
+    decoupled_seed_span_reserve_share: float
     query_scoring: role_retrieval.QueryScoringContext | None
     semantic_expansion_alpha: float
     semantic_expansion_structural_reserve: int
+    semantic_expansion_rerank: bool
+    evidence_graph_fanout: bool
+    evidence_graph_fanout_min: int
+    evidence_graph_fanout_protected_head: int
+    span_line_rerank: bool
+    span_rank_max_symbols: int
+    span_rank_max_candidates_per_symbol: int
+    span_rank_max_body_lines: int
+    span_query_text: str
+    span_score_fn: Any | None
 
 
 def _build_context_bundles_with_budget(
@@ -515,8 +561,20 @@ def _build_context_bundles_with_budget(
         file_soft_cap_share=profile.file_soft_cap_share if profile else 0.25,
         signature_only_initial=profile.signature_only_initial if profile else False,
         min_utility_per_token=options.min_utility_per_token,
+        upgrade_min_utility_per_token=options.upgrade_min_utility_per_token,
         freeze_at_utility_plateau=options.freeze_at_utility_plateau,
         plateau_upgrade_reserve_share=options.plateau_upgrade_reserve_share,
+        node_semantic_utility_weight=options.node_semantic_utility_weight,
+        rank_decay_body_allocation=options.rank_decay_body_allocation,
+        rank_decay_head_share=options.rank_decay_head_share,
+        rank_decay_rate=options.rank_decay_rate,
+        rank_decay_max_coverage_share=options.rank_decay_max_coverage_share,
+        decoupled_symbol_body_allocation=options.decoupled_symbol_body_allocation,
+        decoupled_seed_span_reserve_share=options.decoupled_seed_span_reserve_share,
+        span_line_rerank=options.span_line_rerank,
+        span_rank_max_symbols=options.span_rank_max_symbols,
+        span_rank_max_candidates_per_symbol=options.span_rank_max_candidates_per_symbol,
+        span_rank_max_body_lines=options.span_rank_max_body_lines,
     )
     return context_builder.build_context_for_candidates(
         candidates,
@@ -534,9 +592,13 @@ def _build_context_bundles_with_budget(
         credit_trace=options.credit_trace,
         query_scoring=options.query_scoring,
         semantic_expansion_alpha=options.semantic_expansion_alpha,
-        semantic_expansion_structural_reserve=(
-            options.semantic_expansion_structural_reserve
-        ),
+        semantic_expansion_structural_reserve=(options.semantic_expansion_structural_reserve),
+        semantic_expansion_rerank=options.semantic_expansion_rerank,
+        evidence_graph_fanout=options.evidence_graph_fanout,
+        evidence_graph_fanout_min=options.evidence_graph_fanout_min,
+        evidence_graph_fanout_protected_head=(options.evidence_graph_fanout_protected_head),
+        span_query_text=options.span_query_text,
+        span_score_fn=options.span_score_fn,
     )
 
 
@@ -664,13 +726,35 @@ def _try_symbol_targeted_retrieval(
                     user_id=options.user_id,
                     credit_trace=options.budget_trace,
                     min_utility_per_token=options.min_utility_per_token,
+                    upgrade_min_utility_per_token=(options.upgrade_min_utility_per_token),
                     freeze_at_utility_plateau=options.freeze_at_utility_plateau,
-                    plateau_upgrade_reserve_share=(
-                        options.plateau_upgrade_reserve_share
+                    plateau_upgrade_reserve_share=(options.plateau_upgrade_reserve_share),
+                    node_semantic_utility_weight=options.node_semantic_utility_weight,
+                    rank_decay_body_allocation=options.rank_decay_body_allocation,
+                    rank_decay_head_share=options.rank_decay_head_share,
+                    rank_decay_rate=options.rank_decay_rate,
+                    rank_decay_max_coverage_share=(options.rank_decay_max_coverage_share),
+                    decoupled_symbol_body_allocation=(options.decoupled_symbol_body_allocation),
+                    decoupled_seed_span_reserve_share=(
+                        options.decoupled_seed_span_reserve_share
                     ),
                     query_scoring=None,
                     semantic_expansion_alpha=0.70,
                     semantic_expansion_structural_reserve=1,
+                    semantic_expansion_rerank=False,
+                    evidence_graph_fanout=options.evidence_graph_fanout,
+                    evidence_graph_fanout_min=options.evidence_graph_fanout_min,
+                    evidence_graph_fanout_protected_head=(
+                        options.evidence_graph_fanout_protected_head
+                    ),
+                    span_line_rerank=options.span_line_rerank,
+                    span_rank_max_symbols=options.span_rank_max_symbols,
+                    span_rank_max_candidates_per_symbol=(
+                        options.span_rank_max_candidates_per_symbol
+                    ),
+                    span_rank_max_body_lines=options.span_rank_max_body_lines,
+                    span_query_text=options.span_query_text,
+                    span_score_fn=options.span_score_fn,
                 ),
             )
             bundles = _move_anchor_bundle_first(bundles, anchor.uid)
@@ -681,6 +765,8 @@ def _try_symbol_targeted_retrieval(
         raw_by_role={},
         seed_files=[seed_path] if seed_path else [],
         candidates_for_context=context_candidates,
+        budget_ranked_candidates=context_candidates,
+        seed_candidates=[anchor],
         bundles=list(bundles),
         render_mode=render_mode,
         budget_trace=options.budget_trace,
@@ -746,6 +832,8 @@ def _overlay_only_result(
         raw_by_role={},
         seed_files=[seed_path] if seed_path else [],
         candidates_for_context=[anchor],
+        budget_ranked_candidates=[anchor],
+        seed_candidates=[anchor],
         bundles=bundles,
         render_mode=render_mode,
     )
@@ -806,6 +894,46 @@ def _retrieve_role_seeds(
     return scanned, raw_by_role, query_scoring
 
 
+def _retrieve_vector_and_doc_seeds(
+    question: str,
+    *,
+    workspace_id: str,
+    lance: Any,
+    embed_fn: Any,
+    scanned: Any,
+    query_scoring: Any,
+    seed_limit: int,
+    impact_mode: bool,
+) -> tuple[list[RoleCandidate], list[RoleCandidate]]:
+    """Shipped semantic floor, reusable on either side of first lookahead."""
+    vector_seed_limit = max(
+        seed_limit,
+        int(os.getenv("AXIS_VECTOR_SEED_LIMIT", "0") or "0"),
+    )
+    vector_seeds = role_retrieval.find_seeds_by_vector(
+        workspace_id,
+        question,
+        embed_fn=embed_fn,
+        limit=vector_seed_limit,
+        min_similarity=float(os.getenv("AXIS_VECTOR_SEED_QSIM", "0") or "0"),
+        max_seeds=int(os.getenv("AXIS_VECTOR_SEED_MAX", "200") or "200"),
+        impact_mode=impact_mode,
+        prescanned=scanned,
+        query_scoring=query_scoring,
+    )
+    doc_anchor_seeds = role_retrieval.find_seeds_by_doc_anchor(
+        workspace_id,
+        question,
+        embed_fn=embed_fn,
+        limit=seed_limit,
+        impact_mode=impact_mode,
+        prescanned=scanned,
+        lance=lance,
+        query_scoring=query_scoring,
+    )
+    return vector_seeds, doc_anchor_seeds
+
+
 def _candidate_file_paths(candidates: list[RoleCandidate]) -> set[str]:
     return {getattr(c, "file_path", "") or "" for c in candidates}
 
@@ -843,11 +971,15 @@ def _run_http_endpoint_bridge(
     include_tests: bool,
     trace: Any,
 ) -> set[str]:
-    http_bridge_roles = {m.role for m in intent} | {
-        "routing_surface",
-        "trace_dependency",
-        "vector_seed",
-    }
+    http_bridge_roles = sorted(
+        {m.role for m in intent}
+        | {
+            "routing_surface",
+            "trace_dependency",
+            "vector_seed",
+            "hybrid_seed",
+        }
+    )
     http_bridge_seeds = [
         c for role in http_bridge_roles for c in raw_by_role.get(role, []) if getattr(c, "uid", "")
     ]
@@ -874,12 +1006,16 @@ def _run_hook_api_bridge(
     include_tests: bool,
     trace: Any,
 ) -> set[str]:
-    hook_bridge_roles = {m.role for m in intent} | {
-        "routing_surface",
-        "trace_dependency",
-        "vector_seed",
-        "binding_surface",
-    }
+    hook_bridge_roles = sorted(
+        {m.role for m in intent}
+        | {
+            "routing_surface",
+            "trace_dependency",
+            "vector_seed",
+            "hybrid_seed",
+            "binding_surface",
+        }
+    )
     hook_bridge_seeds = [
         c for role in hook_bridge_roles for c in raw_by_role.get(role, []) if getattr(c, "uid", "")
     ]
@@ -943,10 +1079,14 @@ def _run_structural_pool_passes(
     ]
     if not existing_pool_for_struct:
         return
-    distances = query_scoring.distances if query_scoring is not None else (
-        role_retrieval._scan_distances(scanned, query_text, embed_fn)  # noqa: SLF001
-        if scanned is not None and query_text and embed_fn is not None
-        else None
+    distances = (
+        query_scoring.distances
+        if query_scoring is not None
+        else (
+            role_retrieval._scan_distances(scanned, query_text, embed_fn)  # noqa: SLF001
+            if scanned is not None and query_text and embed_fn is not None
+            else None
+        )
     )
 
     def _distance_for(uid: str) -> float | None:
@@ -1059,25 +1199,130 @@ def _apply_cross_role_intersection(
             )
 
 
+# The pure-semantic seed axes. Their retrieval metric (embedding cosine) is
+# range-restricted — every candidate is already top-cosine, so cosine cannot rank
+# gold WITHIN the channel (measured AUC ~0.52). The rest of the pool (structural
+# roles) is the orthogonal reference the connectivity gate scores against.
+_VSEED_SEMANTIC_ROLES = frozenset(
+    {"vector_seed", "hybrid_seed", "doc_anchor", "doc_anchor_bridge", "anchor_symbol"}
+)
+
+
+def _vector_seed_connectivity(
+    db: Any, vseed_uids: list[str], other_uids: list[str]
+) -> dict[str, int] | None:
+    """For each vector_seed uid, count DISTINCT other-axis (structural) pool nodes
+    reachable by a single graph edge (any type/direction). This 1-hop cross-axis
+    connectivity is the metric ORTHOGONAL to the channel's own cosine — it separates
+    gold in the vector_seed channel at AUC ~0.71 (vs 0.52 for cosine), and is NOT
+    global centrality (raw degree is gold-blind) but connectivity to THIS query's
+    structural neighbourhood."""
+    if not vseed_uids or not other_uids:
+        return {}
+    # The :Symbol label lets the seek use the symbol_uid_unique index; without it
+    # the planner does an AllNodesScan per UNWIND row (~1000x slower on this graph:
+    # 45s -> 0.05s for 200 vseeds). vector_seed candidates are embedded code symbols,
+    # so they are always :Symbol; the neighbour ``o`` is deliberately left unlabelled
+    # so connectivity to ExternalSymbol/ExternalPkg pool nodes is still counted.
+    query = (
+        "UNWIND $V AS vu "
+        "OPTIONAL MATCH (v:Symbol {uid: vu}) "
+        "OPTIONAL MATCH (v)--(o) WHERE o.uid IN $O "
+        "RETURN vu AS uid, count(DISTINCT o.uid) AS c"
+    )
+    try:
+        with db.driver.session() as session:
+            return {
+                str(row["uid"]): int(row["c"] or 0)
+                for row in session.run(query, V=vseed_uids, O=other_uids)
+            }
+    except Exception as exc:
+        # The gate is a precision pass, not a reason to fail retrieval. An
+        # unavailable graph must preserve the ungated vector channel rather
+        # than treating every seed as disconnected.
+        record_stage_warning(
+            "vseed_connectivity_gate",
+            "vseed_connectivity_query_failed",
+            "Vector-seed connectivity query failed; retaining the ungated channel.",
+            error=exc,
+        )
+        return None
+
+
+def _apply_vector_seed_connectivity_gate(
+    raw_by_role: dict[str, list[RoleCandidate]],
+    *,
+    db: Any,
+    min_conn: int,
+) -> None:
+    """Gate the vector_seed axis by cross-axis structural connectivity (see
+    ``_vector_seed_connectivity``). Drops candidates connected to fewer than
+    ``min_conn`` distinct other-axis pool nodes — the isolated cosine noise that a
+    widened channel pulls in and that no in-channel signal can demote — while
+    keeping the structurally-grounded (gold-enriched) seeds. No-op when
+    ``min_conn`` <= 0. RECALL-SAFE: a vector_seed that is the ONLY pool candidate
+    covering its file is retained even when isolated — the gate prunes noise, never
+    file coverage. Never empties the channel (falls back to the best-connected
+    seed)."""
+    if min_conn <= 0:
+        return
+    vseeds = raw_by_role.get("vector_seed") or []
+    if not vseeds:
+        return
+    other_uids = {
+        c.uid
+        for role, cands in raw_by_role.items()
+        if role not in _VSEED_SEMANTIC_ROLES
+        for c in cands
+        if c.uid
+    }
+    if not other_uids:
+        return
+    conn = _vector_seed_connectivity(db, [c.uid for c in vseeds if c.uid], list(other_uids))
+    if conn is None:
+        return
+    # Files already covered by any OTHER pool candidate (any non-vector_seed role):
+    # a vseed on one of these is safe to prune. A vseed on a file NOTHING else covers
+    # is the sole bridge to that file — keep it regardless of connectivity.
+    covered_files = {
+        c.file_path
+        for role, cands in raw_by_role.items()
+        if role not in {"vector_seed", "hybrid_seed"}
+        for c in cands
+        if c.file_path
+    }
+    kept: list[RoleCandidate] = []
+    kept_uids: set[str] = set()
+    for c in vseeds:  # connected seeds first
+        if conn.get(c.uid, 0) >= min_conn:
+            kept.append(c)
+            kept_uids.add(c.uid)
+            if c.file_path:
+                covered_files.add(c.file_path)
+    for c in vseeds:  # recall-safe re-admit: sole cover of an otherwise-absent file
+        if c.uid in kept_uids:
+            continue
+        if c.file_path and c.file_path not in covered_files:
+            kept.append(c)
+            kept_uids.add(c.uid)
+            covered_files.add(c.file_path)
+    if not kept:
+        kept = [max(vseeds, key=lambda c: conn.get(c.uid, 0))]
+    raw_by_role["vector_seed"] = kept
+
+
 def _flatten_candidates_for_context(
     raw_by_role: dict[str, list[RoleCandidate]],
     intent: list[IntentMatch],
     *,
     context_seeds_per_role: int | None,
 ) -> list[RoleCandidate]:
-    intent_role_keys = [m.role for m in intent]
-    ordered_keys = intent_role_keys + [r for r in raw_by_role if r not in set(intent_role_keys)]
-    candidates_for_context: list[RoleCandidate] = []
-    seen_keys: set[str] = set()
-    for key in ordered_keys:
-        if key in seen_keys:
-            continue
-        seen_keys.add(key)
-        cands = raw_by_role.get(key) or []
-        if context_seeds_per_role is not None:
-            cands = cands[:context_seeds_per_role]
-        candidates_for_context.extend(cands)
-    return candidates_for_context
+    selected, _trace = seed_selector.select_context_seeds(
+        raw_by_role,
+        (match.role for match in intent),
+        per_role_soft_cap=context_seeds_per_role,
+    )
+    return selected
 
 
 def _prepare_budgeted_candidates(
@@ -1089,6 +1334,7 @@ def _prepare_budgeted_candidates(
     render_mode_override: str | None,
     anchor_path: str | None,
     anchor_symbol: str | None,
+    lexical_span_utility_weight: float = 0.0,
 ) -> tuple[
     list[RoleCandidate],
     int | None,
@@ -1120,7 +1366,10 @@ def _prepare_budgeted_candidates(
             if c.query_similarity is not None
             else (c.utility_score if c.utility_score is not None else c.score)
         )
-        return base + proximity_boost(c.file_path, anchor_path)
+        lexical_span_utility = max(0.0, float(lexical_span_utility_weight)) * float(
+            c.lexical_span_score or 0.0
+        )
+        return base + proximity_boost(c.file_path, anchor_path) + lexical_span_utility
 
     utility_score_fn = _budget_utility_score
     active = sorted(
@@ -1135,6 +1384,80 @@ def _prepare_budgeted_candidates(
     return active, token_budget, render_mode, budget_profile, utility_score_fn
 
 
+def _bounded_lexical_span_probe_candidates(
+    raw_by_role: dict[str, list[RoleCandidate]],
+    intent_roles: list[str],
+    *,
+    per_role_limit: int | None,
+    max_symbols: int,
+) -> list[RoleCandidate]:
+    """Round-robin the same ranked role slices the seed selector can admit."""
+    ordered_roles = list(dict.fromkeys([*intent_roles, *raw_by_role]))
+    eligible_by_role: list[list[RoleCandidate]] = []
+    for role in ordered_roles:
+        candidates = list(raw_by_role.get(role) or ())
+        ranked = candidates if per_role_limit is None else candidates[:per_role_limit]
+        extras = [
+            candidate
+            for candidate in candidates[len(ranked) :]
+            if candidate.exact_symbol_match or candidate.role in {"anchor_symbol", "overlay_anchor"}
+        ]
+        eligible_by_role.append([*ranked, *extras])
+
+    selected: list[RoleCandidate] = []
+    seen: set[str] = set()
+    cursors = [0] * len(eligible_by_role)
+    limit = max(0, int(max_symbols))
+    while len(selected) < limit:
+        advanced = False
+        for index, candidates in enumerate(eligible_by_role):
+            while cursors[index] < len(candidates) and candidates[cursors[index]].uid in seen:
+                cursors[index] += 1
+            if cursors[index] >= len(candidates):
+                continue
+            candidate = candidates[cursors[index]]
+            cursors[index] += 1
+            if candidate.uid:
+                seen.add(candidate.uid)
+                selected.append(candidate)
+                advanced = True
+                if len(selected) >= limit:
+                    break
+        if not advanced:
+            break
+    return selected
+
+
+def _attach_lexical_probe_spans(
+    raw_by_role: dict[str, list[RoleCandidate]],
+    evidence_by_uid: dict[str, context_builder.LexicalSpanEvidence],
+) -> dict[str, list[RoleCandidate]]:
+    if not evidence_by_uid:
+        return raw_by_role
+    output: dict[str, list[RoleCandidate]] = {}
+    for role, candidates in raw_by_role.items():
+        annotated: list[RoleCandidate] = []
+        for candidate in candidates:
+            evidence = evidence_by_uid.get(candidate.uid)
+            if evidence is None:
+                annotated.append(candidate)
+                continue
+            annotated.append(
+                replace(
+                    candidate,
+                    retrieval_channels=tuple(
+                        dict.fromkeys([*candidate.retrieval_channels, "lexical_span"])
+                    ),
+                    retrieval_spans=tuple(
+                        sorted(set(candidate.retrieval_spans) | set(evidence.spans))
+                    ),
+                    lexical_span_score=evidence.score,
+                )
+            )
+        output[role] = annotated
+    return output
+
+
 @dataclass(frozen=True)
 class AxisRetrievalConfig:
     top_roles: int = 3
@@ -1143,7 +1466,7 @@ class AxisRetrievalConfig:
     intent_threshold: float = 0.20
     with_context: bool = True
     context_per_seed: int = 4
-    context_seeds_per_role: int | None = None
+    context_seeds_per_role: int | None = 7
     intent_budget: bool = True
     base_token_budget: int = 6000
     render_mode_override: str | None = None
@@ -1169,14 +1492,116 @@ class AxisRetrievalConfig:
     query_node_rrf_weight: float = 1.0
     query_node_mode_rrf_weight: float = 0.25
     query_node_rrf_k: int = 60
+    # Experimental pre-budget rank signals.  Weighted role-axis preserves the
+    # full intent bonus for an exact role and discounts broad axis-only
+    # overlap; role consensus boosts UIDs independently supported by several
+    # retrieval/structural pools after deduplication.
+    weighted_intent_role_axis_boost: bool = False
+    intent_role_axis_boost: float = 0.15
+    intent_axis_only_share: float = 0.25
+    role_consensus_score_boost: float = 0.05
+    role_consensus_max_extra_roles: int = 2
+    # Pre-score consensus helped architecture questions at 10k/12k, but at
+    # 8k it displaced recall-safe coverage. Gate it on the same effective
+    # profile envelope the downstream packer receives.
+    role_consensus_min_effective_tokens: int = 10_000
+    # Independent retrieval families (symbol-vector, lexical, semantic chunk,
+    # doc anchor) and exact-symbol evidence are stronger than a single channel,
+    # but remain off until their own A/B clears the same budget envelope.
+    channel_consensus_score_boost: float = 0.0
+    channel_consensus_max_extra_families: int = 2
+    exact_symbol_score_boost: float = 0.0
+    channel_consensus_min_effective_tokens: int = 10_000
+    # Optional coverage-width arm: active intent roles keep the normal cap;
+    # only profiled structural roles outside the intent get the tighter cap.
+    # Universal lexical/vector/doc channels and mode roles are unaffected.
+    non_intent_structural_role_soft_cap: int | None = None
     capture_budget_trace: bool = False
     token_credit_min_utility_per_token: float | None = None
+    token_credit_upgrade_min_utility_per_token: float | None = 0.00025
     token_credit_freeze_at_plateau: bool = False
     token_credit_plateau_upgrade_reserve_share: float = 0.0
+    node_semantic_utility_weight: float = 0.0
+    # Validated body allocator: preserve coverage, then spend a geometric
+    # percentage of the total budget in pre-budget candidate-rank order.
+    rank_decay_body_allocation: bool = True
+    rank_decay_head_share: float = 0.15
+    rank_decay_rate: float = 0.75
+    rank_decay_max_coverage_share: float = 0.65
+    # Validated symbol-local ladder: seed span/body upgrades are priced
+    # separately and graph neighbours need their own evidence.
+    decoupled_symbol_body_allocation: bool = True
+    # Direct retrieval windows are evidence coverage, not full-body upgrades.
+    # Buy them from a small global reserve before geometric body credits.
+    decoupled_seed_span_reserve_share: float = 0.10
+    # Opt-in within-symbol reranker: body windows compete by query similarity
+    # before Token Credit, so later render upgrades cannot restore discarded
+    # non-answer lines from an otherwise relevant symbol.
+    span_line_rerank: bool = False
+    span_line_rerank_on_explicit_line_hints: bool = False
+    span_rank_max_symbols: int = 48
+    span_rank_max_candidates_per_symbol: int = 24
+    span_rank_max_body_lines: int = 6
     context_semantic_expansion: bool = True
     context_semantic_expansion_alpha: float = 0.70
     context_semantic_expansion_structural_reserve: int = 1
     context_semantic_expansion_roles: tuple[str, ...] = ("dependency_solver",)
+    # Reduce the batched graph reservoir and final payload for graph-only
+    # ranked-tail seeds while retrieval-backed, exact, and head seeds keep the
+    # base limit.
+    evidence_graph_fanout: bool = True
+    evidence_graph_fanout_min: int = 2
+    evidence_graph_fanout_protected_head: int = 5
+    # Pre-graph retrieval channels.  Lexical is an in-memory fielded BM25
+    # view over the cached symbol scan; semantic chunks live in a separate
+    # Lance table and resolve back to owner symbols with source spans.
+    lexical_retrieval: bool = True
+    semantic_chunk_retrieval: bool = True
+    hybrid_seed_limit: int = 12
+    hybrid_rrf_k: int = 60
+    # Query-time lexical windows over a bounded candidate payload batch. This
+    # runs immediately before the expensive context graph walk and needs no
+    # persistent semantic-chunk index.
+    pregraph_lexical_span_probe: bool = True
+    lexical_span_probe_max_symbols: int = 96
+    lexical_span_probe_max_windows_per_symbol: int = 3
+    lexical_span_probe_max_candidates_per_symbol: int = 24
+    lexical_span_probe_window_lines: int = 6
+    lexical_span_utility_weight: float = 0.15
+
+
+def _gated_role_consensus_score_boost(
+    cfg: AxisRetrievalConfig,
+    intent: list[IntentMatch],
+) -> float:
+    """Return the pre-score consensus boost only in its validated envelope."""
+    if not cfg.intent_budget:
+        return 0.0
+    profile = ARCHITECTURE if (cfg.anchor_symbol or "").strip() else budget_for_intent(intent)
+    effective_tokens = profile.effective_tokens(cfg.base_token_budget)
+    if effective_tokens < max(0, int(cfg.role_consensus_min_effective_tokens)):
+        return 0.0
+    return max(0.0, float(cfg.role_consensus_score_boost))
+
+
+def _gated_channel_score_boosts(
+    cfg: AxisRetrievalConfig,
+    intent: list[IntentMatch],
+) -> tuple[float, float]:
+    """Return channel/exact priors only in their benchmarked budget arm."""
+    if not cfg.intent_budget:
+        return 0.0, 0.0
+    profile = ARCHITECTURE if (cfg.anchor_symbol or "").strip() else budget_for_intent(intent)
+    effective_tokens = profile.effective_tokens(cfg.base_token_budget)
+    if effective_tokens < max(
+        0,
+        int(cfg.channel_consensus_min_effective_tokens),
+    ):
+        return 0.0, 0.0
+    return (
+        max(0.0, float(cfg.channel_consensus_score_boost)),
+        max(0.0, float(cfg.exact_symbol_score_boost)),
+    )
 
 
 def _request_embedder(lance: Any):
@@ -1189,6 +1614,33 @@ def _request_embedder(lance: Any):
         return cache[text]
 
     return _embed
+
+
+def _request_span_scorer(lance: Any, query_vector: Any):
+    """Batch cosine scorer for ephemeral within-symbol windows."""
+    cache: dict[str, float] = {}
+
+    def _score(texts: list[str]) -> list[float]:
+        missing = list(dict.fromkeys(text for text in texts if text not in cache))
+        if missing:
+            import numpy as np
+
+            vectors = np.asarray(lance._embed(missing), dtype=float)  # noqa: SLF001
+            query = np.asarray(query_vector, dtype=float)
+            query_norm = float(np.linalg.norm(query))
+            vector_norms = np.linalg.norm(vectors, axis=1)
+            denominator = vector_norms * query_norm
+            similarities = np.divide(
+                vectors @ query,
+                denominator,
+                out=np.zeros(len(vectors), dtype=float),
+                where=denominator > 1e-12,
+            )
+            for text, similarity in zip(missing, similarities, strict=True):
+                cache[text] = float(np.clip(similarity, -1.0, 1.0))
+        return [cache[text] for text in texts]
+
+    return _score
 
 
 def _attach_stage_warnings_to_trace(
@@ -1241,9 +1693,10 @@ def _run_axis_retrieval_impl(
     ``Neo4jClient``); ``lance`` is a ``LanceDBClient`` used for both intent
     embedding and the vector seeds. ``trace`` may be any object exposing a
     ``stage(name)`` context manager; pass ``None`` for an un-instrumented
-    run. ``context_seeds_per_role=None`` feeds the entire pool into context
-    expansion (the benchmarked behaviour); a positive value caps the
-    per-role context seeds.
+    run. The default evidence-aware selector uses a soft per-role cap of seven
+    before context expansion. ``context_seeds_per_role=None`` is the explicit
+    uncapped diagnostic arm. Explicit anchors may overflow a positive cap; one
+    otherwise-missing exact hit per source role consumes a normal slot.
 
     ``intent_override`` bypasses the embedding role-classifier: when supplied,
     those roles drive retrieval directly (the caller picked them). The vector
@@ -1255,6 +1708,16 @@ def _run_axis_retrieval_impl(
     tr = cfg.trace if cfg.trace is not None else _NullTrace()
     budget_trace = context_builder.TokenCreditTrace() if cfg.capture_budget_trace else None
     embed_fn = _request_embedder(lance)
+    effective_span_line_rerank = cfg.span_line_rerank or (
+        cfg.span_line_rerank_on_explicit_line_hints
+        and context_builder.query_has_explicit_line_hint(question)
+    )
+    span_score_fn = None
+    if effective_span_line_rerank:
+        try:
+            span_score_fn = _request_span_scorer(lance, embed_fn(question))
+        except Exception:
+            span_score_fn = None
     intent = _classify_retrieval_intent(
         question,
         embed_fn,
@@ -1283,10 +1746,27 @@ def _run_axis_retrieval_impl(
                 include_tests_in_walks=False,
                 budget_trace=budget_trace,
                 min_utility_per_token=cfg.token_credit_min_utility_per_token,
+                upgrade_min_utility_per_token=(cfg.token_credit_upgrade_min_utility_per_token),
                 freeze_at_utility_plateau=cfg.token_credit_freeze_at_plateau,
-                plateau_upgrade_reserve_share=(
-                    cfg.token_credit_plateau_upgrade_reserve_share
+                plateau_upgrade_reserve_share=(cfg.token_credit_plateau_upgrade_reserve_share),
+                node_semantic_utility_weight=cfg.node_semantic_utility_weight,
+                rank_decay_body_allocation=cfg.rank_decay_body_allocation,
+                rank_decay_head_share=cfg.rank_decay_head_share,
+                rank_decay_rate=cfg.rank_decay_rate,
+                rank_decay_max_coverage_share=cfg.rank_decay_max_coverage_share,
+                decoupled_symbol_body_allocation=(cfg.decoupled_symbol_body_allocation),
+                decoupled_seed_span_reserve_share=(
+                    cfg.decoupled_seed_span_reserve_share
                 ),
+                evidence_graph_fanout=cfg.evidence_graph_fanout,
+                evidence_graph_fanout_min=cfg.evidence_graph_fanout_min,
+                evidence_graph_fanout_protected_head=(cfg.evidence_graph_fanout_protected_head),
+                span_line_rerank=effective_span_line_rerank,
+                span_rank_max_symbols=cfg.span_rank_max_symbols,
+                span_rank_max_candidates_per_symbol=(cfg.span_rank_max_candidates_per_symbol),
+                span_rank_max_body_lines=cfg.span_rank_max_body_lines,
+                span_query_text=question,
+                span_score_fn=span_score_fn,
             ),
             intent=list(intent),
             intent_budget=cfg.intent_budget,
@@ -1311,9 +1791,67 @@ def _run_axis_retrieval_impl(
         trace=tr,
     )
 
-    seed_files = {
-        getattr(c, "file_path", "") or "" for cands in raw_by_role.values() for c in cands
-    }
+    seed_raw_by_role = {role: list(candidates) for role, candidates in raw_by_role.items()}
+    hybrid_enabled = cfg.lexical_retrieval or cfg.semantic_chunk_retrieval
+
+    # With either new channel enabled, all retrieval-only signals are resolved
+    # before the first graph walk.  Disabling both preserves the latest shipped
+    # order exactly: role lookahead first, vector/doc floor second.
+    if hybrid_enabled:
+        with tr.stage("hybrid_retrieval"):
+            vector_seeds, doc_anchor_seeds = _retrieve_vector_and_doc_seeds(
+                question,
+                workspace_id=workspace_id,
+                lance=lance,
+                embed_fn=embed_fn,
+                scanned=scanned,
+                query_scoring=query_scoring,
+                seed_limit=seed_limit,
+                impact_mode=impact_mode,
+            )
+            lexical_seeds = (
+                role_retrieval.find_seeds_by_lexical(
+                    workspace_id,
+                    question,
+                    limit=max(seed_limit, cfg.hybrid_seed_limit),
+                    impact_mode=impact_mode,
+                    prescanned=scanned,
+                )
+                if cfg.lexical_retrieval
+                else []
+            )
+            semantic_chunk_seeds = (
+                role_retrieval.find_seeds_by_semantic_chunk(
+                    workspace_id,
+                    question,
+                    embed_fn=embed_fn,
+                    limit=max(seed_limit, cfg.hybrid_seed_limit),
+                    impact_mode=impact_mode,
+                    prescanned=scanned,
+                    query_scoring=query_scoring,
+                    lance=lance,
+                )
+                if cfg.semantic_chunk_retrieval
+                else []
+            )
+            raw_by_role["vector_seed"] = vector_seeds
+            raw_by_role["hybrid_seed"] = role_retrieval.fuse_seed_channels(
+                {
+                    "vector": vector_seeds,
+                    "lexical": lexical_seeds,
+                    "semantic_chunk": semantic_chunk_seeds,
+                },
+                limit=max(seed_limit, cfg.hybrid_seed_limit),
+                rrf_k=cfg.hybrid_rrf_k,
+            )
+            raw_by_role["doc_anchor"] = doc_anchor_seeds
+            seed_raw_by_role.update(
+                {
+                    "vector_seed": list(vector_seeds),
+                    "hybrid_seed": list(raw_by_role["hybrid_seed"]),
+                    "doc_anchor": list(doc_anchor_seeds),
+                }
+            )
 
     if len(intent) >= 2 and any(raw_by_role.values()):
         with tr.stage("cross_role_lookahead"):
@@ -1327,28 +1865,41 @@ def _run_axis_retrieval_impl(
                 query_text=question,
                 embed_fn=embed_fn,
                 query_scoring=query_scoring,
+                additional_source_roles=("hybrid_seed",) if hybrid_enabled else (),
             )
 
-    with tr.stage("vector_seeds"):
-        raw_by_role["vector_seed"] = role_retrieval.find_seeds_by_vector(
-            workspace_id,
-            question,
-            embed_fn=embed_fn,
-            limit=seed_limit,
-            impact_mode=impact_mode,
-            prescanned=scanned,
-            query_scoring=query_scoring,
-        )
-        raw_by_role["doc_anchor"] = role_retrieval.find_seeds_by_doc_anchor(
-            workspace_id,
-            question,
-            embed_fn=embed_fn,
-            limit=seed_limit,
-            impact_mode=impact_mode,
-            prescanned=scanned,
-            lance=lance,
-            query_scoring=query_scoring,
-        )
+    if not hybrid_enabled:
+        with tr.stage("vector_seeds"):
+            vector_seeds, doc_anchor_seeds = _retrieve_vector_and_doc_seeds(
+                question,
+                workspace_id=workspace_id,
+                lance=lance,
+                embed_fn=embed_fn,
+                scanned=scanned,
+                query_scoring=query_scoring,
+                seed_limit=seed_limit,
+                impact_mode=impact_mode,
+            )
+            raw_by_role["vector_seed"] = vector_seeds
+            raw_by_role["doc_anchor"] = doc_anchor_seeds
+            seed_raw_by_role.update(
+                {
+                    "vector_seed": list(vector_seeds),
+                    "doc_anchor": list(doc_anchor_seeds),
+                }
+            )
+
+    seed_candidates = _flatten_candidates_for_context(
+        seed_raw_by_role,
+        intent,
+        context_seeds_per_role=None,
+    )
+    seed_files = {
+        getattr(c, "file_path", "") or ""
+        for role, candidates in seed_raw_by_role.items()
+        if role != "doc_anchor"
+        for c in candidates
+    }
 
     seed_files |= _run_doc_anchor_bridge(
         raw_by_role,
@@ -1414,7 +1965,26 @@ def _run_axis_retrieval_impl(
         trace=tr,
     )
 
-    raw_by_role = axis_ranking.apply_intent_axis_boost(raw_by_role, [m.role for m in intent])
+    # Rank the pure-semantic vector_seed axis by the ORTHOGONAL metric it lacks:
+    # 1-hop connectivity to the structural pool (its own cosine is range-restricted
+    # and gold-blind within the channel). AXIS_VSEED_CONN_MIN (>0) drops isolated
+    # cosine noise a widened channel pulls in. This branch enables the perf-fixed
+    # index-seek query at min_conn=1 by default; set the env value to 0 for the
+    # shipped off-arm.
+    vseed_conn_min = int(os.getenv("AXIS_VSEED_CONN_MIN", "1") or "0")
+    if vseed_conn_min > 0:
+        with tr.stage("vseed_connectivity_gate"):
+            _apply_vector_seed_connectivity_gate(raw_by_role, db=db, min_conn=vseed_conn_min)
+
+    if cfg.weighted_intent_role_axis_boost:
+        raw_by_role = axis_ranking.apply_weighted_intent_role_axis_boost(
+            raw_by_role,
+            {match.role: match.similarity for match in intent},
+            boost=cfg.intent_role_axis_boost,
+            axis_only_share=cfg.intent_axis_only_share,
+        )
+    else:
+        raw_by_role = axis_ranking.apply_intent_axis_boost(raw_by_role, [m.role for m in intent])
 
     if cfg.query_node_rerank:
         with tr.stage("query_node_similarity"):
@@ -1431,10 +2001,43 @@ def _run_axis_retrieval_impl(
                 rrf_k=cfg.query_node_rrf_k,
             )
 
-    candidates_for_context = _flatten_candidates_for_context(
+    lexical_span_probe_trace = None
+    if cfg.pregraph_lexical_span_probe:
+        with tr.stage("pregraph_lexical_span_probe"):
+            probe_candidates = _bounded_lexical_span_probe_candidates(
+                raw_by_role,
+                [match.role for match in intent],
+                per_role_limit=cfg.context_seeds_per_role,
+                max_symbols=cfg.lexical_span_probe_max_symbols,
+            )
+            lexical_span_evidence, lexical_span_probe_trace = (
+                context_builder.probe_candidate_lexical_spans(
+                    probe_candidates,
+                    workspace_id=workspace_id,
+                    lance=lance,
+                    db=db,
+                    query_text=question,
+                    max_symbols=cfg.lexical_span_probe_max_symbols,
+                    max_windows_per_symbol=(cfg.lexical_span_probe_max_windows_per_symbol),
+                    max_candidates_per_symbol=(cfg.lexical_span_probe_max_candidates_per_symbol),
+                    window_lines=cfg.lexical_span_probe_window_lines,
+                )
+            )
+            raw_by_role = _attach_lexical_probe_spans(raw_by_role, lexical_span_evidence)
+
+    channel_consensus_score_boost, exact_symbol_score_boost = _gated_channel_score_boosts(
+        cfg, intent
+    )
+    candidates_for_context, seed_selection_trace = seed_selector.select_context_seeds(
         raw_by_role,
-        intent,
-        context_seeds_per_role=cfg.context_seeds_per_role,
+        (match.role for match in intent),
+        per_role_soft_cap=cfg.context_seeds_per_role,
+        role_consensus_score_boost=_gated_role_consensus_score_boost(cfg, intent),
+        role_consensus_max_extra_roles=cfg.role_consensus_max_extra_roles,
+        channel_consensus_score_boost=channel_consensus_score_boost,
+        channel_consensus_max_extra_families=(cfg.channel_consensus_max_extra_families),
+        exact_symbol_score_boost=exact_symbol_score_boost,
+        non_intent_structural_role_soft_cap=(cfg.non_intent_structural_role_soft_cap),
     )
     active, token_budget, render_mode, budget_profile, utility_score_fn = (
         _prepare_budgeted_candidates(
@@ -1445,6 +2048,7 @@ def _run_axis_retrieval_impl(
             render_mode_override=cfg.render_mode_override,
             anchor_path=cfg.anchor_path,
             anchor_symbol=cfg.anchor_symbol,
+            lexical_span_utility_weight=cfg.lexical_span_utility_weight,
         )
     )
 
@@ -1498,15 +2102,33 @@ def _run_axis_retrieval_impl(
                     user_id=cfg.user_id,
                     credit_trace=budget_trace,
                     min_utility_per_token=cfg.token_credit_min_utility_per_token,
+                    upgrade_min_utility_per_token=(cfg.token_credit_upgrade_min_utility_per_token),
                     freeze_at_utility_plateau=cfg.token_credit_freeze_at_plateau,
-                    plateau_upgrade_reserve_share=(
-                        cfg.token_credit_plateau_upgrade_reserve_share
+                    plateau_upgrade_reserve_share=(cfg.token_credit_plateau_upgrade_reserve_share),
+                    node_semantic_utility_weight=cfg.node_semantic_utility_weight,
+                    rank_decay_body_allocation=cfg.rank_decay_body_allocation,
+                    rank_decay_head_share=cfg.rank_decay_head_share,
+                    rank_decay_rate=cfg.rank_decay_rate,
+                    rank_decay_max_coverage_share=(cfg.rank_decay_max_coverage_share),
+                    decoupled_symbol_body_allocation=(cfg.decoupled_symbol_body_allocation),
+                    decoupled_seed_span_reserve_share=(
+                        cfg.decoupled_seed_span_reserve_share
                     ),
-                    query_scoring=(query_scoring if semantic_expansion_enabled else None),
+                    query_scoring=query_scoring,
                     semantic_expansion_alpha=cfg.context_semantic_expansion_alpha,
                     semantic_expansion_structural_reserve=(
                         cfg.context_semantic_expansion_structural_reserve
                     ),
+                    semantic_expansion_rerank=semantic_expansion_enabled,
+                    evidence_graph_fanout=cfg.evidence_graph_fanout,
+                    evidence_graph_fanout_min=cfg.evidence_graph_fanout_min,
+                    evidence_graph_fanout_protected_head=(cfg.evidence_graph_fanout_protected_head),
+                    span_line_rerank=effective_span_line_rerank,
+                    span_rank_max_symbols=cfg.span_rank_max_symbols,
+                    span_rank_max_candidates_per_symbol=(cfg.span_rank_max_candidates_per_symbol),
+                    span_rank_max_body_lines=cfg.span_rank_max_body_lines,
+                    span_query_text=question,
+                    span_score_fn=span_score_fn,
                 ),
             )
 
@@ -1515,9 +2137,13 @@ def _run_axis_retrieval_impl(
         raw_by_role=raw_by_role,
         seed_files=sorted(f for f in seed_files if f),
         candidates_for_context=candidates_for_context,
+        budget_ranked_candidates=active,
+        seed_candidates=seed_candidates,
         bundles=list(bundles),
         render_mode=render_mode,
         budget_trace=budget_trace,
+        seed_selection_trace=seed_selection_trace,
+        lexical_span_probe_trace=lexical_span_probe_trace,
     )
 
 

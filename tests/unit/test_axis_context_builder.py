@@ -9,6 +9,8 @@ import pytest
 
 from context_engine.axis.context_builder import (
     ContextRenderBudget,
+    TokenCreditTrace,
+    _evidence_graph_fanout_limit,
     _Hit,
     _nearest_expansion_hits,
     build_context_for_candidates,
@@ -194,6 +196,79 @@ def test_semantic_expansion_falls_back_to_depth_order_without_scores():
     )
 
     assert [hit.uid for hit in selected] == ["direct"]
+
+
+def test_semantic_expansion_reuses_intent_inverted_test_tier_weight():
+    hits = [
+        _Hit("floor1", "floor1", "/core/floor1.py", 1, "calls"),
+        _Hit("floor2", "floor2", "/core/floor2.py", 1, "calls"),
+        _Hit("floor3", "floor3", "/core/floor3.py", 1, "calls"),
+        _Hit("core", "core", "/core/answer.py", 1, "calls"),
+        _Hit("test", "test", "/tests/test_answer.py", 1, "calls"),
+    ]
+    scoring = _FakeQueryScoring(
+        {"floor1": 0.10, "floor2": 0.11, "floor3": 0.12, "core": 0.70, "test": 0.80}
+    )
+
+    normal = _nearest_expansion_hits(
+        hits,
+        include_tests=True,
+        max_per_seed=1,
+        query_scoring=scoring,  # type: ignore[arg-type]
+        structural_reserve=0,
+        impact_mode=False,
+    )
+    impact = _nearest_expansion_hits(
+        hits,
+        include_tests=True,
+        max_per_seed=1,
+        query_scoring=scoring,  # type: ignore[arg-type]
+        structural_reserve=0,
+        impact_mode=True,
+    )
+
+    assert [hit.uid for hit in normal] == ["core"]
+    assert [hit.uid for hit in impact] == ["test"]
+
+
+def test_related_symbols_keep_request_local_semantic_annotations():
+    candidate = _make_candidate("u:seed", "seed")
+    db = _FakeDB(
+        [
+            [
+                _hit_record(
+                    "u:seed",
+                    "u:test",
+                    "test_helper",
+                    "/tests/test_helper.py",
+                    "binding_structure_expansion",
+                    1,
+                )
+            ],
+            [],
+        ]
+    )
+    lance = _FakeLance(
+        [
+            _lance_row("u:seed", "def seed(): pass"),
+            _lance_row("u:test", "def test_helper(): pass"),
+        ]
+    )
+
+    [bundle] = build_context_for_candidates(
+        [candidate],
+        workspace_id=WORKSPACE,
+        db=db,
+        lance=lance,
+        include_tests=True,
+        query_scoring=_FakeQueryScoring({"u:test": 0.8}),  # type: ignore[arg-type]
+    )
+
+    related = bundle.related[0]
+    assert related.query_similarity == pytest.approx(0.8)
+    assert related.tier_weight == pytest.approx(0.15)
+    assert related.structural_weight == pytest.approx(1.0)
+    assert related.utility_score == pytest.approx(0.15)
 
 
 def test_seed_carries_code_and_zero_depth():
@@ -406,6 +481,90 @@ def test_max_per_seed_caps_related_count():
     assert len(bundle.related) == 4
 
 
+def test_evidence_graph_fanout_policy_is_reduce_only():
+    weak = _make_candidate("u:weak", "weak")
+    supported = replace(weak, retrieval_channels=("vector",))
+    consensus = replace(weak, retrieval_channels=("vector", "lexical"))
+    exact = replace(weak, exact_symbol_match=True)
+    anchor = replace(weak, role="anchor_symbol", supporting_roles=("binding_surface",))
+
+    assert _evidence_graph_fanout_limit(
+        weak, rank=1, max_per_seed=4, min_per_seed=2, protected_head=5
+    ) == (4, "ranked_head")
+    assert _evidence_graph_fanout_limit(
+        weak, rank=6, max_per_seed=4, min_per_seed=2, protected_head=5
+    ) == (2, "weak_tail")
+    assert _evidence_graph_fanout_limit(
+        supported, rank=6, max_per_seed=4, min_per_seed=2, protected_head=5
+    ) == (4, "supported_tail")
+    assert _evidence_graph_fanout_limit(
+        weak, rank=6, max_per_seed=6, min_per_seed=2, protected_head=5
+    ) == (3, "weak_tail")
+    assert _evidence_graph_fanout_limit(
+        consensus, rank=6, max_per_seed=4, min_per_seed=2, protected_head=5
+    ) == (4, "strong_consensus")
+    assert _evidence_graph_fanout_limit(
+        exact, rank=6, max_per_seed=4, min_per_seed=2, protected_head=5
+    ) == (4, "protected")
+    assert _evidence_graph_fanout_limit(
+        anchor, rank=6, max_per_seed=4, min_per_seed=2, protected_head=5
+    ) == (4, "protected")
+
+
+def test_evidence_graph_fanout_reduces_only_weak_ranked_tail():
+    candidates = [_make_candidate(f"u:s{i}", f"seed{i}") for i in range(1, 9)]
+    candidates[6] = replace(candidates[6], retrieval_channels=("vector",))
+    candidates[7] = replace(candidates[7], retrieval_channels=("vector", "lexical"))
+    hits = [
+        _hit_record(
+            seed_uid=candidate.uid,
+            uid=f"{candidate.uid}:n{index}",
+            name=f"neighbour{index}",
+            file_path=axis_test_file_path(f"n{index}"),
+            step="binding_structure_expansion",
+            depth=1,
+        )
+        for candidate in candidates
+        for index in range(4)
+    ]
+    db = _FakeDB([hits, []])
+    trace = TokenCreditTrace()
+    lance = _FakeLance(
+        [_lance_row(candidate.uid, f"{candidate.name} code") for candidate in candidates]
+        + [
+            _lance_row(f"{candidate.uid}:n{index}", f"related {index}")
+            for candidate in candidates
+            for index in range(4)
+        ]
+    )
+
+    bundles = build_context_for_candidates(
+        candidates,
+        workspace_id=WORKSPACE,
+        db=db,
+        lance=lance,
+        max_per_seed=4,
+        evidence_graph_fanout=True,
+        evidence_graph_fanout_min=2,
+        evidence_graph_fanout_protected_head=5,
+        credit_trace=trace,
+    )
+
+    assert [len(bundle.related) for bundle in bundles] == [4, 4, 4, 4, 4, 2, 4, 4]
+    assert len(db._session.runs) == 2
+    for _, params in db._session.runs:
+        assert params["limit_per_seed"] == 16
+        assert params["limit_per_seed_by_uid"]["u:s6"] == 8
+        assert params["limit_per_seed_by_uid"]["u:s7"] == 16
+    assert trace.graph_fanout_tier_counts == {
+        "ranked_head": 5,
+        "weak_tail": 1,
+        "supported_tail": 1,
+        "strong_consensus": 1,
+    }
+    assert trace.graph_fanout_limit_counts == {4: 7, 2: 1}
+
+
 def test_each_candidate_expands_independently():
     cand_a = _make_candidate("u:A", "A")
     cand_b = _make_candidate("u:B", "B")
@@ -514,8 +673,12 @@ def test_build_context_threads_qualified_name_for_fold_render():
         render_budget=ContextRenderBudget(render_mode="fold"),
     )
 
-    assert bundle.seed.name == "Service"
-    assert bundle.seed.qualified_name == "pkg.mod.Service"
+    assert bundle.seed.name == "target"
+    assert bundle.seed.qualified_name == "pkg.mod.Service.target"
+    assert {(owner.uid, owner.qualified_name) for owner in bundle.seed.represented_owners} == {
+        ("u:target", "pkg.mod.Service.target"),
+        ("u:helper", "pkg.mod.Service.helper"),
+    }
     assert bundle.related == ()
     assert "def target(self):" in (bundle.seed.code or "")
     assert "return self.helper()" in (bundle.seed.code or "")

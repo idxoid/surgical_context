@@ -5,6 +5,8 @@ repositories:
   repo_url: https://github.com/celery/celery
   docs_url: https://docs.celeryq.dev/
   language: python
+  pinned_version: 5.6.2
+  pinned_commit: 5ea25b51
   rationale: Task queue with app registry, broker publish/consume, and result backends—good for async dispatch, worker, and
     impact benchmarks.
 - id: click
@@ -13,12 +15,15 @@ repositories:
   repo_url: https://github.com/pallets/click
   docs_url: https://click.palletsprojects.com/
   language: python
+  pinned_version: 8.5.0.dev
+  pinned_commit: b67832c
   rationale: Composable CLI toolkit with decorators, Context, ParamType, and help formatting—good for registration, parsing,
     and error-surface benchmarks.
 - id: dathund
   name: Dathund
   project_path: /home/idxoid/dathund/dathund
   language: python
+  pinned_commit: dc51849
   rationale: Pipeline-native security observability with connectors, lineage backends, and cross-connector ChainEngine.
 - id: django
   name: Django
@@ -26,6 +31,8 @@ repositories:
   repo_url: https://github.com/django/django
   docs_url: https://docs.djangoproject.com/
   language: python
+  pinned_version: 6.2.0a0
+  pinned_commit: 581f2969e
   rationale: Large monolithic Python framework with ORM, middleware, and request lifecycle—good for testing architectural
     knowledge and subsystem interactions.
 - id: fastapi
@@ -34,6 +41,8 @@ repositories:
   repo_url: https://github.com/fastapi/fastapi
   docs_url: https://fastapi.tiangolo.com/
   language: python
+  pinned_version: 0.139.0
+  pinned_commit: 027f2722
   rationale: Framework repo with code, docs, tests, and many dependency/explanation questions.
 - id: flask
   name: Flask
@@ -41,6 +50,8 @@ repositories:
   repo_url: https://github.com/pallets/flask
   docs_url: https://flask.palletsprojects.com/
   language: python
+  pinned_version: 3.2.0.dev
+  pinned_commit: 36e4a82
   rationale: Lightweight framework with minimal core and extension system; useful for testing simplified patterns and routing
     complexity.
 - id: pydantic
@@ -49,6 +60,8 @@ repositories:
   repo_url: https://github.com/pydantic/pydantic
   docs_url: https://docs.pydantic.dev/
   language: python
+  pinned_version: 2.14.0a1
+  pinned_commit: c47bba2
   rationale: Validation-heavy codebase with Python and core boundary, good for inspect/explain questions.
 - id: sqlalchemy
   name: SQLAlchemy
@@ -56,12 +69,15 @@ repositories:
   repo_url: https://github.com/sqlalchemy/sqlalchemy
   docs_url: https://docs.sqlalchemy.org/
   language: python
+  pinned_version: 2.1.0b4
+  pinned_commit: '14957270'
   rationale: Python ORM/database toolkit with complex declarative patterns, lazy loading, and query builder architecture—tests
     sophisticated Python metaprogramming and data access patterns.
 - id: surgical_context
   name: Surgical Context
   project_path: /home/idxoid/surgical_context
   language: python
+  pinned_commit: 37ab94f
   rationale: Dogfood benchmark for context ranker, indexer, VS Code extension, and QA harness on this repo itself.
 questions:
 - id: fastapi_q01
@@ -81,6 +97,19 @@ questions:
   expected_files:
   - fastapi/applications.py
   - fastapi/routing.py
+  expected_spans:
+  - file_path: fastapi/applications.py
+    symbol: add_api_route
+    start_line: 1165
+    end_line: 1220
+  - file_path: fastapi/applications.py
+    symbol: api_route
+    start_line: 1295
+    end_line: 1353
+  - file_path: fastapi/routing.py
+    symbol: APIRoute
+    start_line: 1110
+    end_line: 1208
 - id: fastapi_q02
   repo: fastapi
   core12: true
@@ -98,6 +127,24 @@ questions:
   expected_files:
   - fastapi/dependencies/utils.py
   - fastapi/dependencies/models.py
+  - fastapi/params.py
+  expected_spans:
+  - file_path: fastapi/dependencies/utils.py
+    symbol: solve_dependencies
+    start_line: 598
+    end_line: 735
+  - file_path: fastapi/dependencies/utils.py
+    symbol: get_dependant
+    start_line: 286
+    end_line: 359
+  - file_path: fastapi/dependencies/models.py
+    symbol: Dependant
+    start_line: 31
+    end_line: 194
+  - file_path: fastapi/params.py
+    symbol: Depends
+    start_line: 745
+    end_line: 749
 - id: fastapi_q03
   repo: fastapi
   core12: true
@@ -113,6 +160,15 @@ questions:
   - APIRoute
   expected_files:
   - fastapi/routing.py
+  expected_spans:
+  - file_path: fastapi/routing.py
+    symbol: run_endpoint_function
+    start_line: 336
+    end_line: 346
+  - file_path: fastapi/routing.py
+    symbol: get_request_handler
+    start_line: 367
+    end_line: 550
 - id: fastapi_q04
   repo: fastapi
   core12: true
@@ -131,6 +187,19 @@ questions:
   - fastapi/routing.py
   - fastapi/dependencies/utils.py
   - fastapi/params.py
+  expected_spans:
+  - file_path: fastapi/dependencies/utils.py
+    symbol: request_body_to_args
+    start_line: 955
+    end_line: 1002
+  - file_path: fastapi/dependencies/utils.py
+    symbol: solve_dependencies
+    start_line: 598
+    end_line: 735
+  - file_path: fastapi/routing.py
+    symbol: get_request_handler
+    start_line: 367
+    end_line: 550
 - id: fastapi_q05
   repo: fastapi
   core12: false
@@ -147,6 +216,19 @@ questions:
   expected_files:
   - fastapi/openapi/utils.py
   - fastapi/applications.py
+  expected_spans:
+  - file_path: fastapi/openapi/utils.py
+    symbol: get_openapi
+    start_line: 523
+    end_line: 618
+  - file_path: fastapi/openapi/utils.py
+    symbol: get_openapi_path
+    start_line: 260
+    end_line: 380
+  - file_path: fastapi/applications.py
+    symbol: openapi
+    start_line: 1070
+    end_line: 1103
 - id: fastapi_q06
   repo: fastapi
   core12: false
@@ -164,6 +246,15 @@ questions:
   - fastapi/routing.py
   - fastapi/encoders.py
   - tests
+  expected_spans:
+  - file_path: fastapi/routing.py
+    symbol: serialize_response
+    start_line: 293
+    end_line: 333
+  - file_path: fastapi/routing.py
+    symbol: get_request_handler
+    start_line: 367
+    end_line: 550
 - id: fastapi_q07
   repo: fastapi
   core12: false
@@ -181,6 +272,19 @@ questions:
   expected_files:
   - fastapi/applications.py
   - fastapi/openapi/docs.py
+  expected_spans:
+  - file_path: fastapi/applications.py
+    symbol: setup
+    start_line: 1105
+    end_line: 1158
+  - file_path: fastapi/openapi/docs.py
+    symbol: get_swagger_ui_html
+    start_line: 40
+    end_line: 194
+  - file_path: fastapi/openapi/docs.py
+    symbol: get_redoc_html
+    start_line: 197
+    end_line: 298
 - id: fastapi_q08
   repo: fastapi
   core12: false
@@ -197,6 +301,19 @@ questions:
   expected_files:
   - fastapi/routing.py
   - fastapi/dependencies
+  expected_spans:
+  - file_path: fastapi/routing.py
+    symbol: APIRoute
+    start_line: 1110
+    end_line: 1208
+  - file_path: fastapi/routing.py
+    symbol: get_request_handler
+    start_line: 367
+    end_line: 550
+  - file_path: fastapi/dependencies/models.py
+    symbol: Dependant
+    start_line: 31
+    end_line: 194
 - id: pydantic_q01
   repo: pydantic
   core12: true
@@ -213,6 +330,19 @@ questions:
   expected_files:
   - pydantic/main.py
   - pydantic/_internal
+  expected_spans:
+  - file_path: pydantic/main.py
+    symbol: BaseModel
+    start_line: 119
+    end_line: 270
+  - file_path: pydantic/main.py
+    symbol: model_validate
+    start_line: 722
+    end_line: 773
+  - file_path: pydantic/_internal/_model_construction.py
+    symbol: complete_model_class
+    start_line: 606
+    end_line: 727
 - id: pydantic_q02
   repo: pydantic
   core12: true
@@ -229,6 +359,16 @@ questions:
   expected_files:
   - pydantic/main.py
   - pydantic-core
+  - pydantic/_internal/_model_construction.py
+  expected_spans:
+  - file_path: pydantic/main.py
+    symbol: BaseModel
+    start_line: 119
+    end_line: 270
+  - file_path: pydantic/_internal/_model_construction.py
+    symbol: complete_model_class
+    start_line: 690
+    end_line: 727
 - id: pydantic_q03
   repo: pydantic
   core12: true
@@ -243,6 +383,11 @@ questions:
   - __pydantic_serializer__
   expected_files:
   - pydantic/main.py
+  expected_spans:
+  - file_path: pydantic/main.py
+    symbol: model_dump
+    start_line: 455
+    end_line: 519
 - id: pydantic_q04
   repo: pydantic
   core12: true
@@ -259,6 +404,19 @@ questions:
   expected_files:
   - pydantic/json_schema.py
   - pydantic/main.py
+  expected_spans:
+  - file_path: pydantic/main.py
+    symbol: model_json_schema
+    start_line: 590
+    end_line: 626
+  - file_path: pydantic/json_schema.py
+    symbol: GenerateJsonSchema
+    start_line: 223
+    end_line: 313
+  - file_path: pydantic/json_schema.py
+    symbol: model_json_schema
+    start_line: 2547
+    end_line: 2592
 - id: pydantic_q05
   repo: pydantic
   core12: false
@@ -270,10 +428,24 @@ questions:
   mechanism: pydantic_v1_compat_surface
   expected_symbols:
   - v1
-  - BaseModel
+  - getattr_migration
+  - MOVED_IN_V2
   expected_files:
   - pydantic/_migration.py
-  - pydantic/v1
+  - pydantic/__init__.py
+  expected_spans:
+  - file_path: pydantic/_migration.py
+    symbol: getattr_migration
+    start_line: 252
+    end_line: 317
+  - file_path: pydantic/_migration.py
+    symbol: MOVED_IN_V2
+    start_line: 9
+    end_line: 50
+  - file_path: pydantic/__init__.py
+    symbol: __getattr__
+    start_line: 422
+    end_line: 451
 - id: pydantic_q06
   repo: pydantic
   core12: false
@@ -290,6 +462,19 @@ questions:
   expected_files:
   - pydantic/fields.py
   - pydantic
+  expected_spans:
+  - file_path: pydantic/fields.py
+    symbol: Field
+    start_line: 1175
+    end_line: 1280
+  - file_path: pydantic/aliases.py
+    symbol: AliasChoices
+    start_line: 57
+    end_line: 84
+  - file_path: pydantic/aliases.py
+    symbol: AliasPath
+    start_line: 15
+    end_line: 53
 - id: pydantic_q07
   repo: pydantic
   core12: false
@@ -303,6 +488,11 @@ questions:
   - ValidationError
   expected_files:
   - pydantic
+  expected_spans:
+  - file_path: pydantic/main.py
+    symbol: model_validate
+    start_line: 722
+    end_line: 773
 - id: pydantic_q08
   repo: pydantic
   core12: false
@@ -319,6 +509,19 @@ questions:
   expected_files:
   - pydantic/json_schema.py
   - pydantic/main.py
+  expected_spans:
+  - file_path: pydantic/json_schema.py
+    symbol: GenerateJsonSchema
+    start_line: 223
+    end_line: 313
+  - file_path: pydantic/json_schema.py
+    symbol: model_json_schema
+    start_line: 2547
+    end_line: 2592
+  - file_path: pydantic/main.py
+    symbol: model_json_schema
+    start_line: 590
+    end_line: 626
 - id: django_q01
   repo: django
   core12: true
@@ -337,6 +540,19 @@ questions:
   - django/core/wsgi.py
   - django/core/handlers/wsgi.py
   - django/core/handlers/base.py
+  expected_spans:
+  - file_path: django/core/wsgi.py
+    symbol: get_wsgi_application
+    start_line: 5
+    end_line: 13
+  - file_path: django/core/handlers/wsgi.py
+    symbol: WSGIHandler
+    start_line: 113
+    end_line: 144
+  - file_path: django/core/handlers/base.py
+    symbol: load_middleware
+    start_line: 27
+    end_line: 104
 - id: django_q02
   repo: django
   core12: true
@@ -355,6 +571,23 @@ questions:
   - django/db/models/query.py
   - django/db/models/sql/query.py
   - django/db/models/sql/compiler.py
+  expected_spans:
+  - file_path: django/db/models/query.py
+    symbol: QuerySet
+    start_line: 330
+    end_line: 400
+  - file_path: django/db/models/query.py
+    symbol: _fetch_all
+    start_line: 2260
+    end_line: 2264
+  - file_path: django/db/models/sql/query.py
+    symbol: Query
+    start_line: 231
+    end_line: 280
+  - file_path: django/db/models/sql/compiler.py
+    symbol: SQLCompiler
+    start_line: 43
+    end_line: 100
 - id: django_q03
   repo: django
   core12: true
@@ -370,6 +603,23 @@ questions:
   - ModelFormOptions
   expected_files:
   - django/forms/models.py
+  expected_spans:
+  - file_path: django/forms/models.py
+    symbol: fields_for_model
+    start_line: 141
+    end_line: 257
+  - file_path: django/forms/models.py
+    symbol: ModelFormOptions
+    start_line: 260
+    end_line: 271
+  - file_path: django/forms/models.py
+    symbol: ModelFormMetaclass
+    start_line: 274
+    end_line: 344
+  - file_path: django/forms/models.py
+    symbol: ModelForm
+    start_line: 585
+    end_line: 586
 - id: django_q04
   repo: django
   core12: true
@@ -388,6 +638,23 @@ questions:
   - django/db/migrations/loader.py
   - django/db/migrations/operations/base.py
   - django/db/migrations/recorder.py
+  expected_spans:
+  - file_path: django/db/migrations/executor.py
+    symbol: MigrationExecutor
+    start_line: 10
+    end_line: 200
+  - file_path: django/db/migrations/loader.py
+    symbol: MigrationLoader
+    start_line: 21
+    end_line: 200
+  - file_path: django/db/migrations/operations/base.py
+    symbol: Operation
+    start_line: 16
+    end_line: 177
+  - file_path: django/db/migrations/recorder.py
+    symbol: MigrationRecorder
+    start_line: 9
+    end_line: 111
 - id: django_q05
   repo: django
   core12: false
@@ -405,6 +672,15 @@ questions:
   - django/db/models/fields
   - django/db/models
   - tests
+  expected_spans:
+  - file_path: django/db/models/fields/__init__.py
+    symbol: Field
+    start_line: 129
+    end_line: 200
+  - file_path: django/db/models/query_utils.py
+    symbol: DeferredAttribute
+    start_line: 250
+    end_line: 308
 - id: flask_q01
   repo: flask
   core12: true
@@ -422,6 +698,19 @@ questions:
   expected_files:
   - src/flask/app.py
   - src/flask/ctx.py
+  expected_spans:
+  - file_path: src/flask/app.py
+    symbol: Flask
+    start_line: 109
+    end_line: 250
+  - file_path: src/flask/ctx.py
+    symbol: AppContext
+    start_line: 260
+    end_line: 450
+  - file_path: src/flask/ctx.py
+    symbol: push
+    start_line: 416
+    end_line: 444
 - id: flask_q02
   repo: flask
   core12: true
@@ -437,6 +726,19 @@ questions:
   - BlueprintSetupState
   expected_files:
   - src/flask/sansio/blueprints.py
+  expected_spans:
+  - file_path: src/flask/sansio/blueprints.py
+    symbol: Blueprint
+    start_line: 119
+    end_line: 211
+  - file_path: src/flask/sansio/blueprints.py
+    symbol: register
+    start_line: 273
+    end_line: 377
+  - file_path: src/flask/sansio/blueprints.py
+    symbol: BlueprintSetupState
+    start_line: 34
+    end_line: 116
 - id: flask_q03
   repo: flask
   core12: true
@@ -448,11 +750,21 @@ questions:
   mechanism: flask_proxy_resolution
   expected_symbols:
   - request
-  - RequestProxy
+  - LocalProxy
+  - _cv_app
   - _get_current_object
   expected_files:
   - src/flask/globals.py
   - src/flask/wrappers.py
+  expected_spans:
+  - file_path: src/flask/globals.py
+    symbol: request
+    start_line: 57
+    end_line: 59
+  - file_path: src/flask/globals.py
+    symbol: _cv_app
+    start_line: 40
+    end_line: 40
 - id: flask_q04
   repo: flask
   core12: true
@@ -470,6 +782,23 @@ questions:
   expected_files:
   - src/flask/app.py
   - src/flask/sansio/scaffold.py
+  expected_spans:
+  - file_path: src/flask/sansio/scaffold.py
+    symbol: before_request
+    start_line: 460
+    end_line: 484
+  - file_path: src/flask/sansio/scaffold.py
+    symbol: after_request
+    start_line: 487
+    end_line: 505
+  - file_path: src/flask/app.py
+    symbol: preprocess_request
+    start_line: 1366
+    end_line: 1392
+  - file_path: src/flask/app.py
+    symbol: process_response
+    start_line: 1394
+    end_line: 1418
 - id: flask_q05
   repo: flask
   core12: false
@@ -487,6 +816,20 @@ questions:
   expected_files:
   - src/flask/app.py
   - tests
+  - src/flask/sansio/scaffold.py
+  expected_spans:
+  - file_path: src/flask/sansio/scaffold.py
+    symbol: route
+    start_line: 336
+    end_line: 365
+  - file_path: src/flask/sansio/scaffold.py
+    symbol: add_url_rule
+    start_line: 368
+    end_line: 433
+  - file_path: src/flask/app.py
+    symbol: dispatch_request
+    start_line: 966
+    end_line: 990
 - id: sqlalchemy_q01
   repo: sqlalchemy
   core12: true
@@ -504,6 +847,24 @@ questions:
   expected_files:
   - lib/sqlalchemy/orm/decl_api.py
   - lib/sqlalchemy/orm/mapper.py
+  - lib/sqlalchemy/sql/schema.py
+  expected_spans:
+  - file_path: lib/sqlalchemy/orm/decl_api.py
+    symbol: declarative_base
+    start_line: 1042
+    end_line: 1162
+  - file_path: lib/sqlalchemy/orm/mapper.py
+    symbol: Mapper
+    start_line: 168
+    end_line: 250
+  - file_path: lib/sqlalchemy/sql/schema.py
+    symbol: Table
+    start_line: 327
+    end_line: 400
+  - file_path: lib/sqlalchemy/sql/schema.py
+    symbol: Column
+    start_line: 1769
+    end_line: 1850
 - id: sqlalchemy_q02
   repo: sqlalchemy
   core12: true
@@ -521,6 +882,23 @@ questions:
   expected_files:
   - lib/sqlalchemy/orm/query.py
   - lib/sqlalchemy/sql
+  expected_spans:
+  - file_path: lib/sqlalchemy/orm/query.py
+    symbol: Query
+    start_line: 165
+    end_line: 250
+  - file_path: lib/sqlalchemy/sql/selectable.py
+    symbol: Select
+    start_line: 5463
+    end_line: 5550
+  - file_path: lib/sqlalchemy/sql/elements.py
+    symbol: ClauseElement
+    start_line: 338
+    end_line: 500
+  - file_path: lib/sqlalchemy/sql/compiler.py
+    symbol: SQLCompiler
+    start_line: 1122
+    end_line: 1200
 - id: sqlalchemy_q03
   repo: sqlalchemy
   core12: true
@@ -539,6 +917,23 @@ questions:
   - lib/sqlalchemy/orm/session.py
   - lib/sqlalchemy/orm/identity.py
   - lib/sqlalchemy/orm/strategies.py
+  expected_spans:
+  - file_path: lib/sqlalchemy/orm/session.py
+    symbol: Session
+    start_line: 1471
+    end_line: 1570
+  - file_path: lib/sqlalchemy/orm/session.py
+    symbol: sessionmaker
+    start_line: 5098
+    end_line: 5200
+  - file_path: lib/sqlalchemy/orm/identity.py
+    symbol: IdentityMap
+    start_line: 37
+    end_line: 123
+  - file_path: lib/sqlalchemy/orm/strategies.py
+    symbol: _LazyLoader
+    start_line: 710
+    end_line: 850
 - id: sqlalchemy_q04
   repo: sqlalchemy
   core12: false
@@ -555,6 +950,15 @@ questions:
   expected_files:
   - lib/sqlalchemy/orm/relationships.py
   - lib/sqlalchemy/orm/strategies.py
+  expected_spans:
+  - file_path: lib/sqlalchemy/orm/relationships.py
+    symbol: RelationshipProperty
+    start_line: 344
+    end_line: 500
+  - file_path: lib/sqlalchemy/orm/strategies.py
+    symbol: _LazyLoader
+    start_line: 710
+    end_line: 850
 - id: surgical_context_q01
   repo: surgical_context
   core12: true
@@ -572,6 +976,31 @@ questions:
   - context_engine/axis/pipeline.py
   - context_engine/axis/context_builder.py
   - context_engine/axis/prompt_provider.py
+  expected_spans:
+  - file_path: context_engine/axis/pipeline.py
+    symbol: run_axis_retrieval
+    start_line: 1439
+    end_line: 1459
+  - file_path: context_engine/axis/context_builder.py
+    symbol: build_context_for_candidates
+    start_line: 3446
+    end_line: 3568
+  - file_path: context_engine/axis/prompt_provider.py
+    symbol: axis_bundles_to_prompt_context
+    start_line: 74
+    end_line: 143
+  - file_path: context_engine/axis/pipeline.py
+    symbol: _run_axis_retrieval_impl
+    start_line: 1462
+    end_line: 1504
+  - file_path: context_engine/axis/pipeline.py
+    symbol: _run_axis_retrieval_impl
+    start_line: 1551
+    end_line: 1560
+  - file_path: context_engine/axis/pipeline.py
+    symbol: _run_axis_retrieval_impl
+    start_line: 1749
+    end_line: 1865
 - id: surgical_context_q02
   repo: surgical_context
   core12: true
@@ -592,6 +1021,31 @@ questions:
   - context_engine/axis/graph_walk.py
   - context_engine/axis/axis_ranking.py
   - context_engine/axis/context_builder.py
+  expected_spans:
+  - file_path: context_engine/axis/role_retrieval.py
+    symbol: find_symbols_by_roles
+    start_line: 570
+    end_line: 615
+  - file_path: context_engine/axis/graph_walk.py
+    symbol: walk_neighbours
+    start_line: 451
+    end_line: 536
+  - file_path: context_engine/axis/axis_ranking.py
+    symbol: apply_intent_axis_boost
+    start_line: 49
+    end_line: 81
+  - file_path: context_engine/axis/context_builder.py
+    symbol: build_context_for_candidates
+    start_line: 3446
+    end_line: 3568
+  - file_path: context_engine/axis/pipeline.py
+    symbol: _run_axis_retrieval_impl
+    start_line: 1551
+    end_line: 1658
+  - file_path: context_engine/axis/pipeline.py
+    symbol: _run_axis_retrieval_impl
+    start_line: 1708
+    end_line: 1781
 - id: surgical_context_q03
   repo: surgical_context
   core12: true
@@ -608,6 +1062,19 @@ questions:
   expected_files:
   - context_engine/axis/intent_classifier.py
   - context_engine/axis/axis_ranking.py
+  expected_spans:
+  - file_path: context_engine/axis/intent_classifier.py
+    symbol: classify_intent
+    start_line: 181
+    end_line: 246
+  - file_path: context_engine/axis/intent_classifier.py
+    symbol: IntentMatch
+    start_line: 92
+    end_line: 104
+  - file_path: context_engine/axis/axis_ranking.py
+    symbol: intent_axes
+    start_line: 31
+    end_line: 46
 - id: surgical_context_q04
   repo: surgical_context
   core12: false
@@ -626,6 +1093,31 @@ questions:
   - context_engine/axis/role_retrieval.py
   - context_engine/axis/graph_walk.py
   - context_engine/axis/pipeline.py
+  expected_spans:
+  - file_path: context_engine/axis/role_retrieval.py
+    symbol: scan_workspace_rows
+    start_line: 449
+    end_line: 495
+  - file_path: context_engine/axis/role_retrieval.py
+    symbol: find_symbols_by_roles
+    start_line: 570
+    end_line: 615
+  - file_path: context_engine/axis/graph_walk.py
+    symbol: walk_neighbours
+    start_line: 451
+    end_line: 536
+  - file_path: context_engine/axis/pipeline.py
+    symbol: run_axis_retrieval
+    start_line: 1439
+    end_line: 1459
+  - file_path: context_engine/axis/pipeline.py
+    symbol: _run_axis_retrieval_impl
+    start_line: 1547
+    end_line: 1658
+  - file_path: context_engine/axis/pipeline.py
+    symbol: _run_axis_retrieval_impl
+    start_line: 1660
+    end_line: 1748
 - id: surgical_context_q05
   repo: surgical_context
   core12: false
@@ -644,13 +1136,34 @@ questions:
   expected_files:
   - context_engine/indexer/fast/pipeline.py
   - context_engine/indexer/fast/phases.py
+  expected_spans:
+  - file_path: context_engine/indexer/fast/pipeline.py
+    symbol: run_fast_indexing
+    start_line: 738
+    end_line: 892
+  - file_path: context_engine/indexer/fast/phases.py
+    symbol: _hash_phase
+    start_line: 122
+    end_line: 135
+  - file_path: context_engine/indexer/fast/phases.py
+    symbol: _parse_phase
+    start_line: 251
+    end_line: 321
+  - file_path: context_engine/indexer/fast/phases.py
+    symbol: _apply_graph
+    start_line: 324
+    end_line: 379
+  - file_path: context_engine/indexer/fast/phases.py
+    symbol: _embed_phase
+    start_line: 1039
+    end_line: 1089
 - id: surgical_context_q06
   repo: surgical_context
   core12: false
   symbol: apply_intent_axis_boost
   question: If axis ranking weights change (apply_intent_axis_boost boost/score_ceiling, seed tier demotion in role_retrieval),
-    and the production caps per-role-limit and max-impacted change with them, which unit tests and QA/axis_benchmark
-    paths are most likely to break?
+    and the production caps per-role-limit and max-impacted change with them, which unit tests and QA/axis_benchmark paths
+    are most likely to break?
   difficulty: hard
   intent: impact_analysis
   expected_mode: symbol
@@ -664,13 +1177,46 @@ questions:
   - context_engine/axis/role_retrieval.py
   - tests/unit/test_axis_ranking.py
   - QA/axis_benchmark.py
+  expected_spans:
+  - file_path: context_engine/axis/axis_ranking.py
+    symbol: apply_intent_axis_boost
+    start_line: 49
+    end_line: 81
+  - file_path: context_engine/axis/axis_ranking.py
+    symbol: intent_axes
+    start_line: 31
+    end_line: 46
+  - file_path: context_engine/axis/role_retrieval.py
+    symbol: find_seeds_by_vector
+    start_line: 660
+    end_line: 787
+  - file_path: tests/unit/test_axis_ranking.py
+    symbol: test_boost_lifts_on_axis_candidate
+    start_line: 44
+    end_line: 57
+  - file_path: tests/unit/test_axis_ranking.py
+    symbol: test_boost_capped_at_ceiling
+    start_line: 67
+    end_line: 70
+  - file_path: tests/unit/test_axis_ranking.py
+    symbol: test_boost_once_not_per_axis
+    start_line: 73
+    end_line: 78
+  - file_path: QA/axis_benchmark.py
+    symbol: _populate_recall_layers
+    start_line: 645
+    end_line: 693
+  - file_path: QA/axis_benchmark.py
+    symbol: run_question
+    start_line: 792
+    end_line: 915
 - id: surgical_context_q08
   repo: surgical_context
   core12: false
   symbol: _apply_token_credit_budget
-  question: If token-budget weights change (RetrievalBudget.token_weight, tier/bonus tables in context_builder,
-    _apply_token_credit_budget), and the production flags intent-budget, token-budget, and render-mode change with
-    them, which unit tests and benchmark paths are most likely to break?
+  question: If token-budget weights change (RetrievalBudget.token_weight, tier/bonus tables in context_builder, _apply_token_credit_budget),
+    and the production flags intent-budget, token-budget, and render-mode change with them, which unit tests and benchmark
+    paths are most likely to break?
   difficulty: hard
   intent: impact_analysis
   expected_mode: symbol
@@ -684,6 +1230,47 @@ questions:
   - context_engine/axis/context_builder.py
   - context_engine/axis/retrieval_budget.py
   - tests/unit/test_context_builder_budget.py
+  expected_spans:
+  - file_path: context_engine/axis/context_builder.py
+    symbol: _apply_token_credit_budget
+    start_line: 2772
+    end_line: 2952
+  - file_path: context_engine/axis/context_builder.py
+    symbol: _apply_render_and_budget
+    start_line: 2955
+    end_line: 3019
+  - file_path: context_engine/axis/retrieval_budget.py
+    symbol: budget_for_intent
+    start_line: 90
+    end_line: 95
+  - file_path: context_engine/axis/retrieval_budget.py
+    symbol: RetrievalBudget
+    start_line: 55
+    end_line: 66
+  - file_path: tests/unit/test_context_builder_budget.py
+    symbol: test_token_credit_dedupes_axis_duplicate_symbols_before_packing
+    start_line: 86
+    end_line: 111
+  - file_path: tests/unit/test_context_builder_budget.py
+    symbol: test_marginal_purchase_and_exact_upgrade_delta_price_first_wins
+    start_line: 117
+    end_line: 165
+  - file_path: tests/unit/test_context_builder_budget.py
+    symbol: test_cap_relaxation_buys_large_body_on_leftover_budget
+    start_line: 261
+    end_line: 300
+  - file_path: tests/unit/test_context_builder_budget.py
+    symbol: test_render_ceiling_lifts_to_full_on_leftover_budget
+    start_line: 303
+    end_line: 320
+  - file_path: tests/unit/test_context_builder_budget.py
+    symbol: test_token_credit_plateau_freeze_leaves_rejected_budget_unspent
+    start_line: 866
+    end_line: 888
+  - file_path: QA/axis_benchmark.py
+    symbol: _compute_span_recall
+    start_line: 397
+    end_line: 422
 - id: surgical_context_q07
   repo: surgical_context
   core12: false
@@ -699,14 +1286,31 @@ questions:
   - SurgicalContextViewProvider
   - askAboutSymbol
   expected_files:
-  # The actual request path: webview UI action -> provider message handler ->
-  # HTTP client -> FastAPI route. main.py stopped being the /ask handler when
-  # 14ce082 extracted the HTTP routes into api/routes/; extension.ts only
-  # registers the provider at activation and is not on the request path.
   - extension/src/webview/main.ts
   - extension/src/providers/SurgicalContextViewProvider.ts
   - extension/src/context_engineClient.ts
   - context_engine/api/routes/ask.py
+  expected_spans:
+  - file_path: extension/src/webview/main.ts
+    symbol: askAboutSymbol
+    start_line: 643
+    end_line: 670
+  - file_path: extension/src/providers/SurgicalContextViewProvider.ts
+    symbol: SurgicalContextViewProvider
+    start_line: 378
+    end_line: 488
+  - file_path: extension/src/context_engineClient.ts
+    symbol: SidecarClient
+    start_line: 296
+    end_line: 470
+  - file_path: extension/src/context_engineClient.ts
+    symbol: ask
+    start_line: 324
+    end_line: 336
+  - file_path: context_engine/api/routes/ask.py
+    symbol: ask
+    start_line: 32
+    end_line: 67
 - id: dathund_q01
   repo: dathund
   core12: true
@@ -725,6 +1329,27 @@ questions:
   expected_files:
   - src/dathund_core/engine/chain_engine.py
   - src/dathund_core/engine/lifecycle_gates.py
+  expected_spans:
+  - file_path: src/dathund_core/engine/chain_engine.py
+    symbol: ChainEngine
+    start_line: 49
+    end_line: 239
+  - file_path: src/dathund_core/engine/chain_engine.py
+    symbol: _passes_gates
+    start_line: 126
+    end_line: 141
+  - file_path: src/dathund_core/engine/chain_engine.py
+    symbol: _lineage_gate
+    start_line: 193
+    end_line: 201
+  - file_path: src/dathund_core/engine/chain_engine.py
+    symbol: _same_actor_gate
+    start_line: 162
+    end_line: 180
+  - file_path: src/dathund_core/engine/lifecycle_gates.py
+    symbol: passes_lifecycle_gate
+    start_line: 59
+    end_line: 74
 - id: dathund_q02
   repo: dathund
   core12: true
@@ -742,6 +1367,20 @@ questions:
   - ChainEngine
   expected_files:
   - src/dathund_core/collector/poller.py
+  - src/dathund_core/engine/correlation.py
+  expected_spans:
+  - file_path: src/dathund_core/collector/poller.py
+    symbol: AsyncPoller
+    start_line: 196
+    end_line: 380
+  - file_path: src/dathund_core/collector/poller.py
+    symbol: run_once
+    start_line: 354
+    end_line: 412
+  - file_path: src/dathund_core/engine/correlation.py
+    symbol: CorrelationEngine
+    start_line: 247
+    end_line: 400
 - id: dathund_q03
   repo: dathund
   core12: true
@@ -764,6 +1403,27 @@ questions:
   - src/dathund_core/lineage/pg_store.py
   - src/dathund_core/lineage/kuzu_store.py
   - src/dathund_core/lineage/memgraph_store.py
+  expected_spans:
+  - file_path: src/dathund_core/lineage/factory.py
+    symbol: build_lineage_store
+    start_line: 41
+    end_line: 76
+  - file_path: src/dathund_core/lineage/memory_store.py
+    symbol: MemoryClosureLineageStore
+    start_line: 18
+    end_line: 59
+  - file_path: src/dathund_core/lineage/pg_store.py
+    symbol: PgClosureLineageStore
+    start_line: 23
+    end_line: 208
+  - file_path: src/dathund_core/lineage/kuzu_store.py
+    symbol: KuzuLineageStore
+    start_line: 45
+    end_line: 121
+  - file_path: src/dathund_core/lineage/memgraph_store.py
+    symbol: MemgraphLineageStore
+    start_line: 30
+    end_line: 114
 - id: dathund_q04
   repo: dathund
   core12: false
@@ -782,6 +1442,23 @@ questions:
   - src/dathund_core/engine/time_authority.py
   - src/dathund_core/engine/chain_engine.py
   - src/dathund_core/connectors/time_authority_registry.py
+  expected_spans:
+  - file_path: src/dathund_core/engine/time_authority.py
+    symbol: effective_event_time_for_chain
+    start_line: 35
+    end_line: 40
+  - file_path: src/dathund_core/engine/time_authority.py
+    symbol: effective_chain_window_seconds
+    start_line: 31
+    end_line: 32
+  - file_path: src/dathund_core/engine/time_authority.py
+    symbol: extra_skew_seconds_for_events
+    start_line: 16
+    end_line: 28
+  - file_path: src/dathund_core/connectors/time_authority_registry.py
+    symbol: time_authority_for_source
+    start_line: 65
+    end_line: 69
 - id: dathund_q05
   repo: dathund
   core12: false
@@ -800,6 +1477,19 @@ questions:
   - src/dathund_core/plugins/chain_rules/catalog.py
   - src/dathund_core/engine/chain_engine.py
   - src/dathund_core/engine/correlation.py
+  expected_spans:
+  - file_path: src/dathund_core/plugins/chain_rules/catalog.py
+    symbol: CHAIN_001
+    start_line: 40
+    end_line: 62
+  - file_path: src/dathund_core/engine/correlation.py
+    symbol: CorrelationRule
+    start_line: 144
+    end_line: 190
+  - file_path: src/dathund_core/engine/chain_engine.py
+    symbol: _passes_gates
+    start_line: 126
+    end_line: 141
 - id: dathund_q06
   repo: dathund
   core12: false
@@ -816,6 +1506,19 @@ questions:
   expected_files:
   - src/dathund_core/identity/actor_index.py
   - src/dathund_core/engine/chain_engine.py
+  expected_spans:
+  - file_path: src/dathund_core/identity/actor_index.py
+    symbol: ActorIndex
+    start_line: 22
+    end_line: 127
+  - file_path: src/dathund_core/identity/actor_index.py
+    symbol: same_actor
+    start_line: 76
+    end_line: 93
+  - file_path: src/dathund_core/identity/actor_index.py
+    symbol: ingest
+    start_line: 36
+    end_line: 54
 - id: dathund_q07
   repo: dathund
   core12: false
@@ -832,6 +1535,19 @@ questions:
   expected_files:
   - src/dathund_core/analyzers/base.py
   - src/dathund_core/privacy/query_scrubber.py
+  expected_spans:
+  - file_path: src/dathund_core/analyzers/base.py
+    symbol: DathundAnalyzer
+    start_line: 91
+    end_line: 200
+  - file_path: src/dathund_core/privacy/query_scrubber.py
+    symbol: QueryScrubber
+    start_line: 55
+    end_line: 88
+  - file_path: src/dathund_core/privacy/query_scrubber.py
+    symbol: scrub_metadata_queries
+    start_line: 109
+    end_line: 126
 - id: dathund_q08
   repo: dathund
   core12: false
@@ -848,6 +1564,19 @@ questions:
   expected_files:
   - src/dathund_core/lineage/closure_logic.py
   - src/dathund_core/lineage/pg_store.py
+  expected_spans:
+  - file_path: src/dathund_core/lineage/closure_logic.py
+    symbol: extend_closure
+    start_line: 66
+    end_line: 150
+  - file_path: src/dathund_core/lineage/closure_logic.py
+    symbol: merge_closure_entry
+    start_line: 30
+    end_line: 63
+  - file_path: src/dathund_core/lineage/closure_logic.py
+    symbol: ClosureEntry
+    start_line: 14
+    end_line: 23
 - id: click_q01
   repo: click
   core12: false
@@ -867,6 +1596,27 @@ questions:
   expected_files:
   - src/click/decorators.py
   - src/click/core.py
+  expected_spans:
+  - file_path: src/click/decorators.py
+    symbol: command
+    start_line: 168
+    end_line: 255
+  - file_path: src/click/decorators.py
+    symbol: group
+    start_line: 293
+    end_line: 311
+  - file_path: src/click/core.py
+    symbol: Command
+    start_line: 960
+    end_line: 1060
+  - file_path: src/click/core.py
+    symbol: Group
+    start_line: 1643
+    end_line: 1750
+  - file_path: src/click/core.py
+    symbol: Group.get_command
+    start_line: 1931
+    end_line: 1935
 - id: click_q02
   repo: click
   core12: false
@@ -885,6 +1635,27 @@ questions:
   expected_files:
   - src/click/core.py
   - src/click/parser.py
+  expected_spans:
+  - file_path: src/click/core.py
+    symbol: Command.invoke
+    start_line: 1395
+    end_line: 1410
+  - file_path: src/click/core.py
+    symbol: Command.make_context
+    start_line: 1322
+    end_line: 1357
+  - file_path: src/click/core.py
+    symbol: Command.parse_args
+    start_line: 1359
+    end_line: 1393
+  - file_path: src/click/core.py
+    symbol: Context
+    start_line: 208
+    end_line: 400
+  - file_path: src/click/parser.py
+    symbol: _OptionParser
+    start_line: 224
+    end_line: 400
 - id: click_q03
   repo: click
   core12: false
@@ -902,6 +1673,23 @@ questions:
   expected_files:
   - src/click/core.py
   - src/click/decorators.py
+  expected_spans:
+  - file_path: src/click/core.py
+    symbol: Context
+    start_line: 208
+    end_line: 400
+  - file_path: src/click/core.py
+    symbol: Context.invoke
+    start_line: 857
+    end_line: 910
+  - file_path: src/click/decorators.py
+    symbol: pass_context
+    start_line: 28
+    end_line: 36
+  - file_path: src/click/decorators.py
+    symbol: pass_obj
+    start_line: 39
+    end_line: 48
 - id: click_q04
   repo: click
   core12: false
@@ -921,6 +1709,23 @@ questions:
   - src/click/types.py
   - src/click/core.py
   - tests
+  expected_spans:
+  - file_path: src/click/types.py
+    symbol: ParamType
+    start_line: 42
+    end_line: 181
+  - file_path: src/click/types.py
+    symbol: ParamType.convert
+    start_line: 121
+    end_line: 145
+  - file_path: src/click/core.py
+    symbol: Option
+    start_line: 2847
+    end_line: 2980
+  - file_path: src/click/core.py
+    symbol: Argument
+    start_line: 3587
+    end_line: 3699
 - id: click_q05
   repo: click
   core12: false
@@ -939,6 +1744,19 @@ questions:
   - src/click/exceptions.py
   - src/click/core.py
   - src/click/formatting.py
+  expected_spans:
+  - file_path: src/click/exceptions.py
+    symbol: UsageError
+    start_line: 68
+    end_line: 111
+  - file_path: src/click/formatting.py
+    symbol: HelpFormatter
+    start_line: 110
+    end_line: 299
+  - file_path: src/click/core.py
+    symbol: Command
+    start_line: 960
+    end_line: 1060
 - id: celery_q01
   repo: celery
   core12: false
@@ -958,6 +1776,23 @@ questions:
   - celery/app/base.py
   - celery/app/task.py
   - celery/app/registry.py
+  expected_spans:
+  - file_path: celery/app/base.py
+    symbol: task
+    start_line: 515
+    end_line: 585
+  - file_path: celery/app/base.py
+    symbol: _task_from_fun
+    start_line: 590
+    end_line: 633
+  - file_path: celery/app/registry.py
+    symbol: TaskRegistry
+    start_line: 12
+    end_line: 58
+  - file_path: celery/app/task.py
+    symbol: Task
+    start_line: 206
+    end_line: 350
 - id: celery_q02
   repo: celery
   core12: false
@@ -980,6 +1815,27 @@ questions:
   - celery/app/task.py
   - celery/app/amqp.py
   - celery/app/base.py
+  expected_spans:
+  - file_path: celery/app/task.py
+    symbol: delay
+    start_line: 523
+    end_line: 534
+  - file_path: celery/app/task.py
+    symbol: apply_async
+    start_line: 536
+    end_line: 708
+  - file_path: celery/app/base.py
+    symbol: send_task
+    start_line: 846
+    end_line: 1041
+  - file_path: celery/app/amqp.py
+    symbol: send_task_message
+    start_line: 506
+    end_line: 600
+  - file_path: celery/app/amqp.py
+    symbol: AMQP
+    start_line: 225
+    end_line: 350
 - id: celery_q03
   repo: celery
   core12: false
@@ -1001,6 +1857,23 @@ questions:
   - celery/worker/strategy.py
   - celery/concurrency/base.py
   - celery/concurrency/prefork.py
+  expected_spans:
+  - file_path: celery/worker/consumer/consumer.py
+    symbol: Consumer
+    start_line: 145
+    end_line: 250
+  - file_path: celery/worker/request.py
+    symbol: Request
+    start_line: 67
+    end_line: 180
+  - file_path: celery/worker/request.py
+    symbol: execute_using_pool
+    start_line: 341
+    end_line: 380
+  - file_path: celery/concurrency/base.py
+    symbol: BasePool
+    start_line: 47
+    end_line: 180
 - id: celery_q04
   repo: celery
   core12: false
@@ -1018,6 +1891,15 @@ questions:
   expected_files:
   - celery/result.py
   - celery/backends
+  expected_spans:
+  - file_path: celery/result.py
+    symbol: AsyncResult
+    start_line: 70
+    end_line: 250
+  - file_path: celery/result.py
+    symbol: get
+    start_line: 191
+    end_line: 280
 - id: celery_q05
   repo: celery
   core12: false
@@ -1039,6 +1921,19 @@ questions:
   - celery/app/base.py
   - celery/app/routes.py
   - celery/canvas.py
+  expected_spans:
+  - file_path: celery/app/task.py
+    symbol: apply_async
+    start_line: 536
+    end_line: 708
+  - file_path: celery/app/routes.py
+    symbol: Router
+    start_line: 56
+    end_line: 111
+  - file_path: celery/app/base.py
+    symbol: send_task
+    start_line: 846
+    end_line: 1041
 - id: fastapi_new_q01
   repo: fastapi
   symbol: RequestValidationError
@@ -1052,6 +1947,22 @@ questions:
   - fastapi/exception_handlers.py
   - fastapi/applications.py
   - fastapi/routing.py
+  expected_spans:
+  - file_path: fastapi/exceptions.py
+    symbol: RequestValidationError
+    start_line: 212
+    end_line: 221
+  - file_path: fastapi/exception_handlers.py
+    symbol: request_validation_exception_handler
+    start_line: 20
+    end_line: 26
+  - file_path: fastapi/applications.py
+    symbol: FastAPI
+    start_line: 42
+    end_line: 100
+  difficulty: medium
+  intent: explain_behavior
+  expected_mode: symbol
 - id: fastapi_new_q02
   repo: fastapi
   symbol: BackgroundTasks
@@ -1063,18 +1974,43 @@ questions:
   expected_files:
   - fastapi/background.py
   - fastapi/routing.py
+  expected_spans:
+  - file_path: fastapi/background.py
+    symbol: BackgroundTasks
+    start_line: 11
+    end_line: 61
+  - file_path: fastapi/routing.py
+    symbol: get_request_handler
+    start_line: 367
+    end_line: 550
+  difficulty: medium
+  intent: trace_dependency
+  expected_mode: symbol
 - id: fastapi_new_q03
   repo: fastapi
   symbol: lifespan
   question: How does the lifespan async context manager replace startup and shutdown events in modern FastAPI?
   expected_symbols:
   - lifespan
-  - Router
+  - APIRouter
   - FastAPI
-  - asynccontextmanager
+  - _DefaultLifespan
+  - _wrap_gen_lifespan_context
   expected_files:
   - fastapi/routing.py
   - fastapi/applications.py
+  expected_spans:
+  - file_path: fastapi/routing.py
+    symbol: APIRoute
+    start_line: 1110
+    end_line: 1208
+  - file_path: fastapi/applications.py
+    symbol: FastAPI
+    start_line: 42
+    end_line: 100
+  difficulty: medium
+  intent: explain_behavior
+  expected_mode: symbol
 - id: fastapi_new_q04
   repo: fastapi
   symbol: BaseHTTPMiddleware
@@ -1082,11 +2018,23 @@ questions:
   expected_symbols:
   - BaseHTTPMiddleware
   - middleware
-  - add_middleware
+  - build_middleware_stack
   - AsyncExitStackMiddleware
   expected_files:
   - fastapi/applications.py
   - fastapi/middleware/asyncexitstack.py
+  expected_spans:
+  - file_path: fastapi/applications.py
+    symbol: build_middleware_stack
+    start_line: 1020
+    end_line: 1068
+  - file_path: fastapi/middleware/asyncexitstack.py
+    symbol: AsyncExitStackMiddleware
+    start_line: 8
+    end_line: 18
+  difficulty: hard
+  intent: explain_behavior
+  expected_mode: symbol
 - id: fastapi_new_q05
   repo: fastapi
   symbol: WebSocket
@@ -1100,6 +2048,14 @@ questions:
   expected_files:
   - fastapi/routing.py
   - fastapi/websockets.py
+  expected_spans:
+  - file_path: fastapi/routing.py
+    symbol: APIWebSocketRoute
+    start_line: 785
+    end_line: 822
+  difficulty: hard
+  intent: trace_dependency
+  expected_mode: symbol
 - id: fastapi_new_q06
   repo: fastapi
   symbol: OAuth2PasswordBearer
@@ -1113,6 +2069,18 @@ questions:
   - fastapi/security/oauth2.py
   - fastapi/dependencies/utils.py
   - fastapi/dependencies/models.py
+  expected_spans:
+  - file_path: fastapi/security/oauth2.py
+    symbol: OAuth2PasswordBearer
+    start_line: 433
+    end_line: 544
+  - file_path: fastapi/dependencies/utils.py
+    symbol: solve_dependencies
+    start_line: 598
+    end_line: 735
+  difficulty: medium
+  intent: trace_dependency
+  expected_mode: symbol
 - id: pydantic_new_q01
   repo: pydantic
   symbol: field_validator
@@ -1124,6 +2092,22 @@ questions:
   expected_files:
   - pydantic/functional_validators.py
   - pydantic/_internal/_decorators.py
+  expected_spans:
+  - file_path: pydantic/functional_validators.py
+    symbol: field_validator
+    start_line: 410
+    end_line: 515
+  - file_path: pydantic/_internal/_decorators.py
+    symbol: FieldValidatorDecoratorInfo
+    start_line: 55
+    end_line: 74
+  - file_path: pydantic/_internal/_decorators.py
+    symbol: Decorator
+    start_line: 210
+    end_line: 281
+  difficulty: hard
+  intent: trace_dependency
+  expected_mode: symbol
 - id: pydantic_new_q02
   repo: pydantic
   symbol: computed_field
@@ -1139,6 +2123,22 @@ questions:
   - pydantic/_internal/_decorators.py
   - pydantic/_internal/_generate_schema.py
   - pydantic/_internal/_model_construction.py
+  expected_spans:
+  - file_path: pydantic/fields.py
+    symbol: ComputedFieldInfo
+    start_line: 1574
+    end_line: 1672
+  - file_path: pydantic/_internal/_generate_schema.py
+    symbol: _computed_field_schema
+    start_line: 2127
+    end_line: 2175
+  - file_path: pydantic/main.py
+    symbol: model_dump
+    start_line: 455
+    end_line: 519
+  difficulty: hard
+  intent: trace_dependency
+  expected_mode: symbol
 - id: pydantic_new_q03
   repo: pydantic
   symbol: ConfigDict
@@ -1152,6 +2152,22 @@ questions:
   - pydantic/config.py
   - pydantic/_internal/_config.py
   - pydantic/_internal/_generate_schema.py
+  expected_spans:
+  - file_path: pydantic/config.py
+    symbol: ConfigDict
+    start_line: 34
+    end_line: 180
+  - file_path: pydantic/_internal/_config.py
+    symbol: ConfigWrapper
+    start_line: 29
+    end_line: 130
+  - file_path: pydantic/_internal/_generate_schema.py
+    symbol: GenerateSchema
+    start_line: 349
+    end_line: 374
+  difficulty: hard
+  intent: trace_dependency
+  expected_mode: symbol
 - id: pydantic_new_q04
   repo: pydantic
   symbol: SecretStr
@@ -1162,6 +2178,14 @@ questions:
   - __repr__
   expected_files:
   - pydantic/types.py
+  expected_spans:
+  - file_path: pydantic/types.py
+    symbol: SecretStr
+    start_line: 1812
+    end_line: 1876
+  difficulty: easy
+  intent: explain_behavior
+  expected_mode: symbol
 - id: pydantic_new_q05
   repo: pydantic
   symbol: TypeAdapter
@@ -1174,6 +2198,22 @@ questions:
   expected_files:
   - pydantic/type_adapter.py
   - pydantic/_internal/_generate_schema.py
+  expected_spans:
+  - file_path: pydantic/type_adapter.py
+    symbol: TypeAdapter
+    start_line: 70
+    end_line: 250
+  - file_path: pydantic/type_adapter.py
+    symbol: validate_python
+    start_line: 396
+    end_line: 453
+  - file_path: pydantic/_internal/_generate_schema.py
+    symbol: GenerateSchema
+    start_line: 349
+    end_line: 374
+  difficulty: medium
+  intent: explain_behavior
+  expected_mode: symbol
 - id: pydantic_new_q06
   repo: pydantic
   symbol: model_validator
@@ -1184,6 +2224,18 @@ questions:
   expected_files:
   - pydantic/functional_validators.py
   - pydantic/_internal/_decorators.py
+  expected_spans:
+  - file_path: pydantic/functional_validators.py
+    symbol: model_validator
+    start_line: 672
+    end_line: 737
+  - file_path: pydantic/_internal/_decorators.py
+    symbol: ModelValidatorDecoratorInfo
+    start_line: 134
+    end_line: 144
+  difficulty: medium
+  intent: explain_behavior
+  expected_mode: symbol
 - id: django_new_q01
   repo: django
   symbol: F
@@ -1196,6 +2248,22 @@ questions:
   expected_files:
   - django/db/models/expressions.py
   - django/db/models/sql/compiler.py
+  expected_spans:
+  - file_path: django/db/models/expressions.py
+    symbol: F
+    start_line: 882
+    end_line: 943
+  - file_path: django/db/models/expressions.py
+    symbol: CombinedExpression
+    start_line: 728
+    end_line: 812
+  - file_path: django/db/models/sql/compiler.py
+    symbol: SQLUpdateCompiler
+    start_line: 2033
+    end_line: 2230
+  difficulty: hard
+  intent: explain_behavior
+  expected_mode: symbol
 - id: django_new_q02
   repo: django
   symbol: Signal
@@ -1207,6 +2275,22 @@ questions:
   - receiver
   expected_files:
   - django/dispatch/dispatcher.py
+  expected_spans:
+  - file_path: django/dispatch/dispatcher.py
+    symbol: Signal
+    start_line: 68
+    end_line: 265
+  - file_path: django/dispatch/dispatcher.py
+    symbol: send
+    start_line: 219
+    end_line: 263
+  - file_path: django/dispatch/dispatcher.py
+    symbol: connect
+    start_line: 102
+    end_line: 177
+  difficulty: medium
+  intent: explain_behavior
+  expected_mode: symbol
 - id: django_new_q03
   repo: django
   symbol: BaseCommand
@@ -1218,6 +2302,22 @@ questions:
   - create_parser
   expected_files:
   - django/core/management/base.py
+  expected_spans:
+  - file_path: django/core/management/base.py
+    symbol: BaseCommand
+    start_line: 193
+    end_line: 380
+  - file_path: django/core/management/base.py
+    symbol: execute
+    start_line: 441
+    end_line: 476
+  - file_path: django/core/management/base.py
+    symbol: create_parser
+    start_line: 304
+    end_line: 378
+  difficulty: medium
+  intent: trace_dependency
+  expected_mode: symbol
 - id: django_new_q04
   repo: django
   symbol: GenericForeignKey
@@ -1229,6 +2329,18 @@ questions:
   expected_files:
   - django/contrib/contenttypes/fields.py
   - django/contrib/contenttypes/models.py
+  expected_spans:
+  - file_path: django/contrib/contenttypes/fields.py
+    symbol: GenericForeignKey
+    start_line: 28
+    end_line: 173
+  - file_path: django/contrib/contenttypes/models.py
+    symbol: ContentType
+    start_line: 134
+    end_line: 188
+  difficulty: hard
+  intent: trace_dependency
+  expected_mode: symbol
 - id: django_new_q05
   repo: django
   symbol: AUTH_USER_MODEL
@@ -1240,6 +2352,14 @@ questions:
   expected_files:
   - django/contrib/auth/__init__.py
   - django/apps/registry.py
+  expected_spans:
+  - file_path: django/contrib/auth/__init__.py
+    symbol: get_user_model
+    start_line: 261
+    end_line: 275
+  difficulty: medium
+  intent: explain_behavior
+  expected_mode: symbol
 - id: django_new_q06
   repo: django
   symbol: atomic
@@ -1256,6 +2376,26 @@ questions:
   - django/core/handlers/base.py
   - django/db/transaction.py
   - django/db/backends/base/base.py
+  expected_spans:
+  - file_path: django/db/transaction.py
+    symbol: Atomic
+    start_line: 155
+    end_line: 326
+  - file_path: django/db/transaction.py
+    symbol: atomic
+    start_line: 329
+    end_line: 336
+  - file_path: django/core/handlers/base.py
+    symbol: make_view_atomic
+    start_line: 347
+    end_line: 356
+  - file_path: django/db/backends/base/base.py
+    symbol: savepoint
+    start_line: 384
+    end_line: 402
+  difficulty: hard
+  intent: explain_behavior
+  expected_mode: symbol
 - id: flask_new_q01
   repo: flask
   symbol: session
@@ -1268,6 +2408,22 @@ questions:
   expected_files:
   - src/flask/sessions.py
   - src/flask/app.py
+  expected_spans:
+  - file_path: src/flask/sessions.py
+    symbol: SecureCookieSessionInterface
+    start_line: 284
+    end_line: 384
+  - file_path: src/flask/sessions.py
+    symbol: save_session
+    start_line: 337
+    end_line: 384
+  - file_path: src/flask/sessions.py
+    symbol: open_session
+    start_line: 323
+    end_line: 335
+  difficulty: medium
+  intent: trace_dependency
+  expected_mode: symbol
 - id: flask_new_q02
   repo: flask
   symbol: g
@@ -1281,6 +2437,22 @@ questions:
   - src/flask/globals.py
   - src/flask/ctx.py
   - src/flask/app.py
+  expected_spans:
+  - file_path: src/flask/globals.py
+    symbol: g
+    start_line: 47
+    end_line: 49
+  - file_path: src/flask/ctx.py
+    symbol: AppContext
+    start_line: 260
+    end_line: 450
+  - file_path: src/flask/app.py
+    symbol: do_teardown_appcontext
+    start_line: 1453
+    end_line: 1479
+  difficulty: medium
+  intent: explain_behavior
+  expected_mode: symbol
 - id: flask_new_q03
   repo: flask
   symbol: errorhandler
@@ -1292,6 +2464,18 @@ questions:
   expected_files:
   - src/flask/app.py
   - src/flask/sansio/scaffold.py
+  expected_spans:
+  - file_path: src/flask/sansio/scaffold.py
+    symbol: errorhandler
+    start_line: 598
+    end_line: 639
+  - file_path: src/flask/app.py
+    symbol: handle_user_exception
+    start_line: 865
+    end_line: 895
+  difficulty: medium
+  intent: explain_behavior
+  expected_mode: symbol
 - id: flask_new_q04
   repo: flask
   symbol: context_processor
@@ -1304,17 +2488,36 @@ questions:
   - src/flask/app.py
   - src/flask/templating.py
   - src/flask/sansio/scaffold.py
+  expected_spans:
+  - file_path: src/flask/sansio/scaffold.py
+    symbol: context_processor
+    start_line: 542
+    end_line: 556
+  - file_path: src/flask/app.py
+    symbol: update_template_context
+    start_line: 590
+    end_line: 618
+  difficulty: medium
+  intent: trace_dependency
+  expected_mode: symbol
 - id: flask_new_q05
   repo: flask
-  symbol: BaseConverter
+  symbol: url_map
   question: How do custom URL converters (like <int:id>) parse route segments and pass typed values to view functions?
   expected_symbols:
-  - BaseConverter
-  - to_python
-  - to_url
   - url_map
+  - url_map_class
+  - add_url_rule
   expected_files:
   - src/flask/sansio/app.py
+  expected_spans:
+  - file_path: src/flask/sansio/app.py
+    symbol: add_url_rule
+    start_line: 605
+    end_line: 661
+  difficulty: medium
+  intent: explain_behavior
+  expected_mode: symbol
 - id: flask_new_q06
   repo: flask
   symbol: AppGroup
@@ -1325,6 +2528,18 @@ questions:
   - with_appcontext
   expected_files:
   - src/flask/cli.py
+  expected_spans:
+  - file_path: src/flask/cli.py
+    symbol: AppGroup
+    start_line: 405
+    end_line: 437
+  - file_path: src/flask/cli.py
+    symbol: with_appcontext
+    start_line: 380
+    end_line: 402
+  difficulty: medium
+  intent: trace_dependency
+  expected_mode: symbol
 - id: sqlalchemy_new_q01
   repo: sqlalchemy
   symbol: select
@@ -1339,6 +2554,26 @@ questions:
   - lib/sqlalchemy/sql/selectable.py
   - lib/sqlalchemy/orm/session.py
   - lib/sqlalchemy/sql/compiler.py
+  expected_spans:
+  - file_path: lib/sqlalchemy/sql/_selectable_constructors.py
+    symbol: select
+    start_line: 574
+    end_line: 618
+  - file_path: lib/sqlalchemy/sql/selectable.py
+    symbol: Select
+    start_line: 5463
+    end_line: 5550
+  - file_path: lib/sqlalchemy/orm/session.py
+    symbol: execute
+    start_line: 2387
+    end_line: 2460
+  - file_path: lib/sqlalchemy/sql/compiler.py
+    symbol: SQLCompiler
+    start_line: 1123
+    end_line: 1200
+  difficulty: medium
+  intent: explain_behavior
+  expected_mode: symbol
 - id: sqlalchemy_new_q02
   repo: sqlalchemy
   symbol: selectinload
@@ -1347,10 +2582,23 @@ questions:
   - selectinload
   - joinedload
   - Load
-  - _generate
+  - _SelectInLoader
+  - _JoinedLoader
   expected_files:
   - lib/sqlalchemy/orm/strategy_options.py
   - lib/sqlalchemy/orm/strategies.py
+  expected_spans:
+  - file_path: lib/sqlalchemy/orm/strategies.py
+    symbol: _SelectInLoader
+    start_line: 2970
+    end_line: 3100
+  - file_path: lib/sqlalchemy/orm/strategies.py
+    symbol: _JoinedLoader
+    start_line: 2150
+    end_line: 2250
+  difficulty: hard
+  intent: explain_behavior
+  expected_mode: symbol
 - id: sqlalchemy_new_q03
   repo: sqlalchemy
   symbol: event
@@ -1364,6 +2612,26 @@ questions:
   - lib/sqlalchemy/event/api.py
   - lib/sqlalchemy/event/base.py
   - lib/sqlalchemy/orm/events.py
+  expected_spans:
+  - file_path: lib/sqlalchemy/event/api.py
+    symbol: listens_for
+    start_line: 124
+    end_line: 170
+  - file_path: lib/sqlalchemy/event/api.py
+    symbol: listen
+    start_line: 39
+    end_line: 123
+  - file_path: lib/sqlalchemy/event/base.py
+    symbol: _Dispatch
+    start_line: 92
+    end_line: 217
+  - file_path: lib/sqlalchemy/orm/events.py
+    symbol: MapperEvents
+    start_line: 725
+    end_line: 800
+  difficulty: medium
+  intent: trace_dependency
+  expected_mode: symbol
 - id: sqlalchemy_new_q04
   repo: sqlalchemy
   symbol: autoload_with
@@ -1375,6 +2643,22 @@ questions:
   expected_files:
   - lib/sqlalchemy/sql/schema.py
   - lib/sqlalchemy/engine/reflection.py
+  expected_spans:
+  - file_path: lib/sqlalchemy/sql/schema.py
+    symbol: Table
+    start_line: 562
+    end_line: 720
+  - file_path: lib/sqlalchemy/engine/reflection.py
+    symbol: Inspector
+    start_line: 183
+    end_line: 270
+  - file_path: lib/sqlalchemy/engine/reflection.py
+    symbol: reflect_table
+    start_line: 1477
+    end_line: 1600
+  difficulty: hard
+  intent: trace_dependency
+  expected_mode: symbol
 - id: sqlalchemy_new_q05
   repo: sqlalchemy
   symbol: AsyncSession
@@ -1386,6 +2670,22 @@ questions:
   expected_files:
   - lib/sqlalchemy/ext/asyncio/session.py
   - lib/sqlalchemy/util/concurrency.py
+  expected_spans:
+  - file_path: lib/sqlalchemy/ext/asyncio/session.py
+    symbol: AsyncSession
+    start_line: 210
+    end_line: 340
+  - file_path: lib/sqlalchemy/ext/asyncio/session.py
+    symbol: execute
+    start_line: 429
+    end_line: 463
+  - file_path: lib/sqlalchemy/util/concurrency.py
+    symbol: greenlet_spawn
+    start_line: 177
+    end_line: 224
+  difficulty: hard
+  intent: explain_behavior
+  expected_mode: symbol
 - id: sqlalchemy_new_q06
   repo: sqlalchemy
   symbol: composite
@@ -1399,6 +2699,14 @@ questions:
   - lib/sqlalchemy/orm/_orm_constructors.py
   - lib/sqlalchemy/orm/descriptor_props.py
   - lib/sqlalchemy/orm/interfaces.py
+  expected_spans:
+  - file_path: lib/sqlalchemy/orm/descriptor_props.py
+    symbol: CompositeProperty
+    start_line: 194
+    end_line: 370
+  difficulty: medium
+  intent: explain_behavior
+  expected_mode: symbol
 - id: click_new_q01
   repo: click
   symbol: prompt
@@ -1410,6 +2718,14 @@ questions:
   - hide_input
   expected_files:
   - src/click/termui.py
+  expected_spans:
+  - file_path: src/click/termui.py
+    symbol: prompt
+    start_line: 132
+    end_line: 242
+  difficulty: medium
+  intent: explain_behavior
+  expected_mode: symbol
 - id: click_new_q02
   repo: click
   symbol: File
@@ -1421,6 +2737,18 @@ questions:
   expected_files:
   - src/click/types.py
   - src/click/_compat.py
+  expected_spans:
+  - file_path: src/click/types.py
+    symbol: File
+    start_line: 857
+    end_line: 985
+  - file_path: src/click/_compat.py
+    symbol: open_stream
+    start_line: 374
+    end_line: 452
+  difficulty: medium
+  intent: trace_dependency
+  expected_mode: symbol
 - id: click_new_q03
   repo: click
   symbol: pass_context
@@ -1432,6 +2760,22 @@ questions:
   expected_files:
   - src/click/decorators.py
   - src/click/core.py
+  expected_spans:
+  - file_path: src/click/decorators.py
+    symbol: pass_context
+    start_line: 28
+    end_line: 36
+  - file_path: src/click/core.py
+    symbol: Context
+    start_line: 208
+    end_line: 400
+  - file_path: src/click/core.py
+    symbol: Context.invoke
+    start_line: 857
+    end_line: 910
+  difficulty: medium
+  intent: explain_behavior
+  expected_mode: symbol
 - id: click_new_q04
   repo: click
   symbol: CliRunner
@@ -1443,6 +2787,26 @@ questions:
   - Result
   expected_files:
   - src/click/testing.py
+  expected_spans:
+  - file_path: src/click/testing.py
+    symbol: CliRunner
+    start_line: 317
+    end_line: 380
+  - file_path: src/click/testing.py
+    symbol: CliRunner.invoke
+    start_line: 596
+    end_line: 740
+  - file_path: src/click/testing.py
+    symbol: isolation
+    start_line: 399
+    end_line: 594
+  - file_path: src/click/testing.py
+    symbol: Result
+    start_line: 231
+    end_line: 314
+  difficulty: medium
+  intent: explain_behavior
+  expected_mode: symbol
 - id: click_new_q05
   repo: click
   symbol: get_command
@@ -1453,6 +2817,22 @@ questions:
   - resolve_command
   expected_files:
   - src/click/core.py
+  expected_spans:
+  - file_path: src/click/core.py
+    symbol: Group
+    start_line: 1643
+    end_line: 1750
+  - file_path: src/click/core.py
+    symbol: Group.get_command
+    start_line: 1931
+    end_line: 1935
+  - file_path: src/click/core.py
+    symbol: Group.resolve_command
+    start_line: 2060
+    end_line: 2085
+  difficulty: medium
+  intent: explain_behavior
+  expected_mode: symbol
 - id: click_new_q06
   repo: click
   symbol: Argument
@@ -1467,6 +2847,30 @@ questions:
   expected_files:
   - src/click/core.py
   - src/click/parser.py
+  expected_spans:
+  - file_path: src/click/core.py
+    symbol: Argument
+    start_line: 3587
+    end_line: 3699
+  - file_path: src/click/core.py
+    symbol: Option
+    start_line: 2847
+    end_line: 2980
+  - file_path: src/click/core.py
+    symbol: Option.add_to_parser
+    start_line: 3223
+    end_line: 3260
+  - file_path: src/click/parser.py
+    symbol: _OptionParser.add_option
+    start_line: 265
+    end_line: 288
+  - file_path: src/click/parser.py
+    symbol: _OptionParser.add_argument
+    start_line: 290
+    end_line: 296
+  difficulty: hard
+  intent: explain_behavior
+  expected_mode: symbol
 - id: celery_new_q01
   repo: celery
   symbol: retry
@@ -1480,9 +2884,25 @@ questions:
   - celery/app/task.py
   - celery/app/autoretry.py
   - celery/exceptions.py
+  expected_spans:
+  - file_path: celery/app/task.py
+    symbol: retry
+    start_line: 756
+    end_line: 867
+  - file_path: celery/exceptions.py
+    symbol: Retry
+    start_line: 145
+    end_line: 184
+  - file_path: celery/exceptions.py
+    symbol: MaxRetriesExceededError
+    start_line: 242
+    end_line: 248
+  difficulty: hard
+  intent: trace_dependency
+  expected_mode: symbol
 - id: celery_new_q02
   repo: celery
-  symbol: task_routes
+  symbol: Router
   question: How does the Router evaluate task_routes (legacy CELERY_ROUTES) before publishing a task?
   expected_symbols:
   - Router
@@ -1490,6 +2910,14 @@ questions:
   - expand_destination
   expected_files:
   - celery/app/routes.py
+  expected_spans:
+  - file_path: celery/app/routes.py
+    symbol: Router
+    start_line: 56
+    end_line: 111
+  difficulty: medium
+  intent: explain_behavior
+  expected_mode: symbol
 - id: celery_new_q03
   repo: celery
   symbol: chain
@@ -1502,21 +2930,49 @@ questions:
   expected_files:
   - celery/canvas.py
   - celery/app/task.py
+  expected_spans:
+  - file_path: celery/canvas.py
+    symbol: chain
+    start_line: 1322
+    end_line: 1382
+  - file_path: celery/canvas.py
+    symbol: Signature
+    start_line: 233
+    end_line: 400
+  - file_path: celery/app/task.py
+    symbol: apply_async
+    start_line: 536
+    end_line: 708
+  difficulty: hard
+  intent: trace_dependency
+  expected_mode: symbol
 - id: celery_new_q04
   repo: celery
-  symbol: Pool
+  symbol: TaskPool
   question: How does the worker delegate task execution to different pool implementations like prefork vs gevent?
   expected_symbols:
-  - Pool
+  - BasePool
   - TaskPool
   - apply_async
   - start
   expected_files:
   - celery/concurrency/base.py
   - celery/concurrency/prefork.py
+  expected_spans:
+  - file_path: celery/concurrency/base.py
+    symbol: BasePool
+    start_line: 47
+    end_line: 180
+  - file_path: celery/concurrency/prefork.py
+    symbol: TaskPool
+    start_line: 95
+    end_line: 216
+  difficulty: medium
+  intent: explain_behavior
+  expected_mode: symbol
 - id: celery_new_q05
   repo: celery
-  symbol: beat
+  symbol: Scheduler
   question: How does celery beat schedule periodic tasks and send them to the broker at the designated intervals?
   expected_symbols:
   - Scheduler
@@ -1525,6 +2981,22 @@ questions:
   - apply_async
   expected_files:
   - celery/beat.py
+  expected_spans:
+  - file_path: celery/beat.py
+    symbol: Scheduler
+    start_line: 219
+    end_line: 370
+  - file_path: celery/beat.py
+    symbol: tick
+    start_line: 326
+    end_line: 380
+  - file_path: celery/beat.py
+    symbol: apply_entry
+    start_line: 279
+    end_line: 320
+  difficulty: medium
+  intent: explain_behavior
+  expected_mode: symbol
 - id: celery_new_q06
   repo: celery
   symbol: SoftTimeLimitExceeded
@@ -1539,3 +3011,19 @@ questions:
   - celery/worker/state.py
   - celery/worker/request.py
   - celery/concurrency/prefork.py
+  expected_spans:
+  - file_path: celery/exceptions.py
+    symbol: SoftTimeLimitExceeded
+    start_line: 56
+    end_line: 56
+  - file_path: celery/exceptions.py
+    symbol: TimeLimitExceeded
+    start_line: 56
+    end_line: 56
+  - file_path: celery/worker/request.py
+    symbol: on_timeout
+    start_line: 529
+    end_line: 580
+  difficulty: hard
+  intent: trace_dependency
+  expected_mode: symbol

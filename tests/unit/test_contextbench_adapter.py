@@ -95,6 +95,49 @@ def test_names_only_and_metadata_tools_do_not_claim_source_spans():
     assert result["traj_data"]["pred_spans"] == {}
 
 
+def test_context_tool_prefers_exact_rendered_spans_over_full_symbol_range():
+    record = {
+        "instance_id": "owner__repo-rendered",
+        "events": [
+            {
+                "tool": "ask_code",
+                "result": {
+                    "ok": True,
+                    "render": "full",
+                    "files": ["src/a.py"],
+                    "symbols": [
+                        {
+                            "name": "alpha",
+                            "file_path": "src/a.py",
+                            "has_code": True,
+                            "start_line": 10,
+                            "end_line": 30,
+                            "rendered_spans": [[10, 11], [19, 20]],
+                        },
+                        {
+                            "name": "synthetic",
+                            "file_path": "src/a.py",
+                            "has_code": True,
+                            "start_line": 40,
+                            "end_line": 50,
+                            "rendered_spans": [],
+                        },
+                    ],
+                },
+            }
+        ],
+    }
+
+    result = convert_instance(record)
+
+    assert result["traj_data"]["pred_spans"] == {
+        "src/a.py": [
+            {"type": "line", "start": 10, "end": 11},
+            {"type": "line", "start": 19, "end": 20},
+        ]
+    }
+
+
 def test_batch_expands_subtools_and_ignores_failed_or_non_context_results():
     event = {
         "tool": "batch",

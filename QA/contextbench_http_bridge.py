@@ -22,6 +22,7 @@ def request_context(
     token_budget: int,
     timeout: float,
     bearer_token: str = "",
+    span_line_rerank: bool = False,
 ) -> dict[str, Any]:
     body = json.dumps(
         {
@@ -29,6 +30,7 @@ def request_context(
             "with_context": True,
             "intent_budget": True,
             "token_budget": token_budget,
+            "span_line_rerank": span_line_rerank,
         }
     ).encode()
     headers = {"Content-Type": "application/json", "X-Workspace": workspace}
@@ -58,19 +60,20 @@ def to_mcp_event(response: dict[str, Any], instance_id: str) -> dict[str, Any]:
                 continue
             files.add(path)
             code = item.get("code")
-            symbols.append(
-                {
-                    "uid": str(item.get("uid") or ""),
-                    "name": str(item.get("name") or ""),
-                    "file_path": path,
-                    "role": item.get("role"),
-                    "depth": int(item.get("distance_from_seed") or 0),
-                    "expansion_step": item.get("expansion_step"),
-                    "has_code": isinstance(code, str) and bool(code.strip()),
-                    "start_line": item.get("start_line"),
-                    "end_line": item.get("end_line"),
-                }
-            )
+            symbol = {
+                "uid": str(item.get("uid") or ""),
+                "name": str(item.get("name") or ""),
+                "file_path": path,
+                "role": item.get("role"),
+                "depth": int(item.get("distance_from_seed") or 0),
+                "expansion_step": item.get("expansion_step"),
+                "has_code": isinstance(code, str) and bool(code.strip()),
+                "start_line": item.get("start_line"),
+                "end_line": item.get("end_line"),
+            }
+            if "rendered_spans" in item:
+                symbol["rendered_spans"] = item["rendered_spans"]
+            symbols.append(symbol)
     result = {
         "tool": "ask_code",
         "ok": True,
@@ -122,6 +125,13 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--log", type=Path, default=os.getenv("CONTEXTBENCH_EVENT_LOG"))
     parser.add_argument("--token-budget", type=int, default=6000)
     parser.add_argument("--timeout", type=float, default=60.0)
+    parser.add_argument(
+        "--span-line-rerank",
+        action=argparse.BooleanOptionalAction,
+        default=os.getenv("SURGICAL_CONTEXT_SPAN_LINE_RERANK", "").strip().lower()
+        in {"1", "true", "yes", "on"},
+        help="Enable query-ranked source windows inside selected symbols.",
+    )
     return parser
 
 
@@ -139,6 +149,7 @@ def main(argv: list[str] | None = None) -> int:
             token_budget=max(400, min(args.token_budget, 32_000)),
             timeout=args.timeout,
             bearer_token=os.getenv("SURGICAL_CONTEXT_BEARER_TOKEN", ""),
+            span_line_rerank=args.span_line_rerank,
         )
     except (OSError, ValueError, urllib.error.HTTPError) as exc:
         print(f"Surgical Context request failed: {exc}", file=sys.stderr)
