@@ -190,6 +190,8 @@ def _semantic_score(distance: float | None) -> float:
     if distance is None:
         return 0.0
     cosine = _cosine_from_l2_distance(float(distance))
+    if cosine is None:
+        return 0.0
     return max(0.0, min(1.0, (1.0 + cosine) / 2.0))
 
 

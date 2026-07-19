@@ -240,7 +240,7 @@ def select_context_seeds(
                 and role not in active_intent_roles
                 and _is_structural_retrieval_role(role)
             )
-            if non_intent_cap_active:
+            if non_intent_cap_active and non_intent_structural_role_soft_cap is not None:
                 role_cap = min(role_cap, non_intent_structural_role_soft_cap)
             ranked_slice = set(role_keys[:role_cap])
             anchor_keys = [key for key in role_keys if _is_hard_reserved(reasons_by_key[key])]

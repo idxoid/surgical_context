@@ -347,8 +347,8 @@ def _normalise_expected_spans(entry: dict[str, Any]) -> list[dict[str, Any]]:
             symbol = default_symbol
             file_path = default_file
         elif isinstance(raw, dict):
-            start = raw.get("start_line", raw.get("start", raw.get("line", 0)))
-            end = raw.get("end_line", raw.get("end", start))
+            start = int(raw.get("start_line", raw.get("start", raw.get("line", 0))) or 0)
+            end = int(raw.get("end_line", raw.get("end", start)) or start)
             symbol = str(raw.get("symbol") or default_symbol)
             file_path = str(raw.get("file_path") or raw.get("file") or default_file)
         else:
@@ -641,8 +641,8 @@ def _candidate_rank_spend_audit(
         else:
             field = "other_tokens"
         uid = str(getattr(transaction, "uid", "") or "")
-        rank = rank_by_uid.get(uid)
-        row = bucket_rows[bucket_for(rank)]
+        spend_rank = rank_by_uid.get(uid)
+        row = bucket_rows[bucket_for(spend_rank)]
         row[field] += tokens
         row["transactions"] += 1
         totals[field] += tokens
@@ -658,9 +658,9 @@ def _candidate_rank_spend_audit(
                 upgrade_attribution["edge_type"][edge_type] += attributed_tokens
                 upgrade_attribution["depth"][depth] += attributed_tokens
                 upgrade_attribution["scope_evidence"][f"{scope}|{evidence}"] += attributed_tokens
-        if field == "upgrade_tokens" and rank is not None:
+        if field == "upgrade_tokens" and spend_rank is not None:
             for cutoff in _GOLD_RANK_CUTOFFS:
-                if rank <= cutoff:
+                if spend_rank <= cutoff:
                     upgrade_tokens_at[str(cutoff)] += tokens
 
     upgrade_total = totals["upgrade_tokens"]
@@ -970,8 +970,8 @@ def _new_candidate_cohort_row() -> dict[str, int | float]:
 
 
 def _finalise_candidate_cohort_row(
-    row: dict[str, int | float],
-) -> dict[str, int | float]:
+    row: dict[str, Any],
+) -> dict[str, Any]:
     candidates = int(row.get("candidates", 0))
     labelled_gold = sum(
         int(row.get(field, 0)) for field in ("owner_gold", "symbol_gold", "file_gold")
@@ -1941,7 +1941,7 @@ def _aggregate_candidate_rank_spend(results: list[QuestionResult]) -> dict[str, 
     bucket_labels = [label for label, _lower, _upper in _RANK_SPEND_BUCKETS] + ["unranked"]
     by_rank: dict[str, dict[str, int | float]] = {}
     for label in bucket_labels:
-        row = {
+        row: dict[str, int | float] = {
             field: sum(
                 int((audit.get("by_rank", {}).get(label, {}) or {}).get(field, 0))
                 for audit in audits
@@ -2070,7 +2070,9 @@ def _aggregate_candidate_cohorts(results: list[QuestionResult]) -> dict[str, Any
         "by_exact_symbol_prior",
         "by_role_axis_intent",
     )
-    groups = {dimension: defaultdict(_new_candidate_cohort_row) for dimension in dimensions}
+    groups: dict[str, defaultdict[str, dict[str, int | float]]] = {
+        dimension: defaultdict(_new_candidate_cohort_row) for dimension in dimensions
+    }
     by_top_intent: defaultdict[str, dict[str, int | float]] = defaultdict(_new_candidate_cohort_row)
     by_top_intent_role: defaultdict[str, dict[str, int | float]] = defaultdict(
         _new_candidate_cohort_row

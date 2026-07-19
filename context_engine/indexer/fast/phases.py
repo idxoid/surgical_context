@@ -173,10 +173,13 @@ def _parse_chunk_in_process(
     back as strings so the parent can record them in the job log without one
     bad file poisoning the chunk.
     """
+    extractor = _PROC_EXTRACTOR
+    if extractor is None:
+        raise RuntimeError("worker used before its process initializer set _PROC_EXTRACTOR")
     out: list[tuple[str, FileDiff | None, str]] = []
     for path, existing in chunk:
         try:
-            out.append((path, _parse_one(path, _PROC_EXTRACTOR, existing), ""))
+            out.append((path, _parse_one(path, extractor, existing), ""))
         except Exception as exc:
             out.append((path, None, f"{type(exc).__name__}: {exc}"))
     return out

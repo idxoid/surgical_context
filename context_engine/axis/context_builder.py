@@ -3492,7 +3492,7 @@ def _decoupled_upgrade_gain_raw(
     gain += evidence_bonus
     gain += 0.05 if not bundle.passive else 0.03
     gain -= 0.50 * min(1.0, max(0.0, span_redundancy))
-    return gain
+    return float(gain)
 
 
 def _direct_seed_evidence_by_uid(
@@ -3653,6 +3653,12 @@ def _first_rendered_entry_for_uid(
     return None
 
 
+def _selected_entry_index(entry: dict[str, object]) -> int:
+    """Stable pool-rank key for a selection entry; entries without one sort last."""
+    value = entry.get("index", 1 << 30)
+    return value if isinstance(value, int) else 1 << 30
+
+
 def _apply_decoupled_seed_span_reserve(
     selected: list[dict[str, object]],
     static: list[_BundleStatic],
@@ -3680,7 +3686,7 @@ def _apply_decoupled_seed_span_reserve(
     upgraded_uids: set[str] = set()
     ordered_entries = sorted(
         range(len(selected)),
-        key=lambda entry_index: int(selected[entry_index].get("index", 1 << 30)),
+        key=lambda entry_index: _selected_entry_index(selected[entry_index]),
     )
     seen: set[str] = set()
     for entry_index in ordered_entries:
@@ -3771,7 +3777,7 @@ def _apply_decoupled_rank_decay_credit_upgrades(
             richest_by_uid[symbol.uid] = symbol
     ordered_entries = sorted(
         range(len(selected)),
-        key=lambda entry_index: int(selected[entry_index].get("index", 1 << 30)),
+        key=lambda entry_index: _selected_entry_index(selected[entry_index]),
     )
     used, reserved_seed_span_uids = _apply_decoupled_seed_span_reserve(
         selected,
@@ -3974,7 +3980,7 @@ def _apply_rank_decay_credit_upgrades(
     """
     ordered_entries = sorted(
         range(len(selected)),
-        key=lambda entry_index: int(selected[entry_index].get("index", 1 << 30)),
+        key=lambda entry_index: _selected_entry_index(selected[entry_index]),
     )
     render_cache: dict[tuple[int, str], tuple[ContextBundle, int]] = {}
     for entry_index in ordered_entries:
