@@ -735,9 +735,7 @@ def _try_symbol_targeted_retrieval(
                     rank_decay_rate=options.rank_decay_rate,
                     rank_decay_max_coverage_share=(options.rank_decay_max_coverage_share),
                     decoupled_symbol_body_allocation=(options.decoupled_symbol_body_allocation),
-                    decoupled_seed_span_reserve_share=(
-                        options.decoupled_seed_span_reserve_share
-                    ),
+                    decoupled_seed_span_reserve_share=(options.decoupled_seed_span_reserve_share),
                     query_scoring=None,
                     semantic_expansion_alpha=0.70,
                     semantic_expansion_structural_reserve=1,
@@ -1755,9 +1753,7 @@ def _run_axis_retrieval_impl(
                 rank_decay_rate=cfg.rank_decay_rate,
                 rank_decay_max_coverage_share=cfg.rank_decay_max_coverage_share,
                 decoupled_symbol_body_allocation=(cfg.decoupled_symbol_body_allocation),
-                decoupled_seed_span_reserve_share=(
-                    cfg.decoupled_seed_span_reserve_share
-                ),
+                decoupled_seed_span_reserve_share=(cfg.decoupled_seed_span_reserve_share),
                 evidence_graph_fanout=cfg.evidence_graph_fanout,
                 evidence_graph_fanout_min=cfg.evidence_graph_fanout_min,
                 evidence_graph_fanout_protected_head=(cfg.evidence_graph_fanout_protected_head),
@@ -2111,9 +2107,7 @@ def _run_axis_retrieval_impl(
                     rank_decay_rate=cfg.rank_decay_rate,
                     rank_decay_max_coverage_share=(cfg.rank_decay_max_coverage_share),
                     decoupled_symbol_body_allocation=(cfg.decoupled_symbol_body_allocation),
-                    decoupled_seed_span_reserve_share=(
-                        cfg.decoupled_seed_span_reserve_share
-                    ),
+                    decoupled_seed_span_reserve_share=(cfg.decoupled_seed_span_reserve_share),
                     query_scoring=query_scoring,
                     semantic_expansion_alpha=cfg.context_semantic_expansion_alpha,
                     semantic_expansion_structural_reserve=(

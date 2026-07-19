@@ -145,6 +145,25 @@ def bar():
         assert len(calls) > 0
         assert any(call.get("callee_name") == "bar" for call in calls)
 
+    def test_module_scope_call_attaches_to_module_symbol(self, adapter):
+        source = """
+def getattr_migration(module):
+    return module
+
+__getattr__ = getattr_migration(__name__)
+"""
+        calls = adapter.extract_calls_from_source(source, "shim.py")
+        module_uid = adapter._module_symbol_identity("shim.py")[2]
+        hits = [c for c in calls if c.get("callee_name") == "getattr_migration"]
+        assert hits, calls
+        assert hits[0]["caller_uid"] == module_uid
+
+    def test_module_scope_call_env_disabled(self, adapter, monkeypatch):
+        monkeypatch.setenv("AXIS_MODULE_SCOPE_CALLS", "0")
+        source = "def f():\n    pass\n\nx = f()\n"
+        calls = adapter.extract_calls_from_source(source, "shim.py")
+        assert not [c for c in calls if c.get("callee_name") == "f"]
+
     def test_external_from_import_sets_qualified_name_and_args(self, adapter):
         source = """
 from pathlib import Path

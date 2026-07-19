@@ -3396,9 +3396,20 @@ class PythonAdapter(TreeSitterAdapter):
 
         parent = self._py_enclosing_call_parent(node)
         if parent is None:
-            return None
+            # Module-scope call (``__getattr__ = getattr_migration(__name__)``,
+            # ``app = Flask(__name__)`` outside any def/class): the caller is
+            # the file's module Symbol — the anchor synthesized for exactly
+            # this ("module-execution-time assignments"). Dropping these left
+            # import-time wiring structurally invisible: pydantic's migration
+            # shim modules produced zero in-project edges into
+            # ``getattr_migration``.
+            import os
 
-        caller_uid = self._uid_for_node(parent, file_path)
+            if os.getenv("AXIS_MODULE_SCOPE_CALLS", "1") == "0":
+                return None
+            caller_uid = self._module_symbol_identity(file_path)[2]
+        else:
+            caller_uid = self._uid_for_node(parent, file_path)
         if func_node.type == "identifier":
             call_name = _node_text(func_node)
             rel_type, tier, confidence, callee_uid, callee_qualified_name = (

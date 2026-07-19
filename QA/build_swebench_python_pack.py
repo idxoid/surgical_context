@@ -31,9 +31,7 @@ from typing import Any
 import yaml
 
 # Unified-diff hunk header: @@ -old_start[,old_count] +new_start[,new_count] @@
-_HUNK = re.compile(
-    r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@"
-)
+_HUNK = re.compile(r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@")
 _GIT_DIFF = re.compile(r"^diff --git a/(.+?) b/(.+)$")
 
 # Map SWE-bench ``owner/name`` → short pack id (matches questions_python.yaml where possible).
