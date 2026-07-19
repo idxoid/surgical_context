@@ -392,7 +392,7 @@ def main() -> None:
         )
 
     n = len(pack["questions"])
-    by = defaultdict(int)
+    by: dict[str, int] = defaultdict(int)
     for q in pack["questions"]:
         by[q["repo"]] += 1
     print(f"Wrote {n} questions → {args.output}")

@@ -293,6 +293,7 @@ def test_axis_benchmark_records_precision_layers_and_token_split() -> None:
     assert summary["overall_pool_mean_precision"] == 0.5
     assert summary["overall_mean_token_precision"] == result.token_precision
     assert summary["per_repo"]["repo"]["mean_precision"] == 0.5
+    assert summary["per_repo"]["repo"]["mean_token_precision"] == result.token_precision
     row = summary["per_question"][0]
     assert row["bundle_precision"] == 0.5
     assert row["expected_tokens"] == expected_tokens
@@ -375,6 +376,9 @@ def test_axis_benchmark_records_exact_symbol_and_span_recall() -> None:
     assert summary["overall_pool_span_recall"] == 1.0
     assert summary["overall_bundle_span_recall"] == 0.8
     assert summary["per_repo"]["repo"]["bundle_span_owner_recall"] == 1.0
+    assert summary["per_repo"]["repo"]["seed_symbol_recall"] == 0.5
+    assert summary["per_repo"]["repo"]["pool_symbol_recall"] == 0.5
+    assert summary["per_repo"]["repo"]["bundle_symbol_recall"] == 0.5
 
 
 def test_span_owner_recall_requires_the_file_symbol_pair_and_deduplicates_ranges() -> None:
