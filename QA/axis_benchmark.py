@@ -2211,6 +2211,8 @@ def summarise(results: list[QuestionResult]) -> dict[str, Any]:
             "mean_token_precision": sum(r.token_precision for r in items) / len(items),
             "mean_expected_tokens": sum(r.expected_tokens for r in items) / len(items),
             "mean_other_tokens": sum(r.other_tokens for r in items) / len(items),
+            "symbol_gold_questions": sum(1 for r in items if r.expected_symbols),
+            "span_gold_questions": sum(1 for r in items if r.expected_spans),
             "seed_symbol_recall": _items_mean_with_gold(
                 items, "seed_symbol_recall", "expected_symbols"
             ),
@@ -2826,15 +2828,20 @@ def _print_per_repo_table(summary: dict[str, Any]) -> None:
         "full s/p/b",
     )
 
+    def _gold_cell(value: float, gold_questions: int) -> str:
+        # A gold-conditioned mean over zero gold-bearing questions is not a
+        # measured 0.000 — the pack simply has no such gold; render a dash.
+        return f"{value:.3f}" if gold_questions else "-"
+
     def _row(
         label: str,
         questions: int,
         seed: float,
         pool: float,
         bundle: float,
-        sym: float,
-        span_own: float,
-        span: float,
+        sym: str,
+        span_own: str,
+        span: str,
         tok_prec: float,
         file_prec: float,
         exp_tok: float,
@@ -2849,9 +2856,9 @@ def _print_per_repo_table(summary: dict[str, Any]) -> None:
             f"{seed:.3f}",
             f"{pool:.3f}",
             f"{bundle:.3f}",
-            f"{sym:.3f}",
-            f"{span_own:.3f}",
-            f"{span:.3f}",
+            sym,
+            span_own,
+            span,
             f"{tok_prec:.3f}",
             f"{file_prec:.3f}",
             f"{exp_tok:.0f}/{other_tok:.0f}",
@@ -2860,6 +2867,8 @@ def _print_per_repo_table(summary: dict[str, Any]) -> None:
 
     rows: list[tuple[str, ...]] = []
     for repo, info in per_repo.items():
+        sym_gold = int(info.get("symbol_gold_questions", 0))
+        span_gold = int(info.get("span_gold_questions", 0))
         rows.append(
             _row(
                 str(repo),
@@ -2867,9 +2876,9 @@ def _print_per_repo_table(summary: dict[str, Any]) -> None:
                 info.get("seed_mean_recall", 0.0),
                 info.get("pool_mean_recall", 0.0),
                 info["mean_recall"],
-                info.get("bundle_symbol_recall", 0.0),
-                info.get("bundle_span_owner_recall", 0.0),
-                info.get("bundle_span_recall", 0.0),
+                _gold_cell(info.get("bundle_symbol_recall", 0.0), sym_gold),
+                _gold_cell(info.get("bundle_span_owner_recall", 0.0), span_gold),
+                _gold_cell(info.get("bundle_span_recall", 0.0), span_gold),
                 info.get("mean_token_precision", 0.0),
                 info.get("mean_precision", 0.0),
                 info.get("mean_expected_tokens", 0.0),
@@ -2879,6 +2888,8 @@ def _print_per_repo_table(summary: dict[str, Any]) -> None:
                 info["full_recall"],
             )
         )
+    all_sym_gold = int(summary.get("symbol_gold_questions", 0))
+    all_span_gold = int(summary.get("span_gold_questions", 0))
     rows.append(
         _row(
             "ALL",
@@ -2886,9 +2897,9 @@ def _print_per_repo_table(summary: dict[str, Any]) -> None:
             float(summary.get("overall_seed_mean_recall", 0.0)),
             float(summary.get("overall_pool_mean_recall", 0.0)),
             float(summary.get("overall_mean_recall", 0.0)),
-            float(summary.get("overall_bundle_symbol_recall", 0.0)),
-            float(summary.get("overall_bundle_span_owner_recall", 0.0)),
-            float(summary.get("overall_bundle_span_recall", 0.0)),
+            _gold_cell(float(summary.get("overall_bundle_symbol_recall", 0.0)), all_sym_gold),
+            _gold_cell(float(summary.get("overall_bundle_span_owner_recall", 0.0)), all_span_gold),
+            _gold_cell(float(summary.get("overall_bundle_span_recall", 0.0)), all_span_gold),
             float(summary.get("overall_mean_token_precision", 0.0)),
             float(summary.get("overall_mean_precision", 0.0)),
             float(summary.get("overall_mean_expected_tokens", 0.0)),
