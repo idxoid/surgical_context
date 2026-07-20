@@ -226,6 +226,25 @@ class FieldedBM25Index:
         exact_terms = exact_identifier_terms(query)
         exact_rows: set[int] = set()
         if exact_terms:
+            # "A boost on the same positive scale as BM25" — but raw top
+            # scores track corpus/query size (70-100 on django) while the
+            # historical flat +12/+9 did not, leaving exact-named rows below
+            # generic tf-heavy matches on 12% of bench questions. Scale the
+            # boost with the query's own top BM25 score (floored at the
+            # legacy constants so tiny corpora keep the old behaviour).
+            # MEASURED 2026-07-19: gold-neutral on python/non-python packs,
+            # NEGATIVE on SWE-bench (recall 0.940->0.932 — scaled boosts on
+            # generic exact-shaped terms displace body-lift/BM25 diversity),
+            # hence default OFF; the flag stays for calibration work.
+            # Exact name wins over exact qualified-name suffix.
+            import os
+
+            if os.getenv("AXIS_LEXICAL_EXACT_RELATIVE", "0") != "0":
+                top_score = max(scores.values(), default=0.0)
+                name_boost = max(12.0, 0.35 * top_score)
+                qname_boost = max(9.0, 0.25 * top_score)
+            else:
+                name_boost, qname_boost = 12.0, 9.0
             candidate_indices = allowed if allowed is not None else range(document_count)
             for row_index in candidate_indices:
                 name = self._names[row_index]
@@ -238,9 +257,7 @@ class FieldedBM25Index:
                     for term in exact_terms
                 )
                 if exact_name or exact_qname:
-                    # A boost expressed on the same positive scale as BM25.
-                    # Exact name wins over exact qualified-name suffix.
-                    scores[row_index] += 12.0 if exact_name else 9.0
+                    scores[row_index] += name_boost if exact_name else qname_boost
                     exact_rows.add(row_index)
 
         ranked = sorted(scores.items(), key=lambda item: (item[1], -item[0]), reverse=True)
