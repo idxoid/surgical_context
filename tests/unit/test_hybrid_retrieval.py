@@ -152,3 +152,39 @@ def test_semantic_chunk_span_is_a_line_rerank_prior_not_a_render_claim():
     )
     assert "answer_stage()" in (rendered.seed.code or "")
     assert any(start <= 105 <= end for start, end in rendered.seed.effective_rendered_spans())
+
+
+def test_rare_body_tokens_join_the_index() -> None:
+    from context_engine.search.lexical import FieldedBM25Index
+
+    rows = [
+        {"name": "check_all_models", "qualified_name": "django.core.checks.check_all_models"},
+        {"name": "handler", "qualified_name": "django.core.handlers.handler"},
+    ]
+    bodies = [
+        "errors.append(Error(id='models.E028'))",
+        "return handler(request)",
+    ]
+    index = FieldedBM25Index(rows, bodies=bodies)
+    hits = index.search("db_table clash raises models.E028 for different apps")
+    assert hits, "rare body token must be searchable"
+    assert hits[0].row_index == 0
+
+
+def test_common_body_tokens_stay_out_via_df_ceiling() -> None:
+    from context_engine.search.lexical import _BODY_TOKEN_DF_CEILING, FieldedBM25Index
+
+    n = _BODY_TOKEN_DF_CEILING + 5
+    rows = [{"name": f"fn{i}", "qualified_name": f"pkg.fn{i}"} for i in range(n)]
+    bodies = ["everywhere_token = compute()" for _ in range(n)]
+    index = FieldedBM25Index(rows, bodies=bodies)
+    assert not index.search("everywhere_token")
+
+
+def test_bodies_none_is_identical_to_metadata_only() -> None:
+    from context_engine.search.lexical import FieldedBM25Index
+
+    rows = [{"name": "alpha", "qualified_name": "pkg.alpha"}]
+    with_none = FieldedBM25Index(rows, bodies=None).search("alpha")
+    plain = FieldedBM25Index(rows).search("alpha")
+    assert [(h.row_index, h.score) for h in with_none] == [(h.row_index, h.score) for h in plain]

@@ -829,12 +829,38 @@ def find_seeds_by_vector(
     return out
 
 
-def _workspace_lexical_index(scan: WorkspaceScan):
+def _workspace_lexical_index(
+    scan: WorkspaceScan, workspace_id: str = "", lance_db_path: str = DB_PATH
+):
     if scan.lexical_index is None:
         from context_engine.search.lexical import FieldedBM25Index
 
-        scan.lexical_index = FieldedBM25Index(scan.rows)
+        bodies = None
+        if workspace_id and os.getenv("AXIS_LEXICAL_BODY_TOKENS", "1") != "0":
+            bodies = _scan_row_bodies(scan, workspace_id, lance_db_path)
+        scan.lexical_index = FieldedBM25Index(scan.rows, bodies=bodies)
     return scan.lexical_index
+
+
+def _scan_row_bodies(
+    scan: WorkspaceScan,
+    workspace_id: str,
+    lance_db_path: str,
+) -> list[str | None] | None:
+    """Symbol code aligned to ``scan.rows`` (one extra uid+code column read).
+
+    The scan itself deliberately keeps the heavy ``code`` column out of its
+    cached rows; the lexical index needs it once per scan-cache lifetime to
+    mine rare body tokens (``models.E028``-style question artifacts), so read
+    it separately instead of widening every scan consumer.
+    """
+    try:
+        table, table_filter = _open_scan_symbols_table(workspace_id, lance_db_path, None)
+        arrow = _read_scan_arrow(table, ["uid", "code"], table_filter)
+        code_by_uid = dict(zip(arrow["uid"].to_pylist(), arrow["code"].to_pylist(), strict=False))
+    except Exception:
+        return None
+    return [code_by_uid.get(str(row.get("uid") or "")) for row in scan.rows]
 
 
 def find_seeds_by_lexical(
@@ -861,7 +887,9 @@ def find_seeds_by_lexical(
     )
     if not scan.rows:
         return []
-    hits = _workspace_lexical_index(scan).search(query_text, limit=limit)
+    hits = _workspace_lexical_index(scan, workspace_id, lance_db_path).search(
+        query_text, limit=limit
+    )
     if not hits:
         return []
     ceiling = max(float(hit.score) for hit in hits) or 1.0
